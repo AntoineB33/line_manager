@@ -1,4 +1,3 @@
-import copy
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -14,71 +13,34 @@ class Action:
 class LineState:
     def __init__(self, size: int):
         self.size = size
-        self.cells: list[list[dict[str, Any]]] = [[] for _ in range(size)]
-        self.active_entities: dict[str, dict[str, Any]] = {}
-        # Track the original z-index of an entity so it slides back into its exact layer if re-added
-        self.entity_z_indices: dict[str, int] = {}
-        self.next_z_index = 0
+        # Element storage: eid -> {'id': str, 'type': str, 'pos': int, 'z_index': int}
+        self.elements: dict[str, dict[str, Any]] = {}
 
     def get_visible_line(self) -> list[str | None]:
-        return [cell[-1]['type'] if cell else None for cell in self.cells]
-
-    def _resort_cell(self, pos: int):
-        self.cells[pos].sort(key=lambda e: e['z_index'])
-
-    def execute(self, action: Action):
-        if not action.is_active:
-            return
-
-        payload = action.payload
-        if action.action_type == 'ADD':
-            eid, etype, pos = payload['id'], payload['type'], payload['pos']
-            if 0 <= pos < self.size:
-                # Bind z_index permanently to the entity's first appearance
-                if eid not in self.entity_z_indices:
-                    self.entity_z_indices[eid] = self.next_z_index
-                    self.next_z_index += 1
+        cells: list[list[dict[str, Any]]] = [[] for _ in range(self.size)]
+        
+        for e in self.elements.values():
+            if 0 <= e['pos'] < self.size:
+                cells[e['pos']].append(e)
                 
-                entity = {
-                    'id': eid, 
-                    'type': etype, 
-                    'pos': pos, 
-                    'z_index': self.entity_z_indices[eid]
-                }
-                self.active_entities[eid] = entity
-                self.cells[pos].append(entity)
-                self._resort_cell(pos)
-
-        elif action.action_type == 'MOVE':
-            eid, new_pos = payload['id'], payload['pos']
-            if eid in self.active_entities and 0 <= new_pos < self.size:
-                entity = self.active_entities[eid]
-                old_pos = entity['pos']
-                self.cells[old_pos] = [e for e in self.cells[old_pos] if e['id'] != eid]
-                entity['pos'] = new_pos
-                self.cells[new_pos].append(entity)
-                self._resort_cell(new_pos)
-
-        elif action.action_type == 'REMOVE':
-            eid = payload['id']
-            if eid in self.active_entities:
-                pos = self.active_entities[eid]['pos']
-                self.cells[pos] = [e for e in self.cells[pos] if e['id'] != eid]
-                del self.active_entities[eid]
-
-    def clone(self) -> 'LineState':
-        new_state = LineState(self.size)
-        new_state.cells = copy.deepcopy(self.cells)
-        new_state.active_entities = copy.deepcopy(self.active_entities)
-        new_state.entity_z_indices = copy.deepcopy(self.entity_z_indices)
-        new_state.next_z_index = self.next_z_index
-        return new_state
+        # Sort each cell by z_index to maintain layer stability
+        for cell in cells:
+            cell.sort(key=lambda x: x['z_index'])
+            
+        return [cell[-1]['type'] if cell else None for cell in cells]
 
 class LineEditor:
     def __init__(self, size: int = 10):
         self.size = size
         self.history: list[Action] = []
+        # Rules map a LineState to a LineState declaratively
         self.rules: list[Callable[[LineState], None]] = []
+        
+        # Track the original z-index of an entity globally. 
+        # This mathematically ensures: "Remove -> Add = State as if before removal"
+        # because the re-added element perfectly drops back into its original layer.
+        self.entity_z_indices: dict[str, int] = {}
+        self.next_z_index = 0
 
     def add_rule(self, rule_func: Callable[[LineState], None]):
         self.rules.append(rule_func)
@@ -108,18 +70,51 @@ class LineEditor:
     def remove(self, element_id: str) -> str:
         return self.do_edit('REMOVE', {'id': element_id})
 
-    def compute_state(self) -> LineState:
-        # 1. Pure projection from the active timeline
-        base_state = LineState(self.size)
+    def compute_intended_state(self) -> LineState:
+        """
+        Step 1: Compute the pure intended state of the user without any rules.
+        Because this folds commutative actions, it strictly satisfies the edit reversibility.
+        """
+        state = LineState(self.size)
+        
         for action in self.history:
-            base_state.execute(action)
+            if not action.is_active:
+                continue
+                
+            payload = action.payload
+            eid = payload['id']
+            
+            if action.action_type == 'ADD':
+                if eid not in self.entity_z_indices:
+                    self.entity_z_indices[eid] = self.next_z_index
+                    self.next_z_index += 1
+                
+                state.elements[eid] = {
+                    'id': eid,
+                    'type': payload['type'],
+                    'pos': payload['pos'],
+                    'z_index': self.entity_z_indices[eid]
+                }
+            elif action.action_type == 'MOVE':
+                if eid in state.elements:
+                    state.elements[eid]['pos'] = payload['pos']
+            elif action.action_type == 'REMOVE':
+                if eid in state.elements:
+                    del state.elements[eid]
+                    
+        return state
 
-        # 2. Rule application on disposable view
-        view_state = base_state.clone()
+    def compute_state(self) -> LineState:
+        """
+        Step 2: Apply rules as declarative constraints over the intended state.
+        This prevents rules from permanently polluting the user's action history.
+        """
+        state = self.compute_intended_state()
+        
         for rule in self.rules:
-            rule(view_state)
+            rule(state)
 
-        return view_state
+        return state
 
     @property
     def current_line(self) -> list[str | None]:

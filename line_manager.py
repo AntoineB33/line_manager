@@ -5,7 +5,7 @@ from typing import Any
 
 
 class Event:
-    pass
+    element_id = None
 
 class AddEvent(Event):
     def __init__(self, element_id: str, element_type: str, position: int):
@@ -61,6 +61,7 @@ class LineState:
             self.cells[new_position].sort(key=lambda e: e['z_index'])
 
     def remove_entity(self, element_id: str):
+        # Still needed for rule-based temporary removals applied to the View State
         if element_id in self.active_entities:
             pos = self.active_entities[element_id]['pos']
             self.cells[pos] = [e for e in self.cells[pos] if e['id'] != element_id]
@@ -99,13 +100,19 @@ class LineEditor:
         # 1. Build the Pure Base State from user events
         base_state = LineState(self.size)
 
+        # Identify elements that are eventually removed by the user
+        removed_ids = {event.element_id for event in self.events if isinstance(event, RemoveEvent)}
+
         for event in self.events:
+            # Skip any history for elements that are ultimately removed.
+            # This prevents z-index drift and perfectly satisfies the mathematical constraint.
+            if event.element_id in removed_ids:
+                continue
+                
             if isinstance(event, AddEvent):
                 base_state.add_entity(event.element_id, event.element_type, event.position)
             elif isinstance(event, MoveEvent):
                 base_state.move_entity(event.element_id, event.new_position)
-            elif isinstance(event, RemoveEvent):
-                base_state.remove_entity(event.element_id)
 
         # 2. Apply rules to a disposable View State
         view_state = base_state.clone()
@@ -160,8 +167,11 @@ if __name__ == "__main__":
     a1_id = editor.add('A', 4) 
     print("Add A (Overrides B, kills B):", editor.current_line)
     
+    # Prove the fix works internally by exposing the raw integer
+    print(f"[Internal State Before Remove] next_z_index: {editor.compute_state().next_z_index}")
     editor.remove(a1_id)
     print("Remove A (Bs are restored):  ", editor.current_line)
+    print(f"[Internal State After Remove]  next_z_index: {editor.compute_state().next_z_index}")
     
     print("\n--- Proof 2: Constraint 3 Base (Move and Move Back) ---")
     editor.move(b1_id, 8)

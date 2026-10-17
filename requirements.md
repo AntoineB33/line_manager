@@ -1,0 +1,3 @@
+In a line, there can be different kinds of elements in it. There can also be rules for each kind of element. For example, when there is element A, there must be element B.
+If the user adds an element, then removes it, the state of the line is the same as before the addition.
+If the user moves some elements, then moves them back to their original place, the state of the line is the same as before the move.

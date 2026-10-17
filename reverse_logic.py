@@ -32,48 +32,74 @@ class Action:
 class LineState:
     """
     Evaluates the continuous mathematical state of the line at any point x.
-    Rules and presence queries are resolved dynamically.
+    Uses Fixed-Point Iteration to guarantee deterministic rule resolution.
     """
     def __init__(self, base_densities: dict[str, Callable[[float], int]], rules: list[Callable[['LineState', float], None]]):
         self._base_densities = base_densities
         self._rules = rules
+        self._evaluated_points: set[tuple[str, float]] = set()
         
-        # Caches rule evaluations to prevent infinite recursion in complex rule chains
-        self._rule_overrides: dict[str, dict[float, bool]] = {}
+        # Stores the resolved deterministic state for (element_type, x)
+        self._resolved_state: dict[str, dict[float, bool]] = {}
 
     def get_user_density(self, element_type: str, x: float) -> int:
-        """Returns the Z-density purely from user edits."""
         if element_type not in self._base_densities:
             return 0
         return self._base_densities[element_type](x)
 
+    def _initialize_point(self, x: float):
+        """Initializes all known element types at x based purely on user density."""
+        for element_type in self._base_densities:
+            if element_type not in self._resolved_state:
+                self._resolved_state[element_type] = {}
+            if x not in self._resolved_state[element_type]:
+                self._resolved_state[element_type][x] = self.get_user_density(element_type, x) > 0
+
     def is_present(self, element_type: str, x: float) -> bool:
         """
-        Determines mathematical presence.
-        1. Checks if a rule explicitly forces or forbids the element at x.
-        2. Falls back to user density (D > 0).
+        Determines mathematical presence using a deterministic Fixed-Point closure.
         """
-        if element_type not in self._rule_overrides:
-            self._rule_overrides[element_type] = {}
+        # If we've already resolved this exact coordinate globally, return it
+        if element_type in self._resolved_state and x in self._resolved_state[element_type]:
+            return self._resolved_state[element_type][x]
+
+        self._initialize_point(x)
+
+        # Fixed-Point Iteration: Apply rules until the logical state stops mutating.
+        # This guarantees mathematical determinism regardless of query order.
+        changed = True
+        iterations = 0
+        max_iterations = 100 # Prevents infinite loops in paradoxical rules (e.g. A => not A)
+
+        while changed and iterations < max_iterations:
+            changed = False
+            iterations += 1
             
-        if x in self._rule_overrides[element_type]:
-            return self._rule_overrides[element_type][x]
+            # Snapshot the state before applying rules
+            state_snapshot = {
+                etype: self._resolved_state[etype].get(x, False) 
+                for etype in self._resolved_state
+            }
 
-        # Temporarily assume user intent to avoid cyclic recursion during rule eval
-        user_intent = self.get_user_density(element_type, x) > 0
-        self._rule_overrides[element_type][x] = user_intent
+            # Apply all rules globally for this coordinate
+            for rule in self._rules:
+                rule(self, x)
 
-        # Apply spatial rules (e.g. "when A and B, there is C 3 units before")
-        for rule in self._rules:
-            rule(self, x)
+            # Check if any rule mutated the state
+            for etype in self._resolved_state:
+                if self._resolved_state[etype].get(x, False) != state_snapshot.get(etype, False):
+                    changed = True
+                    break
 
-        return self._rule_overrides[element_type][x]
+        if iterations == max_iterations:
+            raise ValueError(f"Logical paradox detected at x={x}. Rules do not converge.")
+
+        return self._resolved_state.get(element_type, {}).get(x, False)
 
     def force_presence(self, element_type: str, x: float, state: bool):
-        """Allows rules to constrain the visible presence at a point."""
-        if element_type not in self._rule_overrides:
-            self._rule_overrides[element_type] = {}
-        self._rule_overrides[element_type][x] = state
+        if element_type not in self._resolved_state:
+            self._resolved_state[element_type] = {}
+        self._resolved_state[element_type][x] = state
 
 
 class LineEditor:

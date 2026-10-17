@@ -1,82 +1,70 @@
 import uuid
+from collections import defaultdict
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
+
+@dataclass
+class Region:
+    """Represents a finite set of intervals or points mathematically."""
+    points: set[float] = field(default_factory=set)
+    intervals: list[tuple[float, float]] = field(default_factory=list)
+    
+    def shift(self, delta: float) -> 'Region':
+        new_points = {p + delta for p in self.points}
+        new_intervals = [(start + delta, end + delta) for start, end in self.intervals]
+        return Region(new_points, new_intervals)
 
 class Action:
     def __init__(self, action_type: str, payload: dict):
         self.id = str(uuid.uuid4())
-        self.action_type = action_type  # 'ADD', 'REMOVE', 'MOVE'
+        self.action_type = action_type  # 'ADD', 'REMOVE', 'SHIFT'
         self.payload = payload
-        self.is_active = True  # Toggling this perfectly satisfies "as if it never happened"
+        self.is_active = True 
 
 class LineState:
-    def __init__(self, size: int):
-        self.size = size
-        # Element storage: eid -> {'id': str, 'type': str, 'pos': int, 'z_index': int}
+    def __init__(self):
+        # eid -> {'id': str, 'type': str, 'region': Region, 'z_index': int, 'is_deleted': bool}
         self.elements: dict[str, dict[str, Any]] = {}
 
-    def get_visible_line(self) -> list[str | None]:
-        cells: list[list[dict[str, Any]]] = [[] for _ in range(self.size)]
-        
-        for e in self.elements.values():
-            if 0 <= e['pos'] < self.size:
-                cells[e['pos']].append(e)
-                
-        # Sort each cell by z_index to maintain layer stability
-        for cell in cells:
-            cell.sort(key=lambda x: x['z_index'])
-            
-        return [cell[-1]['type'] if cell else None for cell in cells]
-
 class LineEditor:
-    def __init__(self, size: int = 10):
-        self.size = size
+    def __init__(self):
         self.history: list[Action] = []
-        # Rules map a LineState to a LineState declaratively
         self.rules: list[Callable[[LineState], None]] = []
-        
-        # Track the original z-index of an entity globally. 
-        # This mathematically ensures: "Remove -> Add = State as if before removal"
-        # because the re-added element perfectly drops back into its original layer.
-        self.entity_z_indices: dict[str, int] = {}
         self.next_z_index = 0
 
     def add_rule(self, rule_func: Callable[[LineState], None]):
         self.rules.append(rule_func)
 
     def do_edit(self, action_type: str, payload: dict) -> str:
-        """Applies an edit and returns the Action ID so it can be reversed."""
         action = Action(action_type, payload)
         self.history.append(action)
         return action.id
 
     def reverse_edit(self, action_id: str):
-        """Mathematically erases an edit as if it never happened."""
         for action in self.history:
             if action.id == action_id:
                 action.is_active = not action.is_active
                 break
 
-    def add(self, element_type: str, position: int, element_id: str | None = None) -> tuple[str, str]:
-        if not element_id:
-            element_id = str(uuid.uuid4())
-        action_id = self.do_edit('ADD', {'id': element_id, 'type': element_type, 'pos': position})
-        return element_id, action_id
+    def add(self, element_id: str, element_type: str, region: Region) -> str:
+        return self.do_edit('ADD', {'id': element_id, 'type': element_type, 'region': region})
 
-    def move(self, element_id: str, new_position: int) -> str:
-        return self.do_edit('MOVE', {'id': element_id, 'pos': new_position})
+    def shift(self, element_id: str, delta: float) -> str:
+        return self.do_edit('SHIFT', {'id': element_id, 'delta': delta})
 
     def remove(self, element_id: str) -> str:
         return self.do_edit('REMOVE', {'id': element_id})
 
-    def compute_intended_state(self) -> LineState:
-        """
-        Step 1: Compute the pure intended state of the user without any rules.
-        Because this folds commutative actions, it strictly satisfies the edit reversibility.
-        """
-        state = LineState(self.size)
+    def compute_state(self) -> LineState:
+        user_presence = {}
+        base_regions = {}
+        element_types = {}
+        net_shifts = defaultdict(float)
+        z_indices = {}
         
+        # 1. Aggregate net user actions purely functionally (Abelian constraints)
         for action in self.history:
             if not action.is_active:
                 continue
@@ -85,37 +73,84 @@ class LineEditor:
             eid = payload['id']
             
             if action.action_type == 'ADD':
-                if eid not in self.entity_z_indices:
-                    self.entity_z_indices[eid] = self.next_z_index
+                user_presence[eid] = True
+                # The mathematical identity of the element is anchored on its first creation
+                if eid not in base_regions:
+                    base_regions[eid] = payload['region']
+                    element_types[eid] = payload['type']
+                    z_indices[eid] = self.next_z_index
                     self.next_z_index += 1
-                
-                state.elements[eid] = {
-                    'id': eid,
-                    'type': payload['type'],
-                    'pos': payload['pos'],
-                    'z_index': self.entity_z_indices[eid]
-                }
-            elif action.action_type == 'MOVE':
-                if eid in state.elements:
-                    state.elements[eid]['pos'] = payload['pos']
-            elif action.action_type == 'REMOVE':
-                if eid in state.elements:
-                    del state.elements[eid]
                     
-        return state
-
-    def compute_state(self) -> LineState:
-        """
-        Step 2: Apply rules as declarative constraints over the intended state.
-        This prevents rules from permanently polluting the user's action history.
-        """
-        state = self.compute_intended_state()
+            elif action.action_type == 'REMOVE':
+                user_presence[eid] = False
+                
+            elif action.action_type == 'SHIFT':
+                # Shifts sum independently of the transient existence of the element
+                net_shifts[eid] += payload['delta']
+                
+        # 2. Fixed point evaluation on a clean state
+        state = LineState()
         
-        for rule in self.rules:
-            rule(state)
+        def get_fingerprint():
+            fp = []
+            for k, v in sorted(state.elements.items()):
+                pts = frozenset(v['region'].points) if isinstance(v['region'], Region) else frozenset()
+                ivs = tuple(v['region'].intervals) if isinstance(v['region'], Region) else ()
+                fp.append((k, v.get('is_deleted', False), pts, ivs))
+            return tuple(fp)
 
-        return state
-
-    @property
-    def current_line(self) -> list[str | None]:
-        return self.compute_state().get_visible_line()
+        # Repeatedly apply rules and user shifts until full mathematical convergence is reached.
+        # This solves cascading generation where Rule A generates Element B, and Element B must 
+        # seamlessly inherit user shifts that were historically applied to it.
+        while True:
+            before_fp = get_fingerprint()
+            
+            # A. Seed state with user-intended elements
+            for eid, is_present in user_presence.items():
+                if is_present and eid not in state.elements:
+                    if eid not in z_indices:
+                        z_indices[eid] = self.next_z_index
+                        self.next_z_index += 1
+                    state.elements[eid] = {
+                        'id': eid,
+                        'type': element_types[eid],
+                        'region': base_regions[eid],
+                        'z_index': z_indices[eid],
+                        'is_deleted': False,
+                        '_shift_applied': 0.0
+                    }
+                    
+            # B. Apply mathematical sum of user shifts to ALL active elements
+            for eid, el in state.elements.items():
+                if not el.get('is_deleted', False) and eid in net_shifts:
+                    pending_shift = net_shifts[eid] - el.get('_shift_applied', 0.0)
+                    if pending_shift != 0.0:
+                        el['region'] = el['region'].shift(pending_shift)
+                        el['_shift_applied'] = net_shifts[eid]
+                        
+            # C. Apply rules block
+            for rule in self.rules:
+                rule(state)
+                
+            # D. Ensure any elements newly created by a rule in this iteration have tracking fields
+            for eid, el in state.elements.items():
+                if '_shift_applied' not in el:
+                    el['_shift_applied'] = 0.0
+                    if eid not in z_indices:
+                        z_indices[eid] = self.next_z_index
+                        self.next_z_index += 1
+                    el['z_index'] = z_indices[eid]
+                    
+            after_fp = get_fingerprint()
+            if before_fp == after_fp:
+                break
+                
+        # 3. Compile pure output state, stripping internal tracking
+        final_state = LineState()
+        final_state.elements = {
+            k: {key: val for key, val in v.items() if key != '_shift_applied'}
+            for k, v in state.elements.items() 
+            if not v.get('is_deleted', False)
+        }
+        
+        return final_state

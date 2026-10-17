@@ -1,4 +1,4 @@
-In a line, there can be different kinds of elements in it.
+In a line, there can be different kinds of elements. Each kind of element is present in a set of intervals or points of elements.
 There can also be rules for each kind of element.
 Examples:
 - when there is element A, there must be element B

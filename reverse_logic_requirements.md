@@ -9,3 +9,17 @@ If the user adds an element, then removes it, the state of the line is the same 
 If the user removes an element, then adds it, the state of the line is the same as before the removal.
 If the user moves some elements, then moves them back to their original place, the state of the line is the same as before the move.
 Let's suppose edit A and edit B, where edit B doesn't require edit A (e.g., edit A moves element A onto x, edit B moves element B onto x). If the user do edits A, then do edits B, the user can reverse edits A, and the state of the line is the same as if edits A never happened. If the user then reverses edit B, the state of the line is the same as before edit A.
+
+Example:
+Suppose the rules:
+- if element D, then no element C
+The user defines edit A:
+- element A at [$x_1$; $x_2$] will be moved at $x_3$
+- element B at $x_4$ will be moved at $x_5$ 
+- element C will be added at [$x_6$; $x_7$]
+The user does edit A.
+The user defines edit B:
+- element D will be added at [$x_6$; $x_7$]
+The user does edit B.
+The user reverses edit A.
+Now there is element C at [$x_6$; $x_7$].

@@ -1,23 +1,18 @@
+import copy
 import uuid
 from collections.abc import Callable
-from typing import Any, cast
-
-# Import the core event structures from your existing script
-import reverse_logic
+from typing import Any
 
 # ==========================================
-# EXTENDING REVERSE LOGIC FOR CONTINUOUS TRACK
+# ACTION-BASED EVENT SOURCING
 # ==========================================
 
-class TrackAddEvent(reverse_logic.AddEvent):
-    """
-    Extends reverse_logic.AddEvent to handle float positions for the continuous 
-    track and track which generated text created it.
-    """
-    def __init__(self, element_id: str, element_type: str, position: float, source_text_id: str):
-        # Pass position to parent (Python will allow the float despite the int type hint)
-        super().__init__(element_id, element_type, cast(int, position))
-        self.source_text_id = source_text_id
+class Action:
+    def __init__(self, action_type: str, payload: dict):
+        self.id = str(uuid.uuid4())
+        self.action_type = action_type  # 'ADD', 'REMOVE', 'MOVE'
+        self.payload = payload
+        self.is_active = True  # Toggling perfectly satisfies mathematical constraint
 
 
 # ==========================================
@@ -42,22 +37,30 @@ class Chip:
 
 
 class TrackState:
-    """Continuous version of reverse_logic.LineState"""
     def __init__(self):
         self.active_entities: dict[str, dict[str, Any]] = {}
         self.next_z_index = 0
 
-    def add_entity(self, element_id: str, element_type: str, position: float, source_text_id: str):
-        z_index = self.next_z_index
-        self.next_z_index += 1
+    def execute(self, action: Action):
+        if not action.is_active:
+            return
         
-        self.active_entities[element_id] = {
-            'id': element_id,
-            'type': element_type,
-            'pos': position,
-            'z_index': z_index,
-            'source_text_id': source_text_id
-        }
+        payload = action.payload
+        if action.action_type == 'ADD':
+            eid = payload['id']
+            self.active_entities[eid] = {
+                'id': eid,
+                'type': payload['type'],
+                'pos': payload['pos'],
+                'z_index': self.next_z_index,
+                'source_text_id': payload['source_text_id']
+            }
+            self.next_z_index += 1
+            
+        elif action.action_type == 'REMOVE':
+            eid = payload['id']
+            if eid in self.active_entities:
+                del self.active_entities[eid]
 
     def get_elements_ahead(self, position: float) -> list[dict[str, Any]]:
         elements = [e for e in self.active_entities.values() if e['pos'] > position]
@@ -69,41 +72,47 @@ class TrackState:
         elements.sort(key=lambda e: e['pos'])
         return elements
 
+    def clone(self) -> 'TrackState':
+        new_state = TrackState()
+        new_state.active_entities = copy.deepcopy(self.active_entities)
+        new_state.next_z_index = self.next_z_index
+        return new_state
+
 
 class TrackManager:
     def __init__(self):
-        # Storing reverse_logic.Event instances
-        self.events: list[reverse_logic.Event] = []
+        self.history: list[Action] = []
         self.chip = Chip()
         self.current_text_id: str | None = None
         self.active_rules_generator: Callable[[TrackState, Chip, Callable], None] | None = None
 
+    def do_edit(self, action_type: str, payload: dict) -> str:
+        action = Action(action_type, payload)
+        self.history.append(action)
+        return action.id
+
+    def reverse_edit(self, action_id: str):
+        """Mathematically erases an edit as if it never happened."""
+        for action in self.history:
+            if action.id == action_id:
+                action.is_active = not action.is_active
+                break
+
     def _add_event(self, element_type: str, position: float, source_text_id: str) -> str:
         element_id = str(uuid.uuid4())
-        self.events.append(TrackAddEvent(element_id, element_type, position, source_text_id))
+        self.do_edit('ADD', {
+            'id': element_id, 
+            'type': element_type, 
+            'pos': position, 
+            'source_text_id': source_text_id
+        })
         return element_id
 
-    def _remove_event(self, element_id: str):
-        # Directly using RemoveEvent from reverse_logic
-        self.events.append(reverse_logic.RemoveEvent(element_id))
-
     def compute_state(self) -> TrackState:
-        """
-        Builds the state using the exact history-erasure logic from reverse_logic.py
-        """
+        """Builds the pure state via projection from the active timeline."""
         base_state = TrackState()
-        
-        # Identify removed elements using reverse_logic.RemoveEvent
-        removed_ids = {event.element_id for event in self.events if isinstance(event, reverse_logic.RemoveEvent)}
-
-        for event in self.events:
-            # Skip history for discarded elements (Reverse Logic constraint)
-            if event.element_id in removed_ids:
-                continue
-                
-            if isinstance(event, TrackAddEvent):
-                base_state.add_entity(event.element_id, event.element_type, event.position, event.source_text_id)
-
+        for action in self.history:
+            base_state.execute(action)
         return base_state
 
     def update_chip(self, new_position: float, new_mode: int):
@@ -112,13 +121,17 @@ class TrackManager:
     def switch_rules_text(self, new_text_id: str, rules_generator: Callable[['TrackState', Chip, Callable], None]):
         state = self.compute_state()
         
-        # 1. Identify unreached elements (ahead of the chip) generated by the CURRENT text
+        # 1. Identify unreached elements generated by the CURRENT text
         elements_ahead = state.get_elements_ahead(self.chip.position)
         
-        # 2. Discard them by dispatching reverse_logic.RemoveEvent
+        # 2. Mathematically erase them (True Reversal)
         for elem in elements_ahead:
             if elem['source_text_id'] == self.current_text_id:
-                self._remove_event(elem['id'])
+                # Find the ADD action that created this element and perfectly reverse it
+                for action in self.history:
+                    if action.action_type == 'ADD' and action.payload['id'] == elem['id']:
+                        self.reverse_edit(action.id)
+                        break
 
         # 3. Update text state
         self.current_text_id = new_text_id
@@ -132,7 +145,6 @@ class TrackManager:
             return
 
         text_id = self.current_text_id
-            
         current_state = self.compute_state()
         
         def append_element(element_type: str, position: float):

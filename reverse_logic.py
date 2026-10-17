@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 # ============================================================================
@@ -67,7 +68,6 @@ class Region:
                         next_intervals.append((o_end, e))
             cur_intervals = next_intervals
 
-        # Filter out points covered by other's intervals or other's points
         rem_points = [
             p for p in self.points 
             if p not in other.points and not any(s <= p <= e for s, e in other.intervals)
@@ -75,7 +75,6 @@ class Region:
         return Region.create(cur_intervals, rem_points)
 
     def intersection(self, other: Region) -> Region:
-        # A ∩ B = A \ (A \ B)
         return self.difference(self.difference(other))
 
     def shift(self, delta: float) -> Region:
@@ -96,166 +95,138 @@ class Region:
 
 
 # ============================================================================
-# 2. Logic Rules Engine
+# 2. Logic Rules Engine (Priority-Aware)
 # ============================================================================
+# Assertions map elements to a list of (Region, priority) tuples.
+# A higher priority (newer edit timestamp) forces lower priorities to adapt.
 
 class Rule:
-    def evaluate(self, presence: dict[str, Region], absence: dict[str, Region]) -> bool:
-        """Propagates implications into presence and absence maps. Returns True if any state changed."""
+    def evaluate(self, presence: dict[str, list[tuple[Region, int]]], absence: dict[str, list[tuple[Region, int]]]) -> bool:
         raise NotImplementedError
+
+def apply_assertion(target_dict: dict[str, list[tuple[Region, int]]], element: str, new_reg: Region, priority: int) -> bool:
+    if new_reg.is_empty():
+        return False
+    existing_list = target_dict.get(element, [])
+    
+    # Check if this new region is already fully covered at an equal or higher priority
+    uncovered = new_reg
+    for ex_reg, ex_pri in existing_list:
+        if ex_pri >= priority:
+            uncovered = uncovered.difference(ex_reg)
+            if uncovered.is_empty():
+                return False
+                
+    # Insert new assertion
+    existing_list.append((uncovered, priority))
+    target_dict[element] = existing_list
+    return True
+
+
+def cross_intersect(list_a: list[tuple[Region, int]], list_b: list[tuple[Region, int]], offset: float = 0.0) -> list[tuple[Region, int]]:
+    """Yields intersections of two priority lists. The resulting priority is the MINIMUM of the two (weakest link)."""
+    results = []
+    for reg_a, pri_a in list_a:
+        shifted_a = reg_a.shift(offset)
+        for reg_b, pri_b in list_b:
+            intersect = shifted_a.intersection(reg_b)
+            if not intersect.is_empty():
+                results.append((intersect, min(pri_a, pri_b)))
+    return results
 
 
 class ImpliesRule(Rule):
-    """
-    If A is present at x, B must be present at (x + offset).
-    If is_not=True: if A is present at x, B must be absent at (x + offset).
-    Contrapositive (Modus Tollens) is automatically derived.
-    """
     def __init__(self, cond: str, cons: str, offset: float = 0.0, is_not: bool = False):
         self.cond = cond
         self.cons = cons
         self.offset = offset
         self.is_not = is_not
 
-    def evaluate(self, presence: dict[str, Region], absence: dict[str, Region]) -> bool:
+    def evaluate(self, presence: dict[str, list[tuple[Region, int]]], absence: dict[str, list[tuple[Region, int]]]) -> bool:
         changed = False
+        target_dict = absence if self.is_not else presence
 
-        # Forward implication: A -> (B or Not B)
-        cond_presence = presence.get(self.cond, Region())
-        if not cond_presence.is_empty():
-            target_region = cond_presence.shift(self.offset)
-            target_dict = absence if self.is_not else presence
-            existing = target_dict.get(self.cons, Region())
-            updated = existing.union(target_region)
-            if updated != existing:
-                target_dict[self.cons] = updated
+        # Forward: A -> (B or Not B)
+        for reg_a, pri_a in presence.get(self.cond, []):
+            shifted = reg_a.shift(self.offset)
+            if apply_assertion(target_dict, self.cons, shifted, pri_a):
                 changed = True
 
-        # Contrapositive:
-        # If A -> B, then Not B -> Not A
-        # If A -> Not B, then B -> Not A
-        contra_trigger = presence.get(self.cons, Region()) if self.is_not else absence.get(self.cons, Region())
-        if not contra_trigger.is_empty():
-            implied_not_a = contra_trigger.shift(-self.offset)
-            existing_absence = absence.get(self.cond, Region())
-            updated = existing_absence.union(implied_not_a)
-            if updated != existing_absence:
-                absence[self.cond] = updated
+        # Contrapositive
+        contra_src = presence if self.is_not else absence
+        for reg_c, pri_c in contra_src.get(self.cons, []):
+            shifted_back = reg_c.shift(-self.offset)
+            if apply_assertion(absence, self.cond, shifted_back, pri_c):
                 changed = True
 
         return changed
 
 
 class AndRule(Rule):
-    """
-    When A and B are present at x, C must be present at (x + offset).
-    Contrapositive:
-    - (Not C at x + offset) AND (A at x) -> (Not B at x)
-    - (Not C at x + offset) AND (B at x) -> (Not A at x)
-    """
     def __init__(self, cond_a: str, cond_b: str, cons: str, offset: float = 0.0):
         self.a = cond_a
         self.b = cond_b
         self.c = cons
         self.offset = offset
 
-    def evaluate(self, presence: dict[str, Region], absence: dict[str, Region]) -> bool:
+    def evaluate(self, presence: dict[str, list[tuple[Region, int]]], absence: dict[str, list[tuple[Region, int]]]) -> bool:
         changed = False
 
-        # Forward: A ∧ B -> C
-        reg_a = presence.get(self.a, Region())
-        reg_b = presence.get(self.b, Region())
-        overlap = reg_a.intersection(reg_b)
-        if not overlap.is_empty():
-            target_c = overlap.shift(self.offset)
-            existing_c = presence.get(self.c, Region())
-            updated_c = existing_c.union(target_c)
-            if updated_c != existing_c:
-                presence[self.c] = updated_c
+        # Forward: A AND B -> C
+        overlaps = cross_intersect(presence.get(self.a, []), presence.get(self.b, []))
+        for overlap, pri in overlaps:
+            shifted = overlap.shift(self.offset)
+            if apply_assertion(presence, self.c, shifted, pri):
                 changed = True
 
-        # Contrapositives:
-        not_c = absence.get(self.c, Region())
-        if not not_c.is_empty():
-            src_not_c = not_c.shift(-self.offset)
+        # Contrapositive 1: Not C AND A -> Not B
+        not_c_and_a = cross_intersect(absence.get(self.c, []), presence.get(self.a, []), offset=-self.offset)
+        for overlap, pri in not_c_and_a:
+            if apply_assertion(absence, self.b, overlap, pri):
+                changed = True
 
-            # Not C and A -> Not B
-            conflict_b = src_not_c.intersection(reg_a)
-            if not conflict_b.is_empty():
-                existing = absence.get(self.b, Region())
-                updated = existing.union(conflict_b)
-                if updated != existing:
-                    absence[self.b] = updated
-                    changed = True
-
-            # Not C and B -> Not A
-            conflict_a = src_not_c.intersection(reg_b)
-            if not conflict_a.is_empty():
-                existing = absence.get(self.a, Region())
-                updated = existing.union(conflict_a)
-                if updated != existing:
-                    absence[self.a] = updated
-                    changed = True
+        # Contrapositive 2: Not C AND B -> Not A
+        not_c_and_b = cross_intersect(absence.get(self.c, []), presence.get(self.b, []), offset=-self.offset)
+        for overlap, pri in not_c_and_b:
+            if apply_assertion(absence, self.a, overlap, pri):
+                changed = True
 
         return changed
 
 
 class DisjunctionRule(Rule):
-    """
-    If A is present at x, then B OR C must be present at x.
-    Deterministic requirement:
-    'if a rule says if element A then element B or C, the first operand is used, here element B.'
-    """
     def __init__(self, cond: str, cons_first: str, cons_second: str):
         self.cond = cond
         self.first = cons_first
         self.second = cons_second
 
-    def evaluate(self, presence: dict[str, Region], absence: dict[str, Region]) -> bool:
+    def evaluate(self, presence: dict[str, list[tuple[Region, int]]], absence: dict[str, list[tuple[Region, int]]]) -> bool:
         changed = False
-        cond_reg = presence.get(self.cond, Region())
-        if cond_reg.is_empty():
-            return False
-
-        # If second is already present, the disjunction is satisfied.
-        second_present = presence.get(self.second, Region())
-        needed = cond_reg.difference(second_present)
-
-        # Fallback to first operand
-        if not needed.is_empty():
-            existing = presence.get(self.first, Region())
-            updated = existing.union(needed)
-            if updated != existing:
-                presence[self.first] = updated
+        # If A, then B OR C (Deterministic: B is first operand)
+        for reg_cond, pri_cond in presence.get(self.cond, []):
+            # Only parts where C is NOT present need B
+            unmet = reg_cond
+            for reg_second, pri_second in presence.get(self.second, []):
+                unmet = unmet.difference(reg_second)
+            
+            if apply_assertion(presence, self.first, unmet, pri_cond):
                 changed = True
-
         return changed
 
 
 class MutuallyExclusiveRule(Rule):
-    """A and B cannot coexist at the same position."""
     def __init__(self, elem_a: str, elem_b: str):
         self.a = elem_a
         self.b = elem_b
 
-    def evaluate(self, presence: dict[str, Region], absence: dict[str, Region]) -> bool:
+    def evaluate(self, presence: dict[str, list[tuple[Region, int]]], absence: dict[str, list[tuple[Region, int]]]) -> bool:
         changed = False
-        reg_a = presence.get(self.a, Region())
-        if not reg_a.is_empty():
-            existing_b = absence.get(self.b, Region())
-            updated_b = existing_b.union(reg_a)
-            if updated_b != existing_b:
-                absence[self.b] = updated_b
+        for reg_a, pri_a in presence.get(self.a, []):
+            if apply_assertion(absence, self.b, reg_a, pri_a):
                 changed = True
-
-        reg_b = presence.get(self.b, Region())
-        if not reg_b.is_empty():
-            existing_a = absence.get(self.a, Region())
-            updated_a = existing_a.union(reg_b)
-            if updated_a != existing_a:
-                absence[self.a] = updated_a
+        for reg_b, pri_b in presence.get(self.b, []):
+            if apply_assertion(absence, self.a, reg_b, pri_b):
                 changed = True
-
         return changed
 
 
@@ -289,19 +260,15 @@ class LineSystem:
         self.rules.append(rule)
 
     def define_edit(self, sub_edits: list[SubEdit]) -> str:
-        """Validates that the edit does not cause internal contradictions, then records it."""
         self._clock += 1
         temp_edit = Edit(id="temp", sub_edits=sub_edits, timestamp=self._clock)
-
-        # Validate by dry-running state computation with this test edit
-        self._compute_state_internal(test_edit=temp_edit)
+        self._compute_state_internal(test_edit=temp_edit)  # Validate
 
         edit_id = str(uuid.uuid4())
         self.history.append(Edit(id=edit_id, sub_edits=sub_edits, timestamp=self._clock))
         return edit_id
 
     def reverse_edit(self, edit_id: str):
-        """Toggles an edit off, perfectly restoring the timeline."""
         for e in self.history:
             if e.id == edit_id:
                 e.is_active = not e.is_active
@@ -316,51 +283,25 @@ class LineSystem:
         if test_edit:
             active_edits.append(test_edit)
 
-        # 1. Resolve User Directives chronologically:
-        # Newer direct user operations override older operations at the same coordinates.
-        user_presence: dict[str, Region] = {}
-        user_absence: dict[str, Region] = {}
+        presence: dict[str, list[tuple[Region, int]]] = defaultdict(list)
+        absence: dict[str, list[tuple[Region, int]]] = defaultdict(list)
 
-        # Iterate newest to oldest to build the base explicit assertions
-        for edit in reversed(active_edits):
-            layer_presence: dict[str, Region] = {}
-            layer_absence: dict[str, Region] = {}
-
+        # Apply raw user operations with their timestamps as priorities
+        for edit in active_edits:
+            ts = edit.timestamp
             for op in edit.sub_edits:
                 elem = op.element_type
                 if op.action == 'ADD':
-                    layer_presence[elem] = layer_presence.get(elem, Region()).union(op.region)
+                    apply_assertion(presence, elem, op.region, ts)
                 elif op.action == 'REMOVE':
-                    layer_absence[elem] = layer_absence.get(elem, Region()).union(op.region)
+                    apply_assertion(absence, elem, op.region, ts)
                 elif op.action == 'SHIFT':
-                    layer_absence[elem] = layer_absence.get(elem, Region()).union(op.region)
-                    layer_presence[elem] = layer_presence.get(elem, Region()).union(op.region.shift(op.delta))
+                    apply_assertion(absence, elem, op.region, ts)
+                    apply_assertion(presence, elem, op.region.shift(op.delta), ts)
 
-            # Check if this single edit is internally self-contradictory
-            for elem in layer_presence.items():
-                if elem in layer_absence:
-                    conflict = layer_presence[elem].intersection(layer_absence[elem])
-                    if not conflict.is_empty():
-                        raise ValueError(f"Direct self-contradiction in edit: '{elem}' both added and removed at {conflict}")
-
-            # Merge into global user assertions: newer edits mask older edits
-            for elem, reg in layer_presence.items():
-                masked_reg = reg.difference(user_absence.get(elem, Region()))
-                user_presence[elem] = user_presence.get(elem, Region()).union(masked_reg)
-
-            for elem, reg in layer_absence.items():
-                masked_reg = reg.difference(user_presence.get(elem, Region()))
-                user_absence[elem] = user_absence.get(elem, Region()).union(masked_reg)
-
-        # 2. Adaptation through Global Rule Fixpoint Evaluation
-        # We start with the consolidated user assertions and propagate all logical constraints.
-        presence = {elem: reg for elem, reg in user_presence.items() if not reg.is_empty()}
-        absence = {elem: reg for elem, reg in user_absence.items() if not reg.is_empty()}
-
-        # Deduce implications until a fixed point is reached
-        max_iterations = 100
+        # Propagate logical constraints
         iteration = 0
-        while iteration < max_iterations:
+        while iteration < 100:
             iteration += 1
             changed = False
             for rule in self.rules:
@@ -369,17 +310,42 @@ class LineSystem:
             if not changed:
                 break
         else:
-            raise ValueError("Rule cycle detected: infinite deduction loop without stabilization.")
+            raise ValueError("Rule cycle detected: infinite deduction loop.")
 
-        # 3. Check for Rule-Induced Contradictions
-        # If rules force an element to be both present and absent at the same point, the edit is forbidden.
-        for elem in presence.items():
-            if elem in absence:
-                conflict = presence[elem].intersection(absence[elem])
+        # Resolve state and test for hard contradictions
+        final_state: dict[str, Region] = {}
+        all_elements = set(presence.keys()).union(absence.keys())
+        
+        for elem in all_elements:
+            final_reg = Region()
+            # Sort all assertions for this element by priority (lowest to highest)
+            elem_assertions = [(r, p, 'P') for r, p in presence.get(elem, [])] + \
+                              [(r, p, 'A') for r, p in absence.get(elem, [])]
+            
+            # Cross-check for contradictions at the EXACT SAME priority
+            pres_at_pri = defaultdict(Region)
+            abs_at_pri = defaultdict(Region)
+            for reg, pri, kind in elem_assertions:
+                if kind == 'P': pres_at_pri[pri] = pres_at_pri[pri].union(reg)
+                else: abs_at_pri[pri] = abs_at_pri[pri].union(reg)
+                
+            for pri in set(pres_at_pri.keys()).intersection(abs_at_pri.keys()):
+                conflict = pres_at_pri[pri].intersection(abs_at_pri[pri])
                 if not conflict.is_empty():
-                    raise ValueError(f"Contradiction: Element '{elem}' is forced both present and absent at {conflict}")
+                    raise ValueError(f"Contradiction: '{elem}' both present and absent at {conflict} with equal priority {pri}")
 
-        return {elem: reg for elem, reg in presence.items() if not reg.is_empty()}
+            # Apply layer by layer, newer (higher priority) masking older
+            elem_assertions.sort(key=lambda x: x[1])
+            for reg, pri, kind in elem_assertions:
+                if kind == 'P':
+                    final_reg = final_reg.union(reg)
+                else:
+                    final_reg = final_reg.difference(reg)
+
+            if not final_reg.is_empty():
+                final_state[elem] = final_reg
+
+        return final_state
 
 
 # ============================================================================
@@ -392,35 +358,32 @@ if __name__ == "__main__":
     # Rule: D implies NOT C (Mutually Exclusive)
     system.add_rule(MutuallyExclusiveRule('D', 'C'))
 
-    # Initial State: D at [6, 7]
     r_67 = Region.create([(6, 7)])
     edit_init = system.define_edit([SubEdit('ADD', 'D', r_67)])
     print("Initial state:", list(system.compute_state().keys()))
     # Output: ['D']
 
     # Edit A: User explicitly adds C at [6, 7]
-    # D must adapt (C is newer, so D is evicted from [6, 7])
     edit_A = system.define_edit([SubEdit('ADD', 'C', r_67)])
     print("After Edit A (C adapts and replaces D):", list(system.compute_state().keys()))
     # Output: ['C']
 
     # Edit B: User explicitly adds D at [6, 7]
-    # C must adapt (D is newer, so C is evicted)
     edit_B = system.define_edit([SubEdit('ADD', 'D', r_67)])
     print("After Edit B (D replaces C):", list(system.compute_state().keys()))
     # Output: ['D']
 
-    # Reverse Edit B -> C returns at [6, 7]
+    # Reverse Edit B -> C returns
     system.reverse_edit(edit_B)
     print("After reversing Edit B (C returns):", list(system.compute_state().keys()))
     # Output: ['C']
 
-    # Reverse Edit A -> Original D returns at [6, 7]
+    # Reverse Edit A -> Original D returns
     system.reverse_edit(edit_A)
     print("After reversing Edit A (Initial D returns):", list(system.compute_state().keys()))
     # Output: ['D']
 
-    # Edit C: Try to add both C and D at point 8 in the exact same edit
+    # Edit C: Try to add both C and D at point 8 in the EXACT SAME edit
     r_8 = Region.create([], [8.0])
     try:
         system.define_edit([SubEdit('ADD', 'C', r_8), SubEdit('ADD', 'D', r_8)])

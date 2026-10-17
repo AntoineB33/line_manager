@@ -16,6 +16,8 @@ class LineState:
         self.size = size
         self.cells: list[list[dict[str, Any]]] = [[] for _ in range(size)]
         self.active_entities: dict[str, dict[str, Any]] = {}
+        # Track the original z-index of an entity so it slides back into its exact layer if re-added
+        self.entity_z_indices: dict[str, int] = {}
         self.next_z_index = 0
 
     def get_visible_line(self) -> list[str | None]:
@@ -32,10 +34,17 @@ class LineState:
         if action.action_type == 'ADD':
             eid, etype, pos = payload['id'], payload['type'], payload['pos']
             if 0 <= pos < self.size:
-                # Z-index is tied to the ADD action's sequence, not the entity itself.
-                # If an ADD action is replayed, its relative chronological z-index is perfectly preserved.
-                entity = {'id': eid, 'type': etype, 'pos': pos, 'z_index': self.next_z_index}
-                self.next_z_index += 1
+                # Bind z_index permanently to the entity's first appearance
+                if eid not in self.entity_z_indices:
+                    self.entity_z_indices[eid] = self.next_z_index
+                    self.next_z_index += 1
+                
+                entity = {
+                    'id': eid, 
+                    'type': etype, 
+                    'pos': pos, 
+                    'z_index': self.entity_z_indices[eid]
+                }
                 self.active_entities[eid] = entity
                 self.cells[pos].append(entity)
                 self._resort_cell(pos)
@@ -61,6 +70,7 @@ class LineState:
         new_state = LineState(self.size)
         new_state.cells = copy.deepcopy(self.cells)
         new_state.active_entities = copy.deepcopy(self.active_entities)
+        new_state.entity_z_indices = copy.deepcopy(self.entity_z_indices)
         new_state.next_z_index = self.next_z_index
         return new_state
 
@@ -69,8 +79,6 @@ class LineEditor:
         self.size = size
         self.history: list[Action] = []
         self.rules: list[Callable[[LineState], None]] = []
-        # We track entity IDs created so "Remove then Add" targets the EXACT same historical entity
-        self._entity_registry: dict[str, str] = {} 
 
     def add_rule(self, rule_func: Callable[[LineState], None]):
         self.rules.append(rule_func)
@@ -88,7 +96,6 @@ class LineEditor:
                 action.is_active = not action.is_active
                 break
 
-    # Helper UI Methods mapping to the generic do_edit
     def add(self, element_type: str, position: int, element_id: str | None = None) -> tuple[str, str]:
         if not element_id:
             element_id = str(uuid.uuid4())

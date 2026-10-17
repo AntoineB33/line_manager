@@ -3,13 +3,13 @@ from collections.abc import Callable
 from typing import Any, cast
 
 # Import the core event structures from your existing script
-import line_manager
+import reverse_logic
 
 # ==========================================
 # EXTENDING REVERSE LOGIC FOR CONTINUOUS TRACK
 # ==========================================
 
-class TrackAddEvent(line_manager.AddEvent):
+class TrackAddEvent(reverse_logic.AddEvent):
     """
     Extends reverse_logic.AddEvent to handle float positions for the continuous 
     track and track which generated text created it.
@@ -73,7 +73,7 @@ class TrackState:
 class TrackManager:
     def __init__(self):
         # Storing reverse_logic.Event instances
-        self.events: list[line_manager.Event] = []
+        self.events: list[reverse_logic.Event] = []
         self.chip = Chip()
         self.current_text_id: str | None = None
         self.active_rules_generator: Callable[[TrackState, Chip, Callable], None] | None = None
@@ -85,7 +85,7 @@ class TrackManager:
 
     def _remove_event(self, element_id: str):
         # Directly using RemoveEvent from reverse_logic
-        self.events.append(line_manager.RemoveEvent(element_id))
+        self.events.append(reverse_logic.RemoveEvent(element_id))
 
     def compute_state(self) -> TrackState:
         """
@@ -94,7 +94,7 @@ class TrackManager:
         base_state = TrackState()
         
         # Identify removed elements using reverse_logic.RemoveEvent
-        removed_ids = {event.element_id for event in self.events if isinstance(event, line_manager.RemoveEvent)}
+        removed_ids = {event.element_id for event in self.events if isinstance(event, reverse_logic.RemoveEvent)}
 
         for event in self.events:
             # Skip history for discarded elements (Reverse Logic constraint)

@@ -318,9 +318,10 @@ class Solver:
                 continue
             for ri, j in self.producers[k]:
                 r = self.rules[ri]
-                if j is None:
+                if isinstance(r, Implies):
                     x = s[k].shift(-r.head[1]) & anchors(r, c)
                 else:
+                    assert isinstance(r, ImpliesAny) and j is not None
                     chosen = acc.choice[ri][j] if ri in acc.choice else EMPTY
                     chosen |= chi[ri][0][j] - acc.anchor.get(ri, EMPTY)
                     x = s[k].shift(-r.options[j][1]) & anchors(r, c) & chosen
@@ -353,7 +354,9 @@ class Solver:
         acc.base, acc.neg, acc.plus = base, nb, c
         for ri, new in new_anchor.items():
             if ri not in acc.choice:
-                acc.choice[ri] = [EMPTY] * len(self.rules[ri].options)
+                r = self.rules[ri]
+                assert isinstance(r, ImpliesAny)  # only ImpliesAny rules have anchors
+                acc.choice[ri] = [EMPTY] * len(r.options)
             for j in range(len(acc.choice[ri])):
                 acc.choice[ri][j] |= new & chi[ri][0][j]
             acc.anchor[ri] = acc.anchor.get(ri, EMPTY) | new
@@ -390,7 +393,7 @@ class LineSystem:
         levels = reduce_history(edits)
         return Solver(self.ruleset, kinds).solve(levels), levels
 
-    def _active(self, exclude: set[int] = frozenset(), before: int | None = None) -> list[_Edit]:
+    def _active(self, exclude: frozenset[int] = frozenset(), before: int | None = None) -> list[_Edit]:
         return [e for e in self._edits
                 if e.active and e.id not in exclude and (before is None or e.id < before)]
 

@@ -7,9 +7,9 @@ import random
 import unittest
 from fractions import Fraction
 
-from reverse_logic import (EMPTY, Add, ContradictionError, DependencyError, LineSystem,
-                           MissingElementError, Move, Region, Remove, RuleCycleError, forbids,
-                           implies, implies_any, inverse)
+from reverse_logic import (EMPTY, Add, ContradictionError, DependencyError, Extend, LineSystem,
+                           MissingElementError, Move, Region, Remove, Retract, RuleCycleError,
+                           forbids, implies, implies_any, inverse)
 from rules import Forbids, Implies
 
 SEEDS = int(os.environ.get("REVLOGIC_SEEDS", "60"))
@@ -68,15 +68,18 @@ class RuleTests(unittest.TestCase):
             LineSystem([implies("A", ("B", 1)), implies("B", ("A", 1))])
         LineSystem([forbids("A", "B"), forbids("B", "A")])  # symmetric clause, no production cycle
 
-    def test_requirements_example(self):
+    def test_requirements_example_1(self):
         line = LineSystem([forbids("D", "C")])
         r67 = Region.closed(6, 7)
-        line.apply([Add("D", r67), Add("A", Region.closed(1, 2)), Add("B", Region.point(4))])
+        line.apply([Add("A", Region.closed(1, 2)), Add("B", Region.closed(1, 4)), Add("D", r67)])
         initial = line.state()
-        a = line.apply([Move.to("A", Region.closed(1, 2), 3), Move.to("B", Region.point(4), 5), Add("C", r67)])
+        a = line.apply([Move.to("A", Region.interval(1, 2, True, False), 3),
+                        Move.to("B", Region.point(4), 5), Add("C", r67)])
         after_a = line.state()
         self.assertEqual(after_a["C"], r67)
         self.assertNotIn("D", after_a)
+        self.assertEqual(after_a["B"] & Region.closed(1, 4), Region.interval(1, 4, True, False))
+        self.assertEqual(after_a["A"] & Region.closed(1, 2), Region.point(2))
         b = line.apply([Add("D", r67)])
         self.assertEqual(line.state()["D"], r67)
         self.assertNotIn("C", line.state())
@@ -87,6 +90,100 @@ class RuleTests(unittest.TestCase):
         with self.assertRaises(ContradictionError):
             line.apply([Add("C", Region.point(8)), Add("D", Region.point(8))])
         self.assertEqual(line.state(), initial)
+
+    def drag_states(self, rules, start, block, steps):
+        line = LineSystem(rules)
+        line.apply([Add(*start)])
+        line.apply([Add(*block)])
+        drag = line.drag([block])
+        states = []
+        for d in steps:
+            drag.step(d)
+            states.append(line.state())
+        drag.drop()
+        return line, states
+
+    def test_requirements_example_2(self):
+        steps = [F(i, 8) for i in range(25)]
+        line, states = self.drag_states([forbids("A", "B")], ("A", Region.closed(0, 2)),
+                                        ("B", Region.closed(0, 1)), steps)
+        for d, st in zip(steps, states):  # A is cut by B, and comes back behind it
+            b = Region.closed(d, 1 + d)
+            self.assertEqual(st, {"A": Region.closed(0, 2) - b, "B": b})
+        self.assertEqual(line.state(), {"A": Region.closed(0, 2), "B": Region.closed(3, 4)})
+
+    def test_requirements_example_3(self):
+        steps = [F(i, 8) for i in range(25)]
+        line, states = self.drag_states([forbids("D", "C")], ("D", Region.point(2)),
+                                        ("C", Region.closed(0, 1)), steps)
+        for d, st in zip(steps, states):  # D is gone exactly while C covers it
+            self.assertEqual("D" in st, not (d <= 2 <= 1 + d))
+        direct = LineSystem([forbids("D", "C")])
+        direct.apply([Add("D", Region.point(2))])
+        direct.apply([Add("C", Region.closed(3, 4))])
+        self.assertEqual(line.state(), direct.state())
+
+    def test_drag_back_to_start_restores_the_line(self):
+        line = LineSystem([forbids("D", "C")])
+        line.apply([Add("D", Region.point(2))])
+        line.apply([Add("C", Region.closed(0, 1))])
+        before = line.state()
+        drag = line.drag([("C", Region.closed(0, 1))])
+        for d in (1, 2, F(3, 2), 0):
+            drag.step(d)
+        self.assertIsNone(drag.drop())
+        self.assertEqual(line.state(), before)
+
+    def test_drag_onto_same_kind_is_refused(self):
+        line = LineSystem()
+        line.apply([Add("C", Region.closed(0, 1)), Add("C", Region.closed(5, 6))])
+        drag = line.drag([("C", Region.closed(0, 1))])
+        drag.step(2)
+        with self.assertRaises(MissingElementError):
+            drag.step(4)  # [4, 5] meets C on [5, 6]
+        self.assertEqual(line.state()["C"], Region.closed(2, 3) | Region.closed(5, 6))
+
+    def test_extend_and_retract(self):
+        line = LineSystem()
+        line.apply([Add("A", Region.closed(0, 1))])
+        before = line.state()
+        grow = [Extend("A", Region.interval(1, 2, False, True))]
+        line.apply(grow)
+        self.assertEqual(line.state(), {"A": Region.closed(0, 2)})
+        line.apply(inverse(grow))
+        self.assertEqual(line.state(), before)
+        with self.assertRaises(MissingElementError):
+            line.apply([Extend("A", Region.closed(3, 4))])  # touches nothing
+        with self.assertRaises(MissingElementError):
+            line.apply([Retract("A", Region.closed(0, 1))])  # nothing would remain
+        with self.assertRaises(MissingElementError):
+            line.apply([Retract("A", Region.closed(1, 2))])  # partly absent
+
+    def test_putting_where_the_kind_is_already_present_is_refused(self):
+        line = LineSystem([implies("A", "B")])
+        line.apply([Add("A", Region.closed(0, 1)), Add("C", Region.closed(5, 6))])
+        for ops in ([Add("A", Region.closed(1, 2))],
+                    [Add("B", Region.point(0))],  # B is there by the rule
+                    [Move("A", Region.closed(0, 1), F(1, 2)), Add("A", Region.closed(1, 2))]):
+            with self.assertRaises((MissingElementError, ContradictionError)):
+                line.apply(ops)
+        line.apply([Move("C", Region.closed(5, 6), F(1, 2))])  # onto its own place: allowed
+
+    def test_removing_what_a_rule_needs_makes_the_premise_adapt(self):
+        line = LineSystem([implies("A", "B")])
+        line.apply([Add("A", Region.closed(0, 2))])
+        line.apply([Remove("B", Region.point(1))])
+        self.assertEqual(line.state(), {"A": Region.closed(0, 2) - Region.point(1),
+                                        "B": Region.closed(0, 2) - Region.point(1)})
+
+    def test_reverse_all_takes_the_dependent_edits(self):
+        line = LineSystem()
+        a = line.apply([Add("E", Region.point(0))])
+        b = line.apply([Move("E", Region.point(0), 5)])
+        c = line.apply([Add("G", Region.point(9))])
+        self.assertEqual(line.reverse_all([a]), [a, b])
+        self.assertEqual(line.state(), {"G": Region.point(9)})
+        self.assertTrue(line._edits[c].active)
 
     def test_implication_adds_and_contrapositive_adapts(self):
         line = LineSystem([implies("A", "B")])
@@ -194,19 +291,27 @@ def rand_rules(rng: random.Random):
 
 
 def rand_edit(rng: random.Random, state):
-    """Adds anywhere; removes and moves only take what is on the line."""
+    """Mostly edits that fit the line: adds where the kind is absent, removes
+    and moves of what is there, extensions and retractions at an end."""
     ops = []
     for _ in range(rng.randint(1, 3)):
         k, reg = rng.choice(KINDS), rand_region(rng)
         t = rng.random()
-        if t >= 0.5 and state:
+        if t >= 0.4 and state:
             k = rng.choice(sorted(state))
-            reg = rand_region(rng) & state[k] if rng.random() < 0.7 else state[k]
-        if t < 0.5 or not reg:
-            ops.append(Add(k, reg or rand_region(rng)))
+            have = state[k]
+            lo, lc, hi, hc = rng.choice(have.parts)
+            d = F(rng.randint(1, 4), 2)
+            if t >= 0.85:
+                ops.append(Extend(k, Region.interval(hi, hi + d, not hc, True) - have) if rng.random() < 0.5
+                           else Retract(k, Region.interval(max(lo, hi - d), hi, False, hc) if lo < hi else have))
+                continue
+            reg = rand_region(rng) & have if rng.random() < 0.7 else have
+        if t < 0.4 or not reg:
+            ops.append(Add(k, (reg or rand_region(rng)) - state.get(k, EMPTY) or rand_region(rng)))
         else:
-            ops.append(Remove(k, reg) if t < 0.75 else Move(k, reg, F(rng.randint(-4, 4), 2)))
-    return ops
+            ops.append(Remove(k, reg) if t < 0.6 else Move(k, reg, F(rng.randint(-4, 4), 2)))
+    return [op for op in ops if op.region]
 
 
 def try_apply(line: LineSystem, ops):
@@ -277,7 +382,32 @@ class PropertyTests(unittest.TestCase):
                     ids.append(eid)
                     self.check_invariants(line, eid)
 
-                    # R1/R2/R3: an edit followed by its inverse restores the line
+                    # A drag step is the line of a direct move, whatever the previous steps
+                    if line.state() and rng.random() < 0.3:
+                        k = rng.choice(sorted(line.state()))
+                        block = [(k, line.state()[k])]
+                        undragged = line.state()
+                        drag = line.drag(block)
+                        for _ in range(3):
+                            d = F(rng.randint(-6, 6), 2)
+                            direct = None
+                            try:
+                                direct = line._validate([e.ops for e in line._active()], line._base,
+                                                        [Move(k, block[0][1], d)] if d else []).state
+                            except (ContradictionError, MissingElementError):
+                                pass
+                            shown = line.state()
+                            try:
+                                drag.step(d)
+                            except (ContradictionError, MissingElementError):
+                                self.assertIsNone(direct)
+                                self.assertEqual(line.state(), shown)
+                                continue
+                            self.assertEqual(line.state(), direct)
+                        drag.cancel()
+                        self.assertEqual(line.state(), undragged)
+
+                    # R1/R2/R3 and extend/retract: an edit followed by its inverse restores the line
                     if rng.random() < 0.5:
                         inv = line.apply(inverse(ops))  # must never be rejected
                         self.assertEqual(line.state(), before)

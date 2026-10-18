@@ -1,9 +1,8 @@
-"""The chip: exact position, mode, and the minimum gap between mode transitions."""
+"""The chip: exact position, and the mode transitions decided by the texts."""
 from __future__ import annotations
 
 import sys
 from collections.abc import Hashable, Iterable
-from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 
@@ -17,49 +16,54 @@ Mode = Hashable
 Number = Fraction | int | float | str  # anything region.num accepts
 
 
-@dataclass(frozen=True)
-class ChipState:
-    position: Fraction
-    mode: Mode
-    last_transition: Fraction | None  # position of the latest mode transition
-
-
 class Chip:
-    def __init__(self, modes: Iterable[Mode], initial_mode: Mode,
-                 initial_position: Number = 0, min_transition_gap: Number = 1):
+    """Position and modes.  The mode at q is the mode of the last transition at
+    or before q (the new mode applies from the transition position on), or the
+    initial mode if there is none.  Transitions form a finite list, so every
+    bounded stretch of the line contains finitely many of them."""
+
+    def __init__(self, modes: Iterable[Mode], initial_mode: Mode, initial_position: Number = 0):
         self.modes = frozenset(modes)
         if not self.modes:
             raise ValueError("there must be at least one mode")
         if initial_mode not in self.modes:
             raise ValueError(f"unknown mode {initial_mode!r}")
-        self.min_transition_gap = num(min_transition_gap)
-        if self.min_transition_gap <= 0:
-            raise ValueError("min_transition_gap must be strictly positive")
-        # The initial mode is not a transition.
-        self.state = ChipState(num(initial_position), initial_mode, None)
+        self.initial_mode = initial_mode
+        self.position = num(initial_position)
+        self.transitions: list[tuple[Fraction, Mode]] = []  # strictly increasing positions
 
-    @property
-    def position(self) -> Fraction:
-        return self.state.position
+    def mode_at(self, q: Number) -> Mode:
+        q = num(q)
+        mode = self.initial_mode
+        for pos, m in self.transitions:
+            if pos > q:
+                break
+            mode = m
+        return mode
 
     @property
     def mode(self) -> Mode:
-        return self.state.mode
+        return self.mode_at(self.position)
 
-    def next_state(self, new_position: Number, new_mode: Mode | None = None) -> ChipState:
-        """The state after advancing to `new_position`, then switching to
-        `new_mode` there.  The chip itself is not changed."""
-        s = self.state
+    def advance(self, new_position: Number) -> None:
         p = num(new_position)
-        if p < s.position:
-            raise ValueError(f"the chip only advances: {p} < {s.position}")
-        mode = s.mode if new_mode is None else new_mode
-        if mode not in self.modes:
-            raise ValueError(f"unknown mode {mode!r}")
-        if mode == s.mode:
-            return ChipState(p, mode, s.last_transition)
-        if s.last_transition is not None and p - s.last_transition < self.min_transition_gap:
-            raise ValueError(
-                f"mode transition at {p} is only {p - s.last_transition} after the previous one "
-                f"at {s.last_transition}; the minimum gap is {self.min_transition_gap}")
-        return ChipState(p, mode, p)
+        if p < self.position:
+            raise ValueError(f"the chip never moves to the left: {p} < {self.position}")
+        self.position = p
+
+    def schedule(self, transitions: Iterable[tuple[Number, Mode]]) -> None:
+        """Replace the transitions to the right of the chip by `transitions`.
+
+        Those at or before the chip already happened and are kept.  New ones
+        must be strictly to the right of the chip, in increasing order, with
+        known modes."""
+        new = [(num(p), m) for p, m in transitions]
+        last = self.position
+        for p, m in new:
+            if p <= last:
+                raise ValueError(f"mode transitions must be to the right of the chip ({self.position}) "
+                                 f"and in increasing order, got {p} after {last}")
+            if m not in self.modes:
+                raise ValueError(f"unknown mode {m!r}")
+            last = p
+        self.transitions = [t for t in self.transitions if t[0] <= self.position] + new

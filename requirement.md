@@ -1,6 +1,6 @@
 There is an infinite line from left to right.
-There is a 0-dimensional chip on the line that moves to the right, with a mathematically continuous movement.
-There can be different kinds of elements. Each kind of element is present in a set of intervals or points of elements.
+There is a 0-dimensional chip on the line that moves to the right, with a mathematically continuous movement. It can stop, but it never moves to the left.
+There can be different kinds of elements. Each kind of element is present in a set of intervals or points of elements. Only the positions where a kind is present are recorded: two intervals of the same kind that touch, such as [0; 1[ and [1; 2], form one element [0; 2].
 There can also be rules for each kind of element.
 Examples:
 - when there is element A, there must be element B

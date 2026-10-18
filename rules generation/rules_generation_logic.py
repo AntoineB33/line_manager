@@ -5,29 +5,40 @@ import io
 import sys
 from fractions import Fraction
 
-from chip import Chip, ChipState, Mode
+from chip import Chip, Mode
 from track import (
-    PlacedElement,
+    FollowText,
+    Refused,
     Region,
     RulesText,
     Text,
     Track,
     TrackManager,
+    ahead,
     at_or_behind,
     restrict,
 )
+from reverse_logic import Add, Extend, Move, Remove, Retract, implies, forbids  # noqa: E402
 
 __all__ = [
+    "Add",
     "Chip",
-    "ChipState",
+    "Extend",
+    "FollowText",
     "Mode",
-    "PlacedElement",
+    "Move",
+    "Refused",
     "Region",
+    "Remove",
+    "Retract",
     "RulesText",
     "Text",
     "Track",
     "TrackManager",
+    "ahead",
     "at_or_behind",
+    "forbids",
+    "implies",
     "restrict",
 ]
 
@@ -36,17 +47,14 @@ __all__ = [
 # MOCK GENERATIONS & PROOF
 # ==========================================
 
-def generated_text_alpha(track: Track, position: Fraction, mode: Mode):
-    # Keep three A points ahead of the chip, 5 apart, starting 2 ahead.
-    ahead = track.get("A", Region()) - at_or_behind(position)
-    if not ahead:
-        for i in range(3):
-            yield "A", Region.point(position + 2 + 5 * i)
+def alpha_rules(position: Fraction, mode: Mode):
+    # Put an A point 2 ahead of the chip.
+    yield Add("A", Region.point(position + 2))
 
 
-def generated_text_beta(track: Track, position: Fraction, mode: Mode):
-    # In mode 2, keep an X interval of length 1 starting 1 ahead.
-    if mode == 2 and not (track.get("X", Region()) - at_or_behind(position)):
+def beta_follow(position: Fraction, mode: Mode):
+    # In mode 2, an X interval of length 1 that follows the chip, 1 ahead.
+    if mode == 2:
         yield "X", Region.closed(position + 1, position + 2)
 
 
@@ -54,23 +62,22 @@ if __name__ == "__main__":
     if isinstance(sys.stdout, io.TextIOWrapper):
         sys.stdout.reconfigure(encoding="utf-8")  # Region reprs use "∪"
 
-    manager = TrackManager(modes=(1, 2), initial_mode=1, min_transition_gap=1)
+    manager = TrackManager(modes=(1, 2), initial_mode=1, rules=[implies("A", ("B", 1))])
 
-    print("--- 1. First Rule Text (Alpha) ---")
-    manager.switch_rules_text("Text_Alpha", generated_text_alpha)
+    print("--- 1. First text (Alpha) ---")
+    manager.switch_rules_text(Text("Text_Alpha", rules=alpha_rules))
     manager.print_track()
 
-    print("\n--- 2. Chip advances to 4 ---")
-    manager.update_chip(4)
+    print("\n--- 2. Chip advances to 2.5: the A at 2 is reached, its B at 3 is not ---")
+    manager.update_chip(2.5)
     manager.print_track()
 
-    print("\n--- 3. Machine Switches Text (Beta), then mode 2 at 4.5 ---")
-    manager.switch_rules_text("Text_Beta", generated_text_beta)
-    manager.update_chip(4.5, 2)
+    print("\n--- 3. New text (Beta), mode 2 from 3: Alpha's edits are reversed on the right only ---")
+    manager.switch_rules_text(Text("Text_Beta", follow=beta_follow, transitions=((3, 2),)))
     manager.print_track()
 
-    print("\n--- 4. Mode transition too soon is refused ---")
-    try:
-        manager.update_chip(5, 1)
-    except ValueError as err:
-        print("refused:", err)
+    print("\n--- 4. Chip advances to 3.5, then 5: X follows the chip, and the part of it the chip reached stays ---")
+    manager.update_chip(3.5)
+    manager.print_track()
+    manager.update_chip(5)
+    manager.print_track()

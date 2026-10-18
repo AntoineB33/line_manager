@@ -1,24 +1,37 @@
-"""The track: elements placed by rules texts on a reverse-logic line.  See SEMANTICS.md."""
+"""The track: a reverse-logic line edited by rules texts and by the user.  See SEMANTICS.md."""
 from __future__ import annotations
 
 import copy
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
 from types import MappingProxyType
 
-from chip import Chip, ChipState, Mode, Number
+from chip import Chip, Mode, Number
+from engine import ContradictionError, MissingElementError, put, taken
 from region import INF, num
-from reverse_logic import Add, LineSystem, Region
+from reverse_logic import Add, LineSystem, Region, Remove
 
 Track = Mapping[str, Region]
-# rules(track, chip position, chip mode) -> elements (kind, region) to append
-RulesText = Callable[[Track, Fraction, Mode], Iterable[tuple[str, Region]]]
+Op = object  # an edit operation of reverse logic: Add, Remove, Move, Extend, Retract
+# discrete rules: (chip position, mode) -> edits to apply, each an op or a list of ops
+RulesText = Callable[[Fraction, Mode], Iterable]
+# continuous rules: (chip position, mode) -> elements (kind, region) shown at this position
+FollowText = Callable[[Fraction, Mode], Iterable[tuple[str, Region]]]
+
+
+def _nothing(position, mode):
+    return ()
 
 
 def at_or_behind(position: Number) -> Region:
-    """(-inf, position]: the part of the track the chip has reached."""
+    """(-inf, position]: the left side of the chip, the chip's position included."""
     return Region(((-INF, False, num(position), True),))
+
+
+def ahead(position: Number) -> Region:
+    """(position, +inf): the right side of the chip."""
+    return Region(((num(position), False, INF, False),))
 
 
 def restrict(track: Track, region: Region) -> dict[str, Region]:
@@ -29,30 +42,42 @@ def restrict(track: Track, region: Region) -> dict[str, Region]:
 @dataclass(frozen=True)
 class Text:
     id: str
-    rules: RulesText
+    rules: RulesText = _nothing                      # discrete edits
+    follow: FollowText = _nothing                    # continuous edits
+    transitions: tuple[tuple[Number, Mode], ...] = ()  # mode transitions, right of the chip
 
 
 @dataclass(frozen=True)
-class PlacedElement:
-    edit_id: int
+class Refused:
     text_id: str
-    kind: str
-    region: Region
+    position: Fraction
+    ops: tuple
+    reason: str
 
 
+@dataclass
 class TrackManager:
-    def __init__(self, modes: Iterable[Mode] = (1, 2), initial_mode: Mode = 1,
-                 initial_position: Number = 0, min_transition_gap: Number = 1,
-                 initial_elements: Iterable[tuple[str, Region]] = ()):
-        self.chip = Chip(modes, initial_mode, initial_position, min_transition_gap)
-        self.line = LineSystem()  # no rules between kinds: see SEMANTICS.md
+    modes: Iterable[Mode] = (1, 2)
+    initial_mode: Mode = 1
+    initial_position: Number = 0
+    rules: Iterable = ()
+    initial_elements: Iterable[tuple[str, Region]] = ()
+    chip: Chip = field(init=False)
+    line: LineSystem = field(init=False)
+    text: Text | None = field(init=False, default=None)
+    text_edits: dict[int, str] = field(init=False, default_factory=dict)  # active edit id -> text id
+    user_edits: list[int] = field(init=False, default_factory=list)       # active user edit ids
+    refused: list[Refused] = field(init=False, default_factory=list)      # skipped text edits
+    _follow: list[tuple[str, Region]] = field(init=False, default_factory=list)  # shown continuous edit
+
+    def __post_init__(self):
+        self.chip = Chip(self.modes, self.initial_mode, self.initial_position)
+        self.line = LineSystem(list(self.rules))
         # Elements the track starts with were not placed by a text, so they
-        # are never discarded.
-        initial = [Add(*self._check_element(e)) for e in initial_elements]
+        # are never reversed by a text switch.
+        initial = [Add(*self._element(e)) for e in self.initial_elements]
         if initial:
-            self.line.apply(initial)
-        self.text: Text | None = None
-        self.placed: list[PlacedElement] = []  # active text-placed elements, oldest first
+            self.user_edits.append(self.line.apply(initial))
 
     # ---- queries ----------------------------------------------------------
     @property
@@ -62,22 +87,50 @@ class TrackManager:
     def track(self) -> Track:
         return MappingProxyType(self.line.state())
 
-    def unreached(self) -> list[PlacedElement]:
-        behind = at_or_behind(self.chip.position)
-        return [e for e in self.placed if not (e.region & behind)]
-
     # ---- operations -------------------------------------------------------
-    def update_chip(self, new_position: Number, new_mode: Mode | None = None):
-        """Advance the chip (and possibly switch modes), then apply the active rules."""
-        self._transact(self.chip.next_state(new_position, new_mode), self.text, discard=[])
+    def update_chip(self, new_position: Number) -> None:
+        """Advance the chip, then apply the current text at the new position."""
+        def run(m: TrackManager):
+            before = m.line.state()
+            m._hide_follow()
+            m.chip.advance(new_position)
+            m._commit_swept(before)
+            m._pin_left(before)
+            m._apply_text()
+        self._transact(run)
 
-    def switch_rules_text(self, new_text_id: str, rules: RulesText):
-        """Discard every unreached text-placed element, then apply the new rules."""
-        self._transact(self.chip.state, Text(new_text_id, rules), discard=self.unreached())
+    def switch_rules_text(self, text: Text) -> None:
+        """Reverse every edit of the previous text (and the user edits that
+        require them) without changing the left side of the chip, then apply
+        the new text."""
+        def run(m: TrackManager):
+            before = m.line.state()
+            m._hide_follow()
+            gone = m.line.reverse_all(list(m.text_edits)) if m.text_edits else []
+            for i in gone:
+                m.text_edits.pop(i, None)
+            m.user_edits = [i for i in m.user_edits if i not in gone]
+            m._pin_left(before)
+            m.chip.schedule(text.transitions)
+            m.text = text
+            m._apply_text()
+        self._transact(run)
+
+    def user_edit(self, ops) -> int:
+        """An edit by the user.  Like the texts, it cannot change the left side of the chip."""
+        out = []
+
+        def run(m: TrackManager):
+            m._hide_follow()
+            out.append(m.line.apply(list(ops), keep=at_or_behind(m.chip.position)))
+            m.user_edits.append(out[0])
+            m._show_follow()
+        self._transact(run)
+        return out[0]
 
     # ---- internals --------------------------------------------------------
     @staticmethod
-    def _check_element(element) -> tuple[str, Region]:
+    def _element(element) -> tuple[str, Region]:
         kind, region = element
         if not isinstance(kind, str):
             raise TypeError(f"element kind must be a str, got {kind!r}")
@@ -85,44 +138,94 @@ class TrackManager:
             raise ValueError(f"element {kind!r} needs a non-empty Region, got {region!r}")
         return kind, region
 
-    def _transact(self, state: ChipState, text: Text | None, discard: list[PlacedElement]):
-        """Discard, then evaluate the text's rules at `state` and append their elements.
+    def _transact(self, run: Callable[[TrackManager], None]) -> None:
+        """Run on a copy that replaces this manager only if everything succeeded,
+        so that a failure changes nothing."""
+        work = copy.deepcopy(self)
+        run(work)
+        behind = at_or_behind(work.chip.position)
+        if restrict(self.line.state(), behind) != restrict(work.line.state(), behind):
+            raise AssertionError("the left side of the chip changed")
+        self.__dict__.update(work.__dict__)
 
-        All of it happens on a copy of the line that replaces the real one only
-        once everything succeeded, so a failure changes nothing."""
-        line = copy.deepcopy(self.line)
-        for e in discard:
-            line.reverse(e.edit_id)
-        behind = at_or_behind(state.position)
-        added = []
-        if text is not None:
-            new = []
-            for element in text.rules(MappingProxyType(line.state()), state.position, state.mode):
-                kind, region = self._check_element(element)
-                if region & behind:
-                    raise ValueError(f"element {kind!r} on {region} is not strictly ahead "
-                                     f"of the chip at {state.position}")
-                new.append((kind, region))
-            for kind, region in new:
-                added.append(PlacedElement(line.apply([Add(kind, region)]), text.id, kind, region))
-        if restrict(self.line.state(), behind) != restrict(line.state(), behind):
-            raise AssertionError(f"the track changed behind the chip at {state.position}")
+    def _hide_follow(self) -> None:
+        self.line.clear_pending()
 
-        gone = {e.edit_id for e in discard}
-        self.line = line
-        self.placed = [e for e in self.placed if e.edit_id not in gone] + added
-        self.chip.state = state
-        self.text = text
+    def _show_follow(self) -> None:
+        """Show the continuous edit of the current text at the chip's position."""
+        self._follow = []
+        if self.text is None:
+            return
+        p, mode = self.chip.position, self.chip.mode
+        elements = [self._element(e) for e in self.text.follow(p, mode)]
+        for kind, region in elements:
+            if region & at_or_behind(p):
+                raise ValueError(f"continuous edit of text {self.text.id!r}: {kind!r} on {region} "
+                                 f"is not strictly to the right of the chip at {p}")
+        if not elements:
+            return
+        ops = [Add(k, r) for k, r in elements]
+        try:
+            self.line.set_pending(ops, keep=at_or_behind(p))
+            self._follow = elements
+        except (ContradictionError, MissingElementError) as err:
+            self.refused.append(Refused(self.text.id, p, tuple(ops), str(err)))
 
-    def print_track(self):
+    def _commit_swept(self, before: Track) -> None:
+        """The part of the shown continuous edit that the chip has now reached
+        stays on the line, as an edit of its text."""
+        behind = at_or_behind(self.chip.position)
+        swept = [Add(k, r & behind) for k, r in self._follow if r & behind]
+        self._follow = []
+        if swept and self.text is not None:
+            try:
+                self.text_edits[self.line.apply(swept)] = self.text.id
+            except (ContradictionError, MissingElementError):
+                pass  # _pin_left restores the left side
+
+    def _pin_left(self, before: Track) -> None:
+        """If the left side of the chip differs from `before`, pin it back.
+
+        The pin is an internal edit, newest of all, claiming every element of
+        `before` on the left side present and everything else there absent.
+        The right side adapts to it."""
+        behind = at_or_behind(self.chip.position)
+        now = self.line.state()
+        if restrict(now, behind) == restrict(before, behind):
+            return
+        kinds = sorted(self.line.ruleset.kinds() | set(before) | set(now))
+        ops = []
+        for k in kinds:
+            present = before.get(k, Region()) & behind
+            if present:
+                ops.append(Add(k, present))
+            if behind - present:
+                ops.append(Remove(k, behind - present))
+        self.line.force(ops)
+
+    def _apply_text(self) -> None:
+        """Apply the current text's discrete edits at the chip's position, then
+        show its continuous edit.  Refused edits are skipped and recorded."""
+        if self.text is None:
+            return
+        p, mode = self.chip.position, self.chip.mode
+        for edit in self.text.rules(p, mode):
+            ops = list(edit) if isinstance(edit, (list, tuple)) else [edit]
+            for op in ops:
+                if (taken(op) | put(op)) & at_or_behind(p):
+                    raise ValueError(f"edit of text {self.text.id!r}: {op} is not strictly "
+                                     f"to the right of the chip at {p}")
+            try:
+                self.text_edits[self.line.apply(ops, keep=at_or_behind(p))] = self.text.id
+            except (ContradictionError, MissingElementError) as err:
+                self.refused.append(Refused(self.text.id, p, tuple(ops), str(err)))
+        self._show_follow()
+
+    def print_track(self) -> None:
         p = self.chip.position
         print(f"[Chip at {p} | Mode {self.chip.mode} | Text {self.current_text_id}]")
         track = self.line.state()
         if not track:
             print("  Track is empty.")
-        behind = at_or_behind(p)
         for kind in sorted(track):
             print(f"  {kind}: {track[kind]}")
-        for e in self.placed:
-            status = "reached  " if e.region & behind else "unreached"
-            print(f"    {status} | {e.kind} on {e.region} | placed by {e.text_id}")

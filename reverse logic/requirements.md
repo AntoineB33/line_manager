@@ -1,9 +1,14 @@
 The user can do edits. One edit is a finite set of additions, removals, extensions, retractions and shifts of finite sets of intervals or points of elements.
+An extension adds positions that touch an element of the same kind, so that the element grows. A retraction removes positions from an element of the same kind while leaving the rest of the element touching them, so that the element shrinks.
+Removing, moving or retracting something that is not on the line is refused.
+An edit that puts a kind where that kind is already present (by adding, moving or extending) is refused.
 If the user adds an element, then removes it, the state of the line is the same as before the addition.
 If the user removes an element, then adds it, the state of the line is the same as before the removal.
 If the user moves some elements, then moves them back to their original place, the state of the line is the same as before the move.
+If the user extends an element, then retracts it back, the state of the line is the same as before the extension.
+If the user retracts an element, then extends it back, the state of the line is the same as before the retraction.
 Let's suppose edit A and edit B, where edit B doesn't require edit A (e.g., edit A moves element A onto x, edit B moves element B onto x). If the user do edits A, then do edits B, the user can reverse edits A, and the state of the line is the same as if edits A never happened. If the user then reverses edit B, the state of the line is the same as before edit A.
-When the user adds something or moves something at position x, and that elements in the line prevent it from their rules, then they must adapt to make it possible. If it is contradictory, the edit is not allowed.
+When the user does an edit (adding, removing, moving, extending or retracting something) and elements already in the line prevent it from their rules, then they must adapt to make it possible: the newest edit wins. For example, with the rule "if element A, then element B", removing element B makes element A disappear there. If the edit is contradictory by itself, the edit is not allowed.
 If the user drags a block of element somewhere before coming back to the initial place, the line ends up in its initial state. During a drag, the line is updated at every step of the drag, and after each step it is exactly what it would be if the block had been moved directly to its current position: it doesn't depend on the previous steps, and no update is delayed or skipped (no debounce).
 
 Example 1:
@@ -55,8 +60,8 @@ At the first step where element C is past $x_3$, element D is back at $x_3$: not
 At the end, it is element D at $x_3$ and element C at [$x_4$; $x_5$], the same as if element C had been added directly at [$x_4$; $x_5$].
 
 The rules have restrictions:
-There can't be cycle. For example, this set of rules is not possible:
+There can't be cycle between kinds of elements, whatever the distances in the rules. For example, this set of rules is not possible:
 - if element A, then element B 1 unit on the right
 - if element B, then element A 1 unit on the right
 
-The requirements on reversal imply there should be no ambiguity. For example, if a rule says "if element A then element B or C", and the user adds element A where there is either one of them, then the first operand is used, here element B.
+The result of every edit must be unique: there must be no ambiguity. For example, if a rule says "if element A then element B or C", the first operand that can be placed is used, here element B.

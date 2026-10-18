@@ -1,46 +1,45 @@
 """Tests: python -m unittest test_rules_generation   (RULESGEN_SEEDS=n for more random runs)."""
 from __future__ import annotations
 
-import itertools
 import os
 import random
 import unittest
 from fractions import Fraction
 
-from rules_generation_logic import Region, TrackManager, at_or_behind, restrict
+from rules_generation_logic import (Add, Move, Region, Remove, Text, TrackManager, ahead, at_or_behind,
+                                    forbids, implies, restrict)
+from reverse_logic import LineSystem
 
 SEEDS = int(os.environ.get("RULESGEN_SEEDS", "40"))
 F = Fraction
 
 
-def union(elements) -> dict[str, Region]:
-    out: dict[str, Region] = {}
-    for kind, region in elements:
-        out[kind] = out.get(kind, Region()) | region
-    return out
-
-
-def random_text(seed: int):
-    """Rules that depend on the track, the position and the mode."""
-    def rules(track, position, mode):
-        rng = random.Random(hash((seed, position, mode, tuple(sorted(track)))))
-        for _ in range(rng.randint(0, 3)):
-            a = position + F(rng.randint(0, 12), 2)
-            if rng.random() < 0.4:
-                region = Region.point(a if a > position else a + F(1, 2))
-            else:
-                region = Region.interval(a, a + F(rng.randint(1, 6), 2),
-                                         left_closed=a > position, right_closed=rng.random() < 0.5)
-            yield rng.choice("ABC"), region
+def put_ahead(seed: int):
+    """Discrete rules: random edits to the right of the chip."""
+    def rules(position, mode):
+        rng = random.Random(hash((seed, position, mode)))
+        for _ in range(rng.randint(0, 2)):
+            a = position + F(rng.randint(1, 12), 2)
+            region = Region.point(a) if rng.random() < 0.4 else Region.closed(a, a + F(rng.randint(1, 6), 2))
+            kind = rng.choice("ABC")
+            yield Add(kind, region) if rng.random() < 0.7 else Remove(kind, region)
     return rules
 
 
+def follow_ahead(seed: int):
+    """Continuous rules: an element that follows the chip."""
+    def follow(position, mode):
+        if mode != 1:
+            yield "F", Region.closed(position + F(seed % 3 + 1, 2), position + F(seed % 3 + 3, 2))
+    return follow
+
+
 class ChipTests(unittest.TestCase):
-    def test_chip_only_advances(self):
+    def test_chip_never_moves_left(self):
         m = TrackManager(initial_position=3)
         with self.assertRaises(ValueError):
             m.update_chip(2)
-        m.update_chip(3)
+        m.update_chip(3)  # it can stop
         self.assertEqual(m.chip.position, 3)
 
     def test_unknown_mode_refused(self):
@@ -48,133 +47,165 @@ class ChipTests(unittest.TestCase):
             TrackManager(modes=(1, 2), initial_mode=3)
         m = TrackManager(modes=(1, 2))
         with self.assertRaises(ValueError):
-            m.update_chip(1, 3)
+            m.switch_rules_text(Text("t", transitions=((1, 3),)))
 
-    def test_gap_must_be_strictly_positive(self):
-        for gap in (0, -1):
-            with self.assertRaises(ValueError):
-                TrackManager(min_transition_gap=gap)
+    def test_transitions_are_decided_by_the_text(self):
+        m = TrackManager(modes=("a", "b"), initial_mode="a")
+        m.switch_rules_text(Text("t", transitions=((1, "b"), (F(3, 2), "a"))))
+        self.assertEqual([m.chip.mode_at(q) for q in (0, F(99, 100), 1, F(149, 100), F(3, 2))],
+                         ["a", "a", "b", "b", "a"])  # the new mode applies from the transition on
+        m.update_chip(F(5, 4))
+        # A new text keeps the transitions that happened and replaces the others.
+        m.switch_rules_text(Text("u", transitions=((2, "a"),)))
+        self.assertEqual(m.chip.transitions, [(1, "b"), (2, "a")])
+        for bad in (((F(5, 4), "a"),), ((1, "a"),), ((3, "a"), (2, "b"))):
+            with self.assertRaises(ValueError):  # at or behind the chip, or not increasing
+                m.switch_rules_text(Text("v", transitions=bad))
+        self.assertEqual(m.current_text_id, "u")
 
-    def test_transition_gap(self):
-        m = TrackManager(modes=("a", "b"), initial_mode="a", min_transition_gap=F(1, 2))
-        m.update_chip(0, "b")              # the initial mode is not a transition
-        with self.assertRaises(ValueError):
-            m.update_chip(0, "a")          # distance 0
-        with self.assertRaises(ValueError):
-            m.update_chip(F(49, 100), "a")  # below the minimum gap
-        self.assertEqual((m.chip.position, m.chip.mode), (0, "b"))
-        m.update_chip(F(1, 2), "a")
-        m.update_chip(1, "b")
-
-    def test_exact_positions(self):
-        m = TrackManager(min_transition_gap=0.1)
-        m.update_chip(0.1, 2)
-        m.update_chip(0.2, 1)  # 0.2 - 0.1 is exactly the gap, not 0.09999...
-        self.assertEqual(m.chip.position, F(1, 5))
+    def test_rules_get_position_and_mode(self):
+        seen = []
+        m = TrackManager(modes=(1, 2))
+        m.switch_rules_text(Text("t", rules=lambda p, mode: seen.append((p, mode)) or (), transitions=((1, 2),)))
+        m.update_chip(F(1, 2))
+        m.update_chip(1)
+        self.assertEqual(seen, [(0, 1), (F(1, 2), 1), (1, 2)])
 
 
 class TrackTests(unittest.TestCase):
-    def test_elements_must_be_strictly_ahead(self):
+    def test_edits_must_be_strictly_right_of_the_chip(self):
         for bad in (Region.point(0), Region.closed(0, 1), Region.closed(-2, -1)):
             m = TrackManager()
             with self.assertRaises(ValueError):
-                m.switch_rules_text("t", lambda track, p, mode, bad=bad: [("A", Region.point(5)), ("A", bad)])
+                m.switch_rules_text(Text("t", rules=lambda p, mode, bad=bad: [Add("A", Region.point(5)),
+                                                                              Add("A", bad)]))
             self.assertEqual(dict(m.track()), {})
             self.assertIsNone(m.current_text_id)
         m = TrackManager()
-        m.switch_rules_text("t", lambda track, p, mode: [("A", Region.interval(0, 1, left_closed=False))])
+        m.switch_rules_text(Text("t", rules=lambda p, mode: [Add("A", Region.interval(0, 1, left_closed=False))]))
         self.assertEqual(dict(m.track()), {"A": Region.interval(0, 1, left_closed=False)})
 
-    def test_rules_get_a_read_only_snapshot(self):
-        seen = []
-
-        def rules(track, position, mode):
-            seen.append((dict(track), position, mode))
-            with self.assertRaises(TypeError):
-                track["Z"] = Region.point(9)
-            return []
-
-        m = TrackManager(initial_elements=[("A", Region.point(4))])
-        m.switch_rules_text("t", rules)
-        m.update_chip(1, 2)
-        self.assertEqual(seen, [({"A": Region.point(4)}, 0, 1), ({"A": Region.point(4)}, 1, 2)])
-
-    def test_switch_discards_unreached_and_keeps_reached(self):
-        m = TrackManager(initial_elements=[("I", Region.point(10))])
-        m.switch_rules_text("alpha", lambda t, p, mode: [] if "A" in t else
-                            [("A", Region.point(2)), ("A", Region.closed(3, 6)), ("A", Region.point(8))])
-        m.update_chip(4)
-        m.switch_rules_text("beta", lambda t, p, mode: [])
-        # {2} is passed and [3, 6] is partly reached; {8} is unreached.  The
-        # initial element was not placed by a text.
-        self.assertEqual(dict(m.track()), {"A": Region.point(2) | Region.closed(3, 6),
-                                           "I": Region.point(10)})
-
-    def test_discard_respects_multiplicity(self):
-        # Two texts place A on overlapping regions; discarding the unreached one
-        # leaves the reached one whole.
+    def test_refused_edit_is_skipped(self):
         m = TrackManager()
-        m.switch_rules_text("alpha", lambda t, p, mode: [] if t else [("A", Region.closed(1, 5))])
-        m.update_chip(1)
-        m.switch_rules_text("beta", lambda t, p, mode: [("A", Region.closed(2, 3))])
-        m.switch_rules_text("gamma", lambda t, p, mode: [])
-        self.assertEqual(dict(m.track()), {"A": Region.closed(1, 5)})
+        m.switch_rules_text(Text("t", rules=lambda p, mode: [Remove("A", Region.point(5)),
+                                                            Add("B", Region.point(6))]))
+        self.assertEqual(dict(m.track()), {"B": Region.point(6)})
+        self.assertEqual([r.text_id for r in m.refused], ["t"])
+
+    def test_switch_reverses_right_side_only_and_cuts_at_the_chip(self):
+        m = TrackManager(initial_elements=[("I", Region.point(10))])
+        m.switch_rules_text(Text("alpha", rules=lambda p, mode: [Add("A", Region.point(2)),
+                                                                Add("A", Region.closed(3, 6)),
+                                                                Add("A", Region.point(8))] if p == 0 else []))
+        m.update_chip(4)
+        m.switch_rules_text(Text("beta"))
+        # {2} is passed, [3, 6] is cut at the chip, {8} is gone; the initial element stays.
+        self.assertEqual(dict(m.track()), {"A": Region.point(2) | Region.closed(3, 4), "I": Region.point(10)})
+
+    def test_left_side_keeps_what_it_requires_on_the_right(self):
+        m = TrackManager(rules=[implies("A", ("B", 2))])
+        m.switch_rules_text(Text("alpha", rules=lambda p, mode: [Add("A", Region.point(1))] if p == 0 else []))
+        self.assertEqual(dict(m.track()), {"A": Region.point(1), "B": Region.point(3)})
+        m.update_chip(2)
+        m.switch_rules_text(Text("beta"))
+        self.assertEqual(dict(m.track()), {"A": Region.point(1), "B": Region.point(3)})
+
+    def test_switch_brings_back_what_the_text_had_removed(self):
+        m = TrackManager(initial_elements=[("U", Region.closed(5, 6))])
+        m.switch_rules_text(Text("alpha", rules=lambda p, mode: [Remove("U", Region.closed(5, 6))] if p == 0 else []))
+        self.assertEqual(dict(m.track()), {})
+        m.switch_rules_text(Text("beta"))
+        self.assertEqual(dict(m.track()), {"U": Region.closed(5, 6)})
+
+    def test_user_edits_that_require_the_text_are_reversed_too(self):
+        m = TrackManager()
+        m.switch_rules_text(Text("alpha", rules=lambda p, mode: [Add("A", Region.point(5))] if p == 0 else []))
+        moved = m.user_edit([Move("A", Region.point(5), 2)])  # moves what alpha placed
+        kept = m.user_edit([Add("U", Region.point(9))])
+        m.switch_rules_text(Text("beta"))
+        self.assertEqual(dict(m.track()), {"U": Region.point(9)})
+        self.assertEqual(m.user_edits, [kept])
+        self.assertNotIn(moved, m.user_edits)
+
+    def test_user_cannot_change_the_left_side(self):
+        m = TrackManager(rules=[implies("A", ("B", -3))])
+        m.update_chip(2)
+        with self.assertRaises(ValueError):
+            m.user_edit([Add("A", Region.point(1))])
+        with self.assertRaises(ValueError):
+            m.user_edit([Add("A", Region.point(4))])  # its B would be at 1
+        m.user_edit([Add("A", Region.point(6))])
+
+    def test_continuous_edit_follows_the_chip(self):
+        m = TrackManager()
+        m.switch_rules_text(Text("t", follow=lambda p, mode: [("X", Region.closed(p + 1, p + 2))]))
+        self.assertEqual(dict(m.track()), {"X": Region.closed(1, 2)})
+        m.update_chip(F(1, 2))
+        self.assertEqual(dict(m.track()), {"X": Region.closed(F(3, 2), F(5, 2))})
+        m.update_chip(2)  # the chip reached [3/2, 2] of the X shown at 1/2: it stays
+        self.assertEqual(dict(m.track()), {"X": Region.closed(F(3, 2), 2) | Region.closed(3, 4)})
+        m.switch_rules_text(Text("u"))
+        self.assertEqual(dict(m.track()), {"X": Region.closed(F(3, 2), 2)})
 
     def test_failed_switch_changes_nothing(self):
         m = TrackManager()
-        m.switch_rules_text("alpha", lambda t, p, mode: [("A", Region.point(3))])
+        m.switch_rules_text(Text("alpha", rules=lambda p, mode: [Add("A", Region.point(3))] if p == 0 else []))
 
-        def broken(track, position, mode):
-            yield "B", Region.point(5)
+        def broken(position, mode):
+            yield Add("B", Region.point(5))
             raise RuntimeError("bad text")
 
         with self.assertRaises(RuntimeError):
-            m.switch_rules_text("beta", broken)
+            m.switch_rules_text(Text("beta", rules=broken))
         self.assertEqual(dict(m.track()), {"A": Region.point(3)})
         self.assertEqual(m.current_text_id, "alpha")
-        self.assertEqual([e.region for e in m.unreached()], [Region.point(3)])
 
-    def test_random_runs(self):
+    def test_random_runs_without_rules(self):
         for seed in range(SEEDS):
-            self._random_run(random.Random(seed))
+            with self.subTest(seed=seed):
+                self._random_run(random.Random(seed), [])
 
-    def _random_run(self, rng: random.Random):
-        m = TrackManager(modes=(1, 2, 3), min_transition_gap=1,
-                         initial_elements=[("A", Region.closed(2, 3))])
-        initial = [("A", Region.closed(2, 3))]
+    def test_random_runs_with_rules(self):
+        for seed in range(SEEDS // 2):
+            with self.subTest(seed=seed):
+                self._random_run(random.Random(seed), [implies("A", ("B", 2)), forbids("C", ("A", -1)),
+                                                       implies("F", ("C", -2))])
+
+    def _random_run(self, rng: random.Random, rules):
+        m = TrackManager(modes=(1, 2), rules=rules, initial_elements=[("A", Region.closed(2, 3))])
         frozen: list[tuple[Fraction, dict]] = []  # (position, track on (-inf, position])
-        transitions = []
-        for step in range(25):
-            p0, mode0 = m.chip.position, m.chip.mode
-            track0 = dict(m.track())
-            if rng.random() < 0.3:
-                unreached = m.unreached()
-                m.switch_rules_text(f"t{step}", random_text(rng.randrange(10**6)))
-                # Every unreached element was discarded before the new rules ran.
-                gone = {e.edit_id for e in unreached}
-                self.assertFalse(gone & {e.edit_id for e in m.placed})
-                self.assertTrue(all(e.text_id == f"t{step}" for e in m.unreached()))
-                self.assertEqual((m.chip.position, m.chip.mode), (p0, mode0))
-            else:
-                p = p0 + F(rng.randint(0, 4), 2)
-                mode = rng.choice((1, 2, 3))
+        for step in range(15):
+            p0 = m.chip.position
+            t = rng.random()
+            if t < 0.25:
+                seed = rng.randrange(10**6)
+                text = Text(f"t{step}", rules=put_ahead(seed), follow=follow_ahead(seed),
+                            transitions=((p0 + F(rng.randint(1, 6), 2), rng.choice((1, 2))),))
+                if not rules:
+                    # Once the previous text is reversed, the right side is what
+                    # the remaining user edits make it.
+                    m.switch_rules_text(Text("empty"))
+                    replay = LineSystem()
+                    for i in m.user_edits:
+                        replay.apply(m.line._edits[i].ops)
+                    self.assertEqual(restrict(m.track(), ahead(p0)), restrict(replay.state(), ahead(p0)))
+                m.switch_rules_text(text)
+            elif t < 0.4:
+                a = p0 + F(rng.randint(1, 10), 2)
+                mine = m.track().get("A", Region()) & ahead(p0)
+                # Moving what a text placed makes the user edit require that text's edit.
+                ops = ([Move("A", mine, F(rng.randint(1, 4), 2))] if mine and rng.random() < 0.5
+                       else [Add(rng.choice("ABU"), Region.closed(a, a + 1))])
                 try:
-                    m.update_chip(p, mode)
+                    m.user_edit(ops)
                 except ValueError:
-                    self.assertNotEqual(mode, mode0)
-                    self.assertTrue(transitions and p - transitions[-1] < 1)
-                    self.assertEqual(dict(m.track()), track0)
-                    self.assertEqual((m.chip.position, m.chip.mode), (p0, mode0))
-                    continue
-                if mode != mode0:
-                    transitions.append(p)
-            # The track is exactly the initial elements plus the active placed ones.
-            self.assertEqual(dict(m.track()), union(initial + [(e.kind, e.region) for e in m.placed]))
-            # The past never changes.
+                    pass
+            else:
+                m.update_chip(p0 + F(rng.randint(0, 4), 2))
+            self.assertEqual(m.line.ruleset.violations(m.line.state()), [])
             frozen.append((m.chip.position, restrict(m.track(), at_or_behind(m.chip.position))))
-            for q, past in frozen:
+            for q, past in frozen:  # the left side never changes
                 self.assertEqual(restrict(m.track(), at_or_behind(q)), past)
-        self.assertTrue(all(b - a >= 1 for a, b in itertools.pairwise(transitions)))
 
 
 if __name__ == "__main__":

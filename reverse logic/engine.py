@@ -96,22 +96,56 @@ class Move:
         return Move(self.kind, self.region.shift(self.delta), -self.delta)
 
 
-Op = Add | Remove | Move
+@dataclass(frozen=True)
+class Extend:
+    """Grow elements of `kind`: every part of `region` touches one of them."""
+    kind: str
+    region: Region
+
+    def contributions(self):
+        return [(+1, self.region)]
+
+    def inverse(self):
+        return Retract(self.kind, self.region)
+
+
+@dataclass(frozen=True)
+class Retract:
+    """Shrink elements of `kind`: every part of `region` touches what remains of them."""
+    kind: str
+    region: Region
+
+    def contributions(self):
+        return [(-1, self.region)]
+
+    def inverse(self):
+        return Extend(self.kind, self.region)
+
+
+Op = Add | Remove | Move | Extend | Retract
 
 
 def inverse(ops) -> list[Op]:
-    """The edit that exactly undoes `ops` (Add<->Remove, Move back)."""
+    """The edit that exactly undoes `ops` (Add<->Remove, Extend<->Retract, Move back)."""
     return [op.inverse() for op in ops]
 
 
 def taken(op: Op) -> Region:
     """Where the op takes elements from: they must be on the line."""
-    return EMPTY if isinstance(op, Add) else op.region
+    return op.region if isinstance(op, (Remove, Retract, Move)) else EMPTY
 
 
 def put(op: Op) -> Region:
-    """Where the op puts elements: they must be on the line afterwards."""
-    return op.region if isinstance(op, Add) else op.target if isinstance(op, Move) else EMPTY
+    """Where the op puts elements: they must be on the line afterwards, and only there."""
+    return op.region if isinstance(op, (Add, Extend)) else op.target if isinstance(op, Move) else EMPTY
+
+
+def touches(part: Region, other: Region) -> bool:
+    """`part` (one interval, disjoint from `other`) is adjacent to `other`.
+
+    Both are canonical and disjoint, so their union has fewer parts iff some
+    part of `other` merges with `part`."""
+    return len((part | other).parts) < 1 + len(other.parts)
 
 
 # ============================================================================
@@ -538,13 +572,20 @@ class _Edit:
     id: int
     ops: list[Op]
     active: bool = True
+    internal: bool = False  # made by the system (LineSystem.force): never validated or reversed
+
+
+def _restrict(c: Claims, region: Region) -> Claims:
+    return _nonempty({k: r & region for k, r in c.items()})
 
 
 class LineSystem:
     def __init__(self, rules=()):
         self.ruleset = rules if isinstance(rules, RuleSet) else RuleSet(rules)
         self._edits: list[_Edit] = []
-        self._state: Claims = {}
+        self._base: Claims = {}  # line of the active edits
+        self._pending: list[Op] | None = None
+        self._state: Claims = {}  # line of the active edits and the pending edit
 
     # ---- internals ----------------------------------------------------------
     def _solve(self, edits: list[list[Op]]) -> tuple[Solution, list[tuple[Claims, Claims]]]:
@@ -560,17 +601,17 @@ class LineSystem:
     def _check_ops(ops) -> list[Op]:
         ops = list(ops)
         for op in ops:
-            if not isinstance(op, (Add, Remove, Move)) or not isinstance(op.region, Region):
+            if not isinstance(op, (Add, Remove, Move, Extend, Retract)) or not isinstance(op.region, Region):
                 raise TypeError(f"not an edit operation: {op!r}")
         # Within one edit and kind: no two ops take from the same place, no two
         # put on the same place, and nothing is added where something is taken
         # or removed where something is put.  The condition is symmetric under
         # `inverse`, so the inverse of a valid edit is valid.
         def added(op):
-            return op.region if isinstance(op, Add) else EMPTY
+            return op.region if isinstance(op, (Add, Extend)) else EMPTY
 
         def removed(op):
-            return op.region if isinstance(op, Remove) else EMPTY
+            return op.region if isinstance(op, (Remove, Retract)) else EMPTY
 
         for i, a in enumerate(ops):
             for b in ops[i + 1:]:
@@ -583,17 +624,40 @@ class LineSystem:
                     raise ContradictionError(f"edit uses '{a.kind}' on {clash} in two conflicting ways")
         return ops
 
-    def _validate(self, history: list[list[Op]], state: Claims, ops: list[Op]) -> Solution:
+    @staticmethod
+    def _check_on(state: Claims, ops: list[Op]) -> None:
+        """Raise MissingElementError unless `ops` fit the line `state`: they take
+        only what is there, put nothing where the same kind already is (except
+        where the edit itself takes it away), and every part of an extension or
+        retraction touches the element it grows or shrinks."""
+        verbs = {Remove: "remove", Move: "move", Retract: "retract"}
+        for op in ops:
+            have = _get(state, op.kind)
+            missing = taken(op) - have
+            if missing:
+                raise MissingElementError(f"there is no '{op.kind}' on {missing} to {verbs[type(op)]}")
+            freed = Region.union_of(*(taken(o) for o in ops if o.kind == op.kind))
+            dup = (put(op) & have) - freed
+            if dup:
+                raise MissingElementError(f"'{op.kind}' is already on {dup}")
+            if isinstance(op, (Extend, Retract)):
+                rest = have - op.region
+                for part in op.region.parts:
+                    if not touches(Region((part,)), rest):
+                        raise MissingElementError(
+                            f"{type(op).__name__.lower()} of '{op.kind}' on {Region((part,))} "
+                            f"does not touch {'an element' if isinstance(op, Extend) else 'what remains'}")
+
+    def _validate(self, history: list[list[Op]], state: Claims, ops: list[Op],
+                  keep: Region | None = None) -> Solution:
         """Solution of `history + [ops]`, where `state` is the line of `history`.
 
-        Raises MissingElementError if an op takes an element that is not on
-        the line, and ContradictionError if one of the edit's claims would be
-        dropped or one of the elements it puts would not be on the line."""
-        for op in ops:
-            missing = taken(op) - _get(state, op.kind)
-            if missing:
-                raise MissingElementError(f"there is no '{op.kind}' on {missing} to "
-                                          f"{'remove' if isinstance(op, Remove) else 'move'}")
+        Raises MissingElementError if the edit does not fit the line
+        (`_check_on`), and ContradictionError if one of its claims would be
+        dropped, one of the elements it puts would not be on the line, the edit
+        could not be undone right after (sec. 4 of SEMANTICS.md), or the line
+        on `keep` would change."""
+        self._check_on(state, ops)
         sol, _ = self._solve(history + [ops])
         drop_p, drop_n = sol.dropped[-1]
         if drop_p or drop_n:
@@ -604,43 +668,130 @@ class LineSystem:
             missing = put(op) - _get(sol.state, op.kind)
             if missing:
                 raise ContradictionError(f"edit contradicts the rules: cannot have '{op.kind}' on {missing}")
+        try:
+            self._check_on(sol.state, inverse(ops))
+        except MissingElementError as err:
+            raise ContradictionError(f"edit could not be undone afterwards: {err}") from err
+        if keep is not None and _restrict(state, keep) != _restrict(sol.state, keep):
+            raise ContradictionError(f"edit would change the line on {keep}")
         return sol
 
+    def _no_pending(self):
+        if self._pending is not None:
+            raise RuntimeError("an edit is pending (a drag is in progress): drop or cancel it first")
+
+    def _replay(self, edits: list[_Edit], skip_invalid: bool) -> tuple[Claims, set[int]]:
+        """Line of `edits` applied in order, and the ids of the invalid ones.
+
+        Internal edits are not validated.  An invalid edit is skipped if
+        `skip_invalid`; otherwise DependencyError is raised."""
+        history: list[list[Op]] = []
+        state: Claims = {}
+        invalid: set[int] = set()
+        for e in edits:
+            if e.internal:
+                state = self._solve(history + [e.ops])[0].state
+            else:
+                try:
+                    state = self._validate(history, state, e.ops).state
+                except (ContradictionError, MissingElementError) as err:
+                    if not skip_invalid:
+                        raise DependencyError(f"edit {e.id}: {err}") from err
+                    invalid.add(e.id)
+                    continue
+            history.append(e.ops)
+        return state, invalid
+
+    def _set_base(self, state: Claims):
+        self._base = self._state = state
+
+    def _append(self, ops: list[Op], state: Claims, internal: bool = False) -> int:
+        eid = len(self._edits)
+        self._edits.append(_Edit(eid, ops, internal=internal))
+        self._set_base(state)
+        return eid
+
     # ---- public API ---------------------------------------------------------
-    def apply(self, ops) -> int:
+    def apply(self, ops, keep: Region | None = None) -> int:
         """Apply an edit as the newest one.  Returns its id.
 
-        Raises MissingElementError if it removes or moves something that is not
-        on the line, and ContradictionError if it contradicts the rules by
-        itself; the line is then unchanged."""
+        Raises MissingElementError if it does not fit the line, and
+        ContradictionError if it contradicts the rules by itself or would
+        change the line on `keep`; the line is then unchanged."""
+        self._no_pending()
         ops = self._check_ops(ops)
-        sol = self._validate([e.ops for e in self._active()], self._state, ops)
-        eid = len(self._edits)
-        self._edits.append(_Edit(eid, ops))
-        self._state = sol.state
-        return eid
+        sol = self._validate([e.ops for e in self._active()], self._base, ops, keep)
+        return self._append(ops, sol.state)
+
+    def force(self, ops) -> int:
+        """Apply an edit made by the system, without the checks of `apply`.
+
+        Used to pin part of the line (rules generation).  None of its claims
+        may be dropped: the caller makes them consistent with the rules."""
+        self._no_pending()
+        ops = list(ops)
+        sol, _ = self._solve([e.ops for e in self._active()] + [ops])
+        assert not any(sol.dropped[-1]), "forced edit contradicts the rules"
+        return self._append(ops, sol.state, internal=True)
 
     def reverse(self, edit_id: int) -> None:
         """Undo an edit: the line becomes what it would be had it never been made.
 
         Raises DependencyError, and changes nothing, if a later active edit
         requires it (it would not be valid had this edit never been made)."""
+        self._no_pending()
         e = self._find(edit_id)
-        if not e.active:
-            raise ValueError(f"edit {edit_id} is already reversed")
-        rest = self._active(exclude=frozenset({edit_id}))
-        before = [x for x in rest if x.id < edit_id]
-        history = [x.ops for x in before]
-        state = self._solve(history)[0].state if history else {}
-        for later in (x for x in rest if x.id > edit_id):
-            try:
-                state = self._validate(history, state, later.ops).state
-            except (ContradictionError, MissingElementError) as err:
-                raise DependencyError(f"edit {later.id} requires edit {edit_id} ({err}); "
-                                      f"reverse edit {later.id} first") from err
-            history.append(later.ops)
+        if not e.active or e.internal:
+            raise ValueError(f"edit {edit_id} cannot be reversed")
+        try:
+            state, _ = self._replay(self._active(exclude=frozenset({edit_id})), skip_invalid=False)
+        except DependencyError as err:
+            raise DependencyError(f"a later edit requires edit {edit_id} ({err}); reverse it first") from err
         e.active = False
-        self._state = state
+        self._set_base(state)
+
+    def reverse_all(self, edit_ids) -> list[int]:
+        """Undo the given edits and every later edit that requires one of them.
+
+        Returns the ids of all the reversed edits.  The line becomes what it
+        would be had none of them been made."""
+        self._no_pending()
+        gone = set(edit_ids)
+        for i in gone:
+            e = self._find(i)
+            if not e.active or e.internal:
+                raise ValueError(f"edit {i} cannot be reversed")
+        state, invalid = self._replay(self._active(exclude=frozenset(gone)), skip_invalid=True)
+        gone |= invalid
+        for i in gone:
+            self._edits[i].active = False
+        self._set_base(state)
+        return sorted(gone)
+
+    def set_pending(self, ops, keep: Region | None = None) -> None:
+        """Show `ops` as if applied as the newest edit, without committing it.
+
+        It replaces any previous pending edit and is validated like `apply`
+        on the active edits alone, so the result never depends on the previous
+        pending edit.  If it is not valid, the previous pending edit stays."""
+        ops = self._check_ops(ops)
+        sol = self._validate([e.ops for e in self._active()], self._base, ops, keep)
+        self._pending = ops
+        self._state = sol.state
+
+    def clear_pending(self) -> None:
+        self._pending = None
+        self._state = self._base
+
+    def commit_pending(self) -> int | None:
+        """Make the pending edit a normal edit.  Returns its id (None if no edit is pending)."""
+        ops, self._pending = self._pending, None
+        return None if ops is None else self._append(ops, self._state)
+
+    def drag(self, block) -> Drag:
+        """Start dragging a block: `block` is a list of (kind, region) on the line."""
+        self._no_pending()
+        return Drag(self, list(block))
 
     def state(self) -> dict[str, Region]:
         return dict(self._state)
@@ -650,17 +801,8 @@ class LineSystem:
         edit that itself requires A (those are skipped, oldest first)."""
         b = self._find(b_id)
         self._find(a_id)
-        history: list[list[Op]] = []
-        state: Claims = {}
-        for e in self._active(exclude=frozenset({a_id}), before=b_id) + [b]:
-            try:
-                state = self._validate(history, state, e.ops).state
-            except (ContradictionError, MissingElementError):
-                if e is b:
-                    return True
-                continue
-            history.append(e.ops)
-        return False
+        _, invalid = self._replay(self._active(exclude=frozenset({a_id}), before=b_id) + [b], skip_invalid=True)
+        return b_id in invalid
 
     def effective(self, edit_id: int) -> tuple[Claims, Claims]:
         """Effective (present, absent) claims of an active edit in the current history."""
@@ -672,3 +814,34 @@ class LineSystem:
         if not isinstance(edit_id, int) or not 0 <= edit_id < len(self._edits):
             raise KeyError(f"edit {edit_id} not found")
         return self._edits[edit_id]
+
+
+class Drag:
+    """A block of elements being dragged.
+
+    Every step shows the block moved by `delta` from where it started, as a
+    pending edit computed from the active edits alone: after each step the
+    line is exactly what it would be had the block been moved there directly.
+    A step that is not valid (for example onto an element of the same kind)
+    is refused, and the block stays where the previous step put it."""
+
+    def __init__(self, line: LineSystem, block: list[tuple[str, Region]]):
+        self.line = line
+        self.block = block
+        self.delta = Fraction(0)
+
+    def step(self, delta) -> None:
+        d = num(delta)
+        if d == 0:
+            self.line.clear_pending()
+        else:
+            self.line.set_pending([Move(k, r, d) for k, r in self.block])
+        self.delta = d
+
+    def drop(self) -> int | None:
+        """End the drag.  Returns the id of the move edit (None if back at the start)."""
+        return self.line.commit_pending()
+
+    def cancel(self) -> None:
+        self.line.clear_pending()
+        self.delta = Fraction(0)

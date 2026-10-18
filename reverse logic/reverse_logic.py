@@ -6,9 +6,20 @@ from region import EMPTY, FULL, Region
 from rules import RuleCycleError, RuleSet, forbids, implies, implies_any
 
 __all__ = [
-    "Add", "ContradictionError", "LineSystem", "Move", "Remove", "inverse",
-    "EMPTY", "FULL", "Region",
-    "RuleCycleError", "RuleSet", "forbids", "implies", "implies_any",
+    "EMPTY",
+    "FULL",
+    "Add",
+    "ContradictionError",
+    "LineSystem",
+    "Move",
+    "Region",
+    "Remove",
+    "RuleCycleError",
+    "RuleSet",
+    "forbids",
+    "implies",
+    "implies_any",
+    "inverse",
 ]
 
 

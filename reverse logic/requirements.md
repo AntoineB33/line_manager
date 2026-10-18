@@ -7,7 +7,7 @@ When the user adds something or moves something at position x, and that elements
 The reversing can be done at one time or in a continuous time. If the user drags a block of element somewhere before coming back to the initial place, the line is updated in a mathematically continuous way before ending up in its initial state.
 
 Example 1:
-Suppose the positions $x_1$ < $x_2$ < $x_3$ < $x_4$ < $x_5$ < $x_6$+ < $x_7$ < $x_8$ < $x_9$ < $x_10$.
+Suppose the positions $x_1$ < $x_2$ < $x_3$ < $x_4$ < $x_5$ < $x_6$ < $x_7$ < $x_8$ < $x_9$ < $x_10$.
 Suppose the rules:
 - if element D, then no element C
 Suppose the line:

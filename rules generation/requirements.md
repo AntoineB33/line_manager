@@ -1,4 +1,4 @@
-There are several modes, and only one is applied for one position of the chip on the line. The spatial distance between consecutive mode transitions is strictly positive to prevent infinitely frequent switching.
+There are several modes, and only one is applied for one position of the chip on the line. Every bounded stretch of the line contains finitely many mode transitions.
 
 A generated text provides rules to edit the right of the chip, the same types of edit from the "reverse logic" folder. These rules are parameterized by the chip's current position and its active mode. They can do mathematically continuous or discrete edits to the line.
 

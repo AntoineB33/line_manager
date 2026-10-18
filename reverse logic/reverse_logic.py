@@ -3,8 +3,19 @@ from __future__ import annotations
 
 from fractions import Fraction as F
 
-from engine import (Add, ContradictionError, DependencyError, Drag, Extend, LineSystem, MissingElementError,
-                    Move, Remove, Retract, inverse)
+from engine import (
+    Add,
+    ContradictionError,
+    DependencyError,
+    Drag,
+    Extend,
+    LineSystem,
+    MissingElementError,
+    Move,
+    Remove,
+    Retract,
+    inverse,
+)
 from region import EMPTY, FULL, Region
 from rules import RuleCycleError, RuleSet, forbids, implies, implies_any
 

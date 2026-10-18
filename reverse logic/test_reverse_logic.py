@@ -7,9 +7,24 @@ import random
 import unittest
 from fractions import Fraction
 
-from reverse_logic import (EMPTY, Add, ContradictionError, DependencyError, Extend, LineSystem,
-                           MissingElementError, Move, Region, Remove, Retract, RuleCycleError,
-                           forbids, implies, implies_any, inverse)
+from reverse_logic import (
+    EMPTY,
+    Add,
+    ContradictionError,
+    DependencyError,
+    Extend,
+    LineSystem,
+    MissingElementError,
+    Move,
+    Region,
+    Remove,
+    Retract,
+    RuleCycleError,
+    forbids,
+    implies,
+    implies_any,
+    inverse,
+)
 from rules import Forbids, Implies
 
 SEEDS = int(os.environ.get("REVLOGIC_SEEDS", "60"))
@@ -31,7 +46,7 @@ def rand_region(rng: random.Random, lo=0, hi=8, den=2) -> Region:
 def samples(*regions: Region):
     ends = sorted({e for r in regions for p in r.parts for e in (p[0], p[2])} | {F(0)})
     pts = set(ends)
-    for a, b in zip(ends, ends[1:]):
+    for a, b in itertools.pairwise(ends):
         pts.add((a + b) / 2)
     pts.add(ends[0] - 1)
     pts.add(ends[-1] + 1)
@@ -300,7 +315,7 @@ def rand_edit(rng: random.Random, state):
         if t >= 0.4 and state:
             k = rng.choice(sorted(state))
             have = state[k]
-            lo, lc, hi, hc = rng.choice(have.parts)
+            lo, _, hi, hc = rng.choice(have.parts)
             d = F(rng.randint(1, 4), 2)
             if t >= 0.85:
                 ops.append(Extend(k, Region.interval(hi, hi + d, not hc, True) - have) if rng.random() < 0.5

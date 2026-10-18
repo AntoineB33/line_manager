@@ -6,6 +6,15 @@ import sys
 from fractions import Fraction
 
 from chip import Chip, Mode
+from reverse_logic import (
+    Add,
+    Extend,
+    Move,
+    Remove,
+    Retract,
+    forbids,
+    implies,
+)
 from track import (
     FollowText,
     Refused,
@@ -18,7 +27,6 @@ from track import (
     at_or_behind,
     restrict,
 )
-from reverse_logic import Add, Extend, Move, Remove, Retract, implies, forbids  # noqa: E402
 
 __all__ = [
     "Add",

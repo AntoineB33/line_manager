@@ -10,7 +10,7 @@ from pathlib import Path
 # Every module of this folder imports chip first, directly or through track.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "reverse logic"))
 
-from region import num  # noqa: E402
+from region import num
 
 Mode = Hashable
 Number = Fraction | int | float | str  # anything region.num accepts

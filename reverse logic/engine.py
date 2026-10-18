@@ -75,7 +75,7 @@ class Move:
     """Translate the elements of `kind` on `region` by `delta`."""
     kind: str
     region: Region
-    delta: Fraction
+    delta: Fraction | int | float  # normalised to Fraction in __post_init__
 
     def __post_init__(self):
         object.__setattr__(self, "delta", num(self.delta))
@@ -630,7 +630,7 @@ class LineSystem:
         only what is there, put nothing where the same kind already is (except
         where the edit itself takes it away), and every part of an extension or
         retraction touches the element it grows or shrinks."""
-        verbs = {Remove: "remove", Move: "move", Retract: "retract"}
+        verbs: dict[type, str] = {Remove: "remove", Move: "move", Retract: "retract"}
         for op in ops:
             have = _get(state, op.kind)
             missing = taken(op) - have

@@ -12,9 +12,9 @@ followed by a translation by -d is the identity (it is not with floats).
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Callable, Iterable, Sequence
 
 INF = math.inf
 

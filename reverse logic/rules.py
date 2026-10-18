@@ -115,8 +115,8 @@ class RuleSet:
     @staticmethod
     def _toposort(edges: dict[str, set[str]]) -> list[str]:
         indeg = {k: 0 for k in edges}
-        for k in edges:
-            for h in edges[k]:
+        for heads in edges.values():
+            for h in heads:
                 indeg[h] += 1
         ready = sorted(k for k, d in indeg.items() if d == 0)
         order = []

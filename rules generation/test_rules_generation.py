@@ -6,8 +6,22 @@ import random
 import unittest
 from fractions import Fraction
 
-from rules_generation_logic import (Add, Move, Region, Remove, Text, TrackManager, ahead, at_or_behind,
-                                    forbids, implies, restrict)
+from rules_generation_logic import (
+    Add,
+    Move,
+    Region,
+    Remove,
+    Text,
+    TrackManager,
+    ahead,
+    at_or_behind,
+    forbids,
+    implies,
+    restrict,
+)
+
+# isort: split
+# reverse_logic is only importable once chip (via rules_generation_logic) has extended sys.path.
 from reverse_logic import LineSystem
 
 SEEDS = int(os.environ.get("RULESGEN_SEEDS", "40"))

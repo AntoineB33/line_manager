@@ -38,7 +38,9 @@ are applied. An element is *unreached* iff its whole region lies in
 reached. Each placed element is its own edit of the `LineSystem`, and
 discarding it is `LineSystem.reverse` of that edit. By theorem T4 of
 `reverse logic/SEMANTICS.md`, the track is then exactly as if the element had
-never been placed. Elements the track starts with were not placed by a text,
+never been placed. The reversal is never refused: every edit is an `Add` and
+the line has no rules, so no edit takes anything or can be contradicted, and
+no edit requires another. Elements the track starts with were not placed by a text,
 so they are never discarded.
 
 ## Invariant: the past is immutable

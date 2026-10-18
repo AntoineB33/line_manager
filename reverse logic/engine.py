@@ -21,6 +21,7 @@ edits:
 """
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 from fractions import Fraction
@@ -31,6 +32,14 @@ from rules import Forbids, Implies, ImpliesAny, RuleSet, anchors
 
 class ContradictionError(ValueError):
     """The edit contradicts the rules by itself; it is not applied."""
+
+
+class MissingElementError(ValueError):
+    """The edit removes or moves an element that is not on the line; it is not applied."""
+
+
+class DependencyError(ValueError):
+    """The edit cannot be reversed because a later active edit requires it."""
 
 
 # ============================================================================
@@ -76,6 +85,10 @@ class Move:
         """Move so that the start of `region` lands on `start`."""
         return cls(kind, region, num(start) - region.start)
 
+    @property
+    def target(self) -> Region:
+        return self.region.shift(self.delta)
+
     def contributions(self):
         return [(-1, self.region), (+1, self.region.shift(self.delta))]
 
@@ -89,6 +102,16 @@ Op = Add | Remove | Move
 def inverse(ops) -> list[Op]:
     """The edit that exactly undoes `ops` (Add<->Remove, Move back)."""
     return [op.inverse() for op in ops]
+
+
+def taken(op: Op) -> Region:
+    """Where the op takes elements from: they must be on the line."""
+    return EMPTY if isinstance(op, Add) else op.region
+
+
+def put(op: Op) -> Region:
+    """Where the op puts elements: they must be on the line afterwards."""
+    return op.region if isinstance(op, Add) else op.target if isinstance(op, Move) else EMPTY
 
 
 # ============================================================================
@@ -149,6 +172,19 @@ def _get(d: Claims, k: str) -> Region:
     return d.get(k, EMPTY)
 
 
+def _rule_atoms(r) -> tuple:
+    """Premises, then the head (Implies, Forbids) or the operands (ImpliesAny)."""
+    return r.premises + (r.options if isinstance(r, ImpliesAny) else (r.head,))
+
+
+def _gcd(values) -> Fraction:
+    g = Fraction(0)
+    for v in values:
+        den = math.lcm(g.denominator, v.denominator)
+        g = Fraction(math.gcd(int(g * den), int(v * den)), den)
+    return g
+
+
 def _union(a: Claims, b: Claims) -> Claims:
     out = dict(a)
     for k, r in b.items():
@@ -187,6 +223,11 @@ class Solver:
         self.producers: dict[str, list[tuple[int, int | None]]] = defaultdict(list)
         self.any_rules = []
         self.option_kinds = set()
+        # Every offset is an integer multiple of g, so rules only relate points
+        # of the same lattice r + g*Z (sec. 3 of SEMANTICS.md).
+        offsets = [o for r in self.rules for _, o in _rule_atoms(r)]
+        self.g = _gcd(offsets) or Fraction(1)
+        self.steps = [[(k, int(o / self.g)) for k, o in _rule_atoms(r)] for r in self.rules]
         for ri, r in enumerate(self.rules):
             read = [k for k, _ in r.premises] + ([r.head[0]] if isinstance(r, Forbids) else [])
             self.trig[max(self.idx[k] for k in read)].append(ri)
@@ -287,6 +328,125 @@ class Solver:
             chi_of(ri)
         return chi
 
+    # ---- exact ordered-disjunction choice --------------------------------
+    def exact_choices(self, base: Claims, nb: Claims, acc: _Accepted):
+        """Operands for the new ImpliesAny anchors such that the level has no
+        violation, if such operands exist: the first such assignment, with
+        anchors taken in topological order, then rule order, then left to
+        right, and operands in their written order.
+
+        Rules only relate points of one lattice r + g*Z, and on every cell of
+        residues r below the same finite problem arises, so it is solved once
+        per cell by backtracking.  On cells where no assignment exists, the
+        approximate choice of `choices` is used: the level then has a
+        violation whatever the choice, and its claims adapt."""
+        g = self.g
+        upper, new_anchor = self.close(base, acc, {
+            ri: ([FULL] * len(self.rules[ri].options), EMPTY) for ri in self.any_rules})
+        chosen = {ri: [[] for _ in self.rules[ri].options] for ri in self.any_rules}
+        if not any(new_anchor.values()):
+            return {ri: ([EMPTY] * len(ch), EMPTY) for ri, ch in chosen.items()}
+        parts = [p for r in upper.values() for p in r.parts]
+        lo, hi = min(p[0] for p in parts), max(p[2] for p in parts)
+
+        regions = [*base.values(), *nb.values(), *acc.anchor.values(),
+                   *(r for ch in acc.choice.values() for r in ch)]
+        breaks = sorted({Fraction(0)} | {e % g for r in regions for p in r.parts
+                                          for e in (p[0], p[2]) if not math.isinf(e)})
+        cells = [(b, b) for b in breaks]
+        cells += [(a, b) for a, b in zip(breaks, breaks[1:] + [g])]
+
+        unsat = []
+        for cell in cells:
+            a, b = cell
+            r = a if a == b else (a + b) / 2
+            ks = range(math.floor((lo - r) / g), math.ceil((hi - r) / g) + 1)
+            dec = self._solve_cell(r, ks, base, nb, acc)
+            orbit = [Region.point(a + k * g) if a == b else Region.open(a + k * g, b + k * g) for k in ks]
+            if dec is None:
+                unsat.extend(orbit)
+                continue
+            for (ri, k), j in dec.items():
+                chosen[ri][j].append(orbit[k - ks.start])
+
+        chi = {ri: ([Region.union_of(*c) for c in ch], EMPTY) for ri, ch in chosen.items()}
+        if unsat:
+            mask = Region.union_of(*unsat)
+            b0, _ = self.close(base, acc, None)
+            approx = self.choices(b0, nb)
+            chi = {ri: ([c | (a & mask) for c, a in zip(chi[ri][0], approx[ri][0])], approx[ri][1] & mask)
+                   for ri in chi}
+        return chi
+
+    def _solve_cell(self, r: Fraction, ks: range, base: Claims, nb: Claims, acc: _Accepted):
+        """Backtracking search on the lattice points r + k*g, k in ks.
+
+        Returns {(rule, k): operand} for every new anchor, or None if every
+        assignment has a violation.  Pruning is sound because the rules are
+        monotone: an anchor that is not decided yet derives nothing, and
+        deciding it can only add atoms, so a violation already present stays."""
+        g = self.g
+        pts = {k: r + k * g for k in ks}
+
+        def on(reg: Region) -> set[int]:
+            return {k for k, x in pts.items() if x in reg} if reg else set()
+
+        base_k = {kk: on(_get(base, kk)) for kk in self.order}
+        nb_k = {kk: on(_get(nb, kk)) for kk in self.order}
+        old = {ri: (on(acc.anchor.get(ri, EMPTY)), [on(c) for c in acc.choice.get(ri, [])])
+               for ri in self.any_rules}
+
+        def run(dec):
+            st = {kk: set(v) for kk, v in base_k.items()}
+            pending = None
+            for pos, kk in enumerate(self.order):
+                if st[kk] & nb_k[kk]:
+                    return None, None
+                for ri in self.trig[pos]:
+                    rule, steps = self.rules[ri], self.steps[ri]
+                    n_prem = len(rule.premises)
+                    reads = steps if isinstance(rule, Forbids) else steps[:n_prem]
+                    x = set.intersection(*({k - o for k in st[a]} for a, o in reads))
+                    if isinstance(rule, Forbids):
+                        if x:
+                            return None, None
+                    elif isinstance(rule, Implies):
+                        h, oh = steps[-1]
+                        st[h] |= {k + oh for k in x}
+                    else:
+                        old_a, old_ch = old[ri]
+                        for k in sorted(x):
+                            if k in old_a:
+                                j = next((j for j, c in enumerate(old_ch) if k in c), None)
+                            else:
+                                j = dec.get((ri, k))
+                                if j is None and pending is None:
+                                    pending = (ri, k)
+                            if j is not None:
+                                h, oh = steps[n_prem + j]
+                                st[h].add(k + oh)
+            return st, pending
+
+        dec: dict[tuple[int, int], int] = {}
+        frames: list[list] = []  # [anchor, operand] for every decision, oldest first
+        while True:
+            st, pending = run(dec)
+            if st is not None:
+                if pending is None:
+                    return dec
+                frames.append([pending, 0])
+                dec[pending] = 0
+                continue
+            while frames:
+                anchor, j = frames[-1]
+                if j + 1 < len(self.rules[anchor[0]].options):
+                    frames[-1][1] = dec[anchor] = j + 1
+                    break
+                frames.pop()
+                del dec[anchor]
+            else:
+                return None
+
     # ---- conflicts --------------------------------------------------------
     def violations(self, c: Claims, nb: Claims, new_anchor, chi) -> Claims:
         """Atoms taking part in a violation (absent-claim, Forbids, failed choice)."""
@@ -333,8 +493,7 @@ class Solver:
     def level(self, p: Claims, n: Claims, acc: _Accepted) -> tuple[Claims, Claims]:
         base = _union(acc.base, p)
         nb = _union(acc.neg, n)
-        b0, _ = self.close(base, acc, None)
-        chi = self.choices(b0, nb)
+        chi = self.exact_choices(base, nb, acc)
         c, new_anchor = self.close(base, acc, chi)
 
         seeds = self.violations(c, nb, new_anchor, chi)
@@ -403,58 +562,105 @@ class LineSystem:
         for op in ops:
             if not isinstance(op, (Add, Remove, Move)) or not isinstance(op.region, Region):
                 raise TypeError(f"not an edit operation: {op!r}")
-        added: Claims = {}
-        removed: Claims = {}
-        for op in ops:
-            if isinstance(op, Add):
-                added[op.kind] = _get(added, op.kind) | op.region
-            elif isinstance(op, Remove):
-                removed[op.kind] = _get(removed, op.kind) | op.region
-        for k in added:
-            both = added[k] & _get(removed, k)
-            if both:
-                raise ContradictionError(f"edit both adds and removes '{k}' on {both}")
+        # Within one edit and kind: no two ops take from the same place, no two
+        # put on the same place, and nothing is added where something is taken
+        # or removed where something is put.  The condition is symmetric under
+        # `inverse`, so the inverse of a valid edit is valid.
+        def added(op):
+            return op.region if isinstance(op, Add) else EMPTY
+
+        def removed(op):
+            return op.region if isinstance(op, Remove) else EMPTY
+
+        for i, a in enumerate(ops):
+            for b in ops[i + 1:]:
+                if a.kind != b.kind:
+                    continue
+                clash = ((taken(a) & taken(b)) | (put(a) & put(b))
+                         | (added(a) & taken(b)) | (added(b) & taken(a))
+                         | (removed(a) & put(b)) | (removed(b) & put(a)))
+                if clash:
+                    raise ContradictionError(f"edit uses '{a.kind}' on {clash} in two conflicting ways")
         return ops
 
-    def _accepted_on_top(self, history: list[list[Op]], ops: list[Op]) -> tuple[bool, Solution, tuple]:
+    def _validate(self, history: list[list[Op]], state: Claims, ops: list[Op]) -> Solution:
+        """Solution of `history + [ops]`, where `state` is the line of `history`.
+
+        Raises MissingElementError if an op takes an element that is not on
+        the line, and ContradictionError if one of the edit's claims would be
+        dropped or one of the elements it puts would not be on the line."""
+        for op in ops:
+            missing = taken(op) - _get(state, op.kind)
+            if missing:
+                raise MissingElementError(f"there is no '{op.kind}' on {missing} to "
+                                          f"{'remove' if isinstance(op, Remove) else 'move'}")
         sol, _ = self._solve(history + [ops])
         drop_p, drop_n = sol.dropped[-1]
-        return not (drop_p or drop_n), sol, (drop_p, drop_n)
+        if drop_p or drop_n:
+            parts = [f"'{k}' present on {r}" for k, r in drop_p.items()]
+            parts += [f"'{k}' absent on {r}" for k, r in drop_n.items()]
+            raise ContradictionError("edit contradicts the rules: cannot have " + "; ".join(parts))
+        for op in ops:
+            missing = put(op) - _get(sol.state, op.kind)
+            if missing:
+                raise ContradictionError(f"edit contradicts the rules: cannot have '{op.kind}' on {missing}")
+        return sol
 
     # ---- public API ---------------------------------------------------------
     def apply(self, ops) -> int:
         """Apply an edit as the newest one.  Returns its id.
 
-        Raises ContradictionError if the edit contradicts the rules by itself;
-        the line is then unchanged."""
+        Raises MissingElementError if it removes or moves something that is not
+        on the line, and ContradictionError if it contradicts the rules by
+        itself; the line is then unchanged."""
         ops = self._check_ops(ops)
-        ok, sol, (drop_p, drop_n) = self._accepted_on_top([e.ops for e in self._active()], ops)
-        if not ok:
-            parts = [f"'{k}' present on {r}" for k, r in drop_p.items()]
-            parts += [f"'{k}' absent on {r}" for k, r in drop_n.items()]
-            raise ContradictionError("edit contradicts the rules: cannot have " + "; ".join(parts))
+        sol = self._validate([e.ops for e in self._active()], self._state, ops)
         eid = len(self._edits)
         self._edits.append(_Edit(eid, ops))
         self._state = sol.state
         return eid
 
     def reverse(self, edit_id: int) -> None:
-        """Undo an edit: the line becomes what it would be had it never been made."""
+        """Undo an edit: the line becomes what it would be had it never been made.
+
+        Raises DependencyError, and changes nothing, if a later active edit
+        requires it (it would not be valid had this edit never been made)."""
         e = self._find(edit_id)
         if not e.active:
             raise ValueError(f"edit {edit_id} is already reversed")
+        rest = self._active(exclude=frozenset({edit_id}))
+        before = [x for x in rest if x.id < edit_id]
+        history = [x.ops for x in before]
+        state = self._solve(history)[0].state if history else {}
+        for later in (x for x in rest if x.id > edit_id):
+            try:
+                state = self._validate(history, state, later.ops).state
+            except (ContradictionError, MissingElementError) as err:
+                raise DependencyError(f"edit {later.id} requires edit {edit_id} ({err}); "
+                                      f"reverse edit {later.id} first") from err
+            history.append(later.ops)
         e.active = False
-        self._state = self._solve([x.ops for x in self._active()])[0].state
+        self._state = state
 
     def state(self) -> dict[str, Region]:
         return dict(self._state)
 
     def requires(self, b_id: int, a_id: int) -> bool:
-        """B requires A iff B would have been rejected had A never been made."""
+        """B requires A iff B would not be valid had A never been made, nor any
+        edit that itself requires A (those are skipped, oldest first)."""
         b = self._find(b_id)
         self._find(a_id)
-        history = [e.ops for e in self._edits[:b_id] if e.active and e.id != a_id]
-        return not self._accepted_on_top(history, b.ops)[0]
+        history: list[list[Op]] = []
+        state: Claims = {}
+        for e in self._active(exclude=frozenset({a_id}), before=b_id) + [b]:
+            try:
+                state = self._validate(history, state, e.ops).state
+            except (ContradictionError, MissingElementError):
+                if e is b:
+                    return True
+                continue
+            history.append(e.ops)
+        return False
 
     def effective(self, edit_id: int) -> tuple[Claims, Claims]:
         """Effective (present, absent) claims of an active edit in the current history."""

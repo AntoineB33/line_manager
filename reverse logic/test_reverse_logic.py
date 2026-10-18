@@ -1,13 +1,16 @@
 """Tests: python -m unittest test_reverse_logic   (REVLOGIC_SEEDS=n for more random runs)."""
 from __future__ import annotations
 
+import itertools
 import os
 import random
 import unittest
 from fractions import Fraction
 
-from reverse_logic import (EMPTY, Add, ContradictionError, LineSystem, Move, Region, Remove,
-                           RuleCycleError, forbids, implies, implies_any, inverse)
+from reverse_logic import (EMPTY, Add, ContradictionError, DependencyError, LineSystem,
+                           MissingElementError, Move, Region, Remove, RuleCycleError, forbids,
+                           implies, implies_any, inverse)
+from rules import Forbids, Implies
 
 SEEDS = int(os.environ.get("REVLOGIC_SEEDS", "60"))
 F = Fraction
@@ -89,7 +92,7 @@ class RuleTests(unittest.TestCase):
         line = LineSystem([implies("A", "B")])
         line.apply([Add("A", Region.closed(0, 2))])
         self.assertEqual(line.state()["B"], Region.closed(0, 2))
-        line.apply([Remove("B", Region.closed(1, 3))])
+        line.apply([Remove("B", Region.closed(1, 2))])
         self.assertEqual(line.state(), {"A": Region.interval(0, 1, True, False),
                                         "B": Region.interval(0, 1, True, False)})
 
@@ -109,25 +112,60 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(line.state(), {"A": Region.closed(0, 1), "B": Region.closed(0, 1)})
 
     def test_disjunction_in_one_edit_picks_allowed_operand(self):
-        line = LineSystem([implies_any("A", ["B", "C"])])
-        line.apply([Add("A", Region.point(0)), Remove("B", Region.point(0))])
-        self.assertEqual(line.state(), {"A": Region.point(0), "C": Region.point(0)})
+        line = LineSystem([implies_any("A", ["B", "C"]), forbids("D", "B"), forbids("E", "C")])
+        line.apply([Add("A", Region.point(0)), Add("D", Region.point(0))])
+        self.assertEqual(line.state(), {"A": Region.point(0), "C": Region.point(0), "D": Region.point(0)})
         with self.assertRaises(ContradictionError):
-            line.apply([Add("A", Region.point(5)), Remove("B", Region.point(5)), Remove("C", Region.point(5))])
+            line.apply([Add("A", Region.point(5)), Add("D", Region.point(5)), Add("E", Region.point(5))])
 
     def test_add_and_remove_same_place_in_one_edit_rejected(self):
         line = LineSystem()
+        line.apply([Add("A", Region.closed(0, 3))])
         with self.assertRaises(ContradictionError):
-            line.apply([Add("A", Region.closed(0, 2)), Remove("A", Region.closed(1, 3))])
+            line.apply([Add("A", Region.closed(1, 2)), Remove("A", Region.closed(1, 3))])
+        with self.assertRaises(ContradictionError):
+            line.apply([Remove("A", Region.closed(0, 1)), Move("A", Region.closed(2, 3), -2)])
+
+    def test_removing_or_moving_what_is_not_there_is_refused(self):
+        line = LineSystem([implies("A", "B")])
+        line.apply([Add("A", Region.closed(0, 1))])
+        for ops in ([Remove("C", Region.point(0))],
+                    [Remove("A", Region.closed(0, 2))],  # partly absent
+                    [Move("A", Region.closed(1, 2), 5)]):
+            with self.assertRaises(MissingElementError):
+                line.apply(ops)
+        self.assertEqual(line.state(), {"A": Region.closed(0, 1), "B": Region.closed(0, 1)})
+        line.apply([Remove("B", Region.point(0))])  # derived elements are on the line too
+
+    def test_disjunction_refused_only_if_no_operands_work(self):
+        rules = [implies_any("A", ["B", "C"]), forbids("B", ("B", 1))]
+        line = LineSystem(rules)
+        line.apply([Add("A", Region.points(0, 1))])
+        self.assertEqual(line.state(), {"A": Region.points(0, 1), "B": Region.point(0), "C": Region.point(1)})
+        line = LineSystem(rules)
+        line.apply([Add("A", Region.closed(0, 3))])
+        self.assertEqual(line.state()["B"], Region.interval(0, 1, True, False) | Region.interval(2, 3, True, False))
 
     def test_requires(self):
         line = LineSystem([forbids("F", "E")])
-        line.apply([Add("E", Region.point(0))])
-        a = line.apply([Remove("E", Region.point(0))])
-        b = line.apply([Add("E", Region.point(0)), Add("F", Region.point(0))])
+        a = line.apply([Add("E", Region.point(0))])
+        b = line.apply([Remove("E", Region.point(0))])  # removes what A added
         self.assertTrue(line.requires(b, a))
+        self.assertFalse(line.requires(line.apply([Add("F", Region.point(1))]), a))
         c = line.apply([Add("G", Region.point(9))])
         self.assertFalse(line.requires(c, a))
+
+    def test_reversing_a_required_edit_is_refused(self):
+        line = LineSystem()
+        a = line.apply([Add("E", Region.point(0))])
+        b = line.apply([Move("E", Region.point(0), 5)])
+        self.assertTrue(line.requires(b, a))
+        with self.assertRaises(DependencyError):
+            line.reverse(a)
+        self.assertEqual(line.state(), {"E": Region.point(5)})
+        line.reverse(b)
+        line.reverse(a)
+        self.assertEqual(line.state(), {})
 
 
 # ---------------------------------------------------------------------------
@@ -155,20 +193,60 @@ def rand_rules(rng: random.Random):
     return [r for r in rules if not (hasattr(r, "head") and r.premises == (r.head,))]
 
 
-def rand_edit(rng: random.Random):
+def rand_edit(rng: random.Random, state):
+    """Adds anywhere; removes and moves only take what is on the line."""
     ops = []
     for _ in range(rng.randint(1, 3)):
         k, reg = rng.choice(KINDS), rand_region(rng)
         t = rng.random()
-        ops.append(Add(k, reg) if t < 0.5 else Remove(k, reg) if t < 0.75 else Move(k, reg, F(rng.randint(-4, 4), 2)))
+        if t >= 0.5 and state:
+            k = rng.choice(sorted(state))
+            reg = rand_region(rng) & state[k] if rng.random() < 0.7 else state[k]
+        if t < 0.5 or not reg:
+            ops.append(Add(k, reg or rand_region(rng)))
+        else:
+            ops.append(Remove(k, reg) if t < 0.75 else Move(k, reg, F(rng.randint(-4, 4), 2)))
     return ops
 
 
 def try_apply(line: LineSystem, ops):
     try:
         return line.apply(ops)
-    except ContradictionError:
+    except (ContradictionError, MissingElementError):
         return None
+
+
+def brute_force_consistent(ruleset, adds: dict[str, set[int]]) -> bool:
+    """Is there any choice of operands under which the closure of `adds`
+    breaks no rule?  Plain enumeration over integer points (integer offsets)."""
+    order = ruleset.order(adds)
+    idx = {k: i for i, k in enumerate(order)}
+    xs = range(-20, 30)
+
+    def holds(state, atoms, x):
+        return all((x + int(o)) in state.get(a, set()) for a, o in atoms)
+
+    def run(state, rules):
+        if not rules:
+            return True
+        r, rest = rules[0], rules[1:]
+        if isinstance(r, Forbids):
+            return not any(holds(state, r.premises + (r.head,), x) for x in xs) and run(state, rest)
+        anchors = [x for x in xs if holds(state, r.premises, x)]
+        options = [r.head] if isinstance(r, Implies) else r.options
+        for pick in itertools.product(range(len(options)), repeat=len(anchors)):
+            st = {k: set(v) for k, v in state.items()}
+            for x, j in zip(anchors, pick):
+                k, o = options[j]
+                st.setdefault(k, set()).add(x + int(o))
+            if run(st, rest):
+                return True
+        return False
+
+    # Same firing order as the solver: a rule fires once every kind it reads is final.
+    def fire_at(r):
+        return max(idx[a] for a, _ in r.premises + ((r.head,) if isinstance(r, Forbids) else ()))
+    return run({k: set(v) for k, v in adds.items()}, sorted(ruleset.rules, key=fire_at))
 
 
 class PropertyTests(unittest.TestCase):
@@ -190,7 +268,7 @@ class PropertyTests(unittest.TestCase):
                 line = LineSystem(rules)
                 ids = []
                 for _ in range(rng.randint(3, 6)):
-                    ops = rand_edit(rng)
+                    ops = rand_edit(rng, line.state())
                     before = line.state()
                     eid = try_apply(line, ops)
                     if eid is None:
@@ -206,26 +284,32 @@ class PropertyTests(unittest.TestCase):
                         line.reverse(inv)  # keep the history going from the edit
                         self.check_invariants(line, eid)
 
-                # R4: reversing any edit gives the line as if it had never been made
+                # R4: reversing an edit gives the line as if it had never been made.
+                # It is refused, and changes nothing, iff a later edit requires it.
                 active = list(ids)
                 while active:
                     victim = rng.choice(active)
+                    before = line.state()
+                    try:
+                        line.reverse(victim)
+                    except DependencyError:
+                        self.assertEqual(line.state(), before)
+                        self.assertTrue(any(line.requires(i, victim) for i in active if i > victim))
+                        victim = active[-1]  # the newest edit can always be reversed
+                        line.reverse(victim)
                     active.remove(victim)
-                    line.reverse(victim)
                     self.check_invariants(line, None)
                     replay = LineSystem(rules)
                     replayed = [try_apply(replay, line._edits[i].ops) for i in active]
-                    if all(r is not None for r in replayed):  # no remaining edit required the victim
-                        self.assertEqual(line.state(), replay.state())
-                    else:
-                        self.assertTrue(any(line.requires(i, victim) for i in active))
+                    self.assertTrue(all(r is not None for r in replayed))
+                    self.assertEqual(line.state(), replay.state())
                 self.assertEqual(line.state(), {})
 
     def test_determinism(self):
         for seed in range(SEEDS // 3):
             rng = random.Random(1000 + seed)
             rules = rand_rules(rng)
-            edits = [rand_edit(rng) for _ in range(4)]
+            edits = [rand_edit(rng, {}) for _ in range(4)]
             states = []
             for _ in range(2):
                 line = LineSystem(rules)
@@ -233,6 +317,19 @@ class PropertyTests(unittest.TestCase):
                     try_apply(line, ops)
                 states.append(line.state())
             self.assertEqual(states[0], states[1])
+
+    def test_refused_iff_no_operands_work(self):
+        # An edit is refused only if no choice of operands satisfies the rules.
+        for seed in range(SEEDS * 3):
+            rng = random.Random(5000 + seed)
+            rules = rand_rules(rng)
+            rules.append(implies_any(KINDS[0], [KINDS[1], (KINDS[2], rng.choice([-1, 1]))]))
+            rules.append(forbids(KINDS[rng.randrange(1, 5)], (KINDS[rng.randrange(1, 5)], rng.choice([-1, 0, 1]))))
+            adds = {k: set(rng.sample(range(6), rng.randint(1, 3))) for k in rng.sample(KINDS, 2)}
+            with self.subTest(seed=seed):
+                line = LineSystem(rules)
+                accepted = try_apply(line, [Add(k, Region.points(*xs)) for k, xs in adds.items()]) is not None
+                self.assertEqual(accepted, brute_force_consistent(line.ruleset, adds))
 
 
 if __name__ == "__main__":

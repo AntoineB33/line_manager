@@ -1,7 +1,8 @@
 """Public entry point.  Semantics and proofs: SEMANTICS.md."""
 from __future__ import annotations
 
-from engine import Add, ContradictionError, LineSystem, Move, Remove, inverse
+from engine import (Add, ContradictionError, DependencyError, LineSystem, MissingElementError, Move,
+                    Remove, inverse)
 from region import EMPTY, FULL, Region
 from rules import RuleCycleError, RuleSet, forbids, implies, implies_any
 
@@ -10,7 +11,9 @@ __all__ = [
     "FULL",
     "Add",
     "ContradictionError",
+    "DependencyError",
     "LineSystem",
+    "MissingElementError",
     "Move",
     "Region",
     "Remove",

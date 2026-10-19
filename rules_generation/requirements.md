@@ -16,3 +16,6 @@ if the chip is between $x_7$ and $x_8$ and mode is 2, then the generator runs ag
 ...
 
 There is a performance hyperparameter included in (0, 1). A value of 0 means the generator utilizes infinite time and CPU resources to achieve the absolute optimal score across all scenarios in one single run. A value of 1 means instantaneous generation (0 time) with re-runs every time the optimization score changes. A balanced intermediate value allows the generator reasonable time to produce a text of rules, including sparsely scheduled re-runs across scenarios.
+
+There is a scenario that acts like a tendency, where the actual scenario will probably more or less follow it. For example, element A incites the user to switch to mode 2.
+The generator should take this into account to be efficient.

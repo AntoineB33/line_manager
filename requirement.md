@@ -14,3 +14,4 @@ Examples:
 
 The same element type can't be present several times at the same position on the line.
 
+When the chip passes a point, the point keeps what it had when the chip was at this point. It only changes when the user does edits.

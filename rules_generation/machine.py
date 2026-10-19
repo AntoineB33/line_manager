@@ -99,6 +99,8 @@ class View:
     text_id: str | None
     refused: tuple[Refused, ...]
     time: float
+    transitions: tuple[tuple[Fraction, Mode], ...] = ()  # every mode transition, past and planned
+    text: Text | None = None  # the installed text, for plan; a run is not sent it
 
 
 @dataclass(frozen=True)
@@ -217,7 +219,7 @@ class Machine:
     def _view(self) -> View:
         m = self.manager
         return View(m.chip.position, m.chip.mode, dict(m.track()), m.current_text_id,
-                    tuple(m.refused), self.clock())
+                    tuple(m.refused), self.clock(), tuple(m.chip.transitions), m.text)
 
     def _maybe_start(self) -> None:
         view, resources = self._view(), self.resources
@@ -233,6 +235,7 @@ class Machine:
             self.refused_plans.append((view, budget, "a run needs a positive, finite number of seconds"))
             return
         deadline = Deadline(self.clock(), budget, self.clock)
+        view = replace(view, text=None)  # a text installed directly need not be picklable
         run = Run(len(self.runs), view, deadline)
         try:
             job = self.runner.start(self.optimizer, view, deadline, resources)

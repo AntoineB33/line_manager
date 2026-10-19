@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import sys
+import time
 from fractions import Fraction
 
 from chip import Chip, Mode
@@ -16,6 +17,7 @@ from machine import (
     View,
     usable_cpus,
 )
+from scheduler import ModeScheduler
 from reverse_logic import (
     Add,
     Extend,
@@ -46,6 +48,7 @@ __all__ = [
     "FollowText",
     "Machine",
     "Mode",
+    "ModeScheduler",
     "Move",
     "Optimizer",
     "ProcessRunner",
@@ -107,3 +110,25 @@ if __name__ == "__main__":
     manager.print_track()
     manager.update_chip(5)
     manager.print_track()
+
+    print("\n--- 5. The machine and its optimizer: it decides the modes, in a process of its own ---")
+    optimizer = ModeScheduler({"on": {"D": 1}}, Fraction(1, 2), base={"off": 0, "on": Fraction(-1, 2)})
+    manager = TrackManager(modes=("off", "on"), initial_mode="off",
+                           initial_elements=[("D", Region.closed(2, 6)), ("D", Region.closed(7, 8)),
+                                             ("D", Region.closed(12, Fraction(25, 2)))])
+    machine = Machine(manager, optimizer)
+    while machine.running:
+        machine.poll()
+        time.sleep(0.01)
+    print(f"run: {machine.runs[-1].outcome}, transitions: {manager.chip.transitions}")
+    manager.print_track()
+    for x in (1, 2, 3, 4):
+        machine.update_chip(x)
+    print(f"chip moved 4 times, nothing else changed: still {len(machine.runs)} run")
+    machine.user_edit([Add("D", Region.closed(15, 19))])
+    while machine.running:
+        machine.poll()
+        time.sleep(0.01)
+    print(f"demand added: run {machine.runs[-1].outcome}, transitions: {manager.chip.transitions}")
+    manager.print_track()
+    machine.close()

@@ -14,14 +14,22 @@ from reverse_logic import Add, LineSystem, Region, Remove
 
 Track = Mapping[str, Region]
 Op = object  # an edit operation of reverse logic: Add, Remove, Move, Extend, Retract
-# discrete rules: (chip position, mode) -> edits to apply, each an op or a list of ops
-RulesText = Callable[[Fraction, Mode], Iterable]
-# continuous rules: (chip position, mode) -> elements (kind, region) shown at this position
-FollowText = Callable[[Fraction, Mode], Iterable[tuple[str, Region]]]
+# A text's rules are parameterized by (chip position, mode, state of the line); the
+# state is the line without the text's continuous edit.
+# discrete rules: -> edits to apply, each an op or a list of ops
+RulesText = Callable[[Fraction, Mode, Track], Iterable]
+# continuous rules: -> elements (kind, region) shown at this position
+FollowText = Callable[[Fraction, Mode, Track], Iterable[tuple[str, Region]]]
+# whether the text asks the machine for a new one
+RerunText = Callable[[Fraction, Mode, Track], bool]
 
 
-def _nothing(position, mode):
+def _nothing(position, mode, state):
     return ()
+
+
+def _never(position, mode, state):
+    return False
 
 
 def at_or_behind(position: Number) -> Region:
@@ -44,6 +52,7 @@ class Text:
     id: str
     rules: RulesText = _nothing                      # discrete edits
     follow: FollowText = _nothing                    # continuous edits
+    rerun: RerunText = _never                        # when to generate a new text
     transitions: tuple[tuple[Number, Mode], ...] = ()  # mode transitions, right of the chip
 
 
@@ -68,6 +77,7 @@ class TrackManager:
     text_edits: dict[int, str] = field(init=False, default_factory=dict)  # active edit id -> text id
     user_edits: list[int] = field(init=False, default_factory=list)       # active user edit ids
     refused: list[Refused] = field(init=False, default_factory=list)      # skipped text edits
+    rerun: bool = field(init=False, default=False)  # the text asks for a new one, as of the last operation
     _follow: list[tuple[str, Region]] = field(init=False, default_factory=list)  # shown continuous edit
 
     def __post_init__(self):
@@ -124,6 +134,7 @@ class TrackManager:
             m._hide_follow()
             out.append(m.line.apply(list(ops), keep=at_or_behind(m.chip.position)))
             m.user_edits.append(out[0])
+            m._ask_rerun()
             m._show_follow()
         self._transact(run)
         return out[0]
@@ -157,7 +168,7 @@ class TrackManager:
         if self.text is None:
             return
         p, mode = self.chip.position, self.chip.mode
-        elements = [self._element(e) for e in self.text.follow(p, mode)]
+        elements = [self._element(e) for e in self.text.follow(p, mode, self._state())]
         for kind, region in elements:
             if region & at_or_behind(p):
                 raise ValueError(f"continuous edit of text {self.text.id!r}: {kind!r} on {region} "
@@ -203,13 +214,22 @@ class TrackManager:
                 ops.append(Remove(k, behind - present))
         self.line.force(ops)
 
+    def _state(self) -> Track:
+        """The state of the line given to a text: without its continuous edit, which is hidden then."""
+        return MappingProxyType(self.line.state())
+
+    def _ask_rerun(self) -> None:
+        self.rerun = self.text is not None and bool(
+            self.text.rerun(self.chip.position, self.chip.mode, self._state()))
+
     def _apply_text(self) -> None:
-        """Apply the current text's discrete edits at the chip's position, then
-        show its continuous edit.  Refused edits are skipped and recorded."""
+        """Apply the current text's discrete edits at the chip's position, ask
+        it whether it wants a new text, then show its continuous edit.  Refused
+        edits are skipped and recorded."""
         if self.text is None:
             return
         p, mode = self.chip.position, self.chip.mode
-        for edit in self.text.rules(p, mode):
+        for edit in self.text.rules(p, mode, self._state()):
             ops = list(edit) if isinstance(edit, (list, tuple)) else [edit]
             for op in ops:
                 if (taken(op) | put(op)) & at_or_behind(p):
@@ -219,6 +239,7 @@ class TrackManager:
                 self.text_edits[self.line.apply(ops, keep=at_or_behind(p))] = self.text.id
             except (ContradictionError, MissingElementError) as err:
                 self.refused.append(Refused(self.text.id, p, tuple(ops), str(err)))
+        self._ask_rerun()
         self._show_follow()
 
     def print_track(self) -> None:

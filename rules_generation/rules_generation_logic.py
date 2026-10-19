@@ -76,12 +76,12 @@ __all__ = [
 # MOCK GENERATIONS & PROOF
 # ==========================================
 
-def alpha_rules(position: Fraction, mode: Mode):
+def alpha_rules(position: Fraction, mode: Mode, state: Track):
     # Put an A point 2 ahead of the chip.
     yield Add("A", Region.point(position + 2))
 
 
-def beta_follow(position: Fraction, mode: Mode):
+def beta_follow(position: Fraction, mode: Mode, state: Track):
     # In mode 2, an X interval of length 1 that follows the chip, 1 ahead.
     if mode == 2:
         yield "X", Region.closed(position + 1, position + 2)

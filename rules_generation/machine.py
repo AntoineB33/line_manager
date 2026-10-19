@@ -101,6 +101,7 @@ class View:
     time: float
     transitions: tuple[tuple[Fraction, Mode], ...] = ()  # every mode transition, past and planned
     text: Text | None = None  # the installed text, for plan; a run is not sent it
+    rerun: bool = False  # the installed text asks for a new one
 
 
 @dataclass(frozen=True)
@@ -219,7 +220,7 @@ class Machine:
     def _view(self) -> View:
         m = self.manager
         return View(m.chip.position, m.chip.mode, dict(m.track()), m.current_text_id,
-                    tuple(m.refused), self.clock(), tuple(m.chip.transitions), m.text)
+                    tuple(m.refused), self.clock(), tuple(m.chip.transitions), m.text, m.rerun)
 
     def _maybe_start(self) -> None:
         view, resources = self._view(), self.resources

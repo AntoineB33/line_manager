@@ -24,7 +24,7 @@ from rules_generation_logic import (
     restrict,
     usable_cpus,
 )
-from scheduler import Order, Served, _pool_mapper, solve
+from scheduler import Order, Schedule, _pool_mapper, solve
 from test_rules_generation import FakeClock, ManualRunner
 
 SEEDS = int(os.environ.get("RULESGEN_SEEDS", "40"))
@@ -74,10 +74,15 @@ def start(opt, mgr, cpus=1):
     return Machine(mgr, opt, Resources(cpus), clock=clock, runner=runner), clock, runner
 
 
+def asks(opt: ModeScheduler, view) -> bool:
+    """Whether plan would want a run: no text of its own, or its text asks for one."""
+    return opt._ours(view) is None or view.rerun
+
+
 def realized(test: unittest.TestCase, opt: ModeScheduler, m: Machine, run) -> None:
     """The theorem of the install: from the install to s, the mode of the view; from s on, the schedule."""
     follow = m.manager.text.follow
-    assert isinstance(follow, Served)
+    assert isinstance(follow, Schedule)
     chip, view = m.manager.chip, run.view
     s, end = follow.start, follow.end
     test.assertGreater(s, run.installed_at)
@@ -189,6 +194,8 @@ class ProblemTests(unittest.TestCase):
             ModeScheduler({"a": {"S": 1}}, 0)
         with self.assertRaises(ValueError):
             ModeScheduler({}, 0)
+        with self.assertRaises(ValueError):
+            ModeScheduler({"a": {"D": 1}}, 0, tolerance=-1)
 
 
 class MachineTests(unittest.TestCase):
@@ -243,12 +250,55 @@ class MachineTests(unittest.TestCase):
         m, clock, runner = start(opt, manager(Region.closed(2, 6)))
         runner.finish()
         m.poll()
-        m.user_edit([Add("S", Region.closed(3, 4))])  # inside the text's region: its edit is refused
+        m.user_edit([Add("S", Region.closed(3, 4))])  # the text's edit leaves it out: no new text
+        self.assertEqual(len(m.runs), 1)
+        self.assertEqual(m.manager.track()["S"], Region.interval(2, 6, True, False))
+        m.user_edit([Remove("S", Region.closed(3, 4))])
+        self.assertEqual(m.manager.track()["S"], Region.interval(2, 6, True, False))
+        self.assertEqual(len(m.runs), 1)
+
+    def test_a_tolerance_saves_runs_within_its_bound(self):
+        opt = scheduler(tolerance=3)
+        m, clock, runner = start(opt, manager(Region.closed(2, 10)))
+        runner.finish()
+        m.poll()
+        m.update_chip(3)
+        m.user_edit([Remove("D", Region.open(5, 6))])  # D = 1: at most 2 below the optimum
+        self.assertEqual((len(m.runs), m.manager.text.follow.divergence(F(3), m.manager.track())), (1, 1))
+        self.assertEqual(m.manager.track()["S"], Region.union_of(Region.interval(2, 5, True, True),
+                                                                 Region.interval(6, 10, True, False)))
+        m.user_edit([Add("D", Region.closed(12, 13))])  # D = 2 in all: 4 > 3
         self.assertEqual(len(m.runs), 2)
         runner.finish()
         m.poll()
-        self.assertEqual(m.manager.track()["S"], Region.interval(2, 6, True, False))
-        self.assertEqual(len(m.runs), 2)
+        realized(self, opt, m, m.runs[1])
+
+    def test_the_score_is_within_twice_the_divergence(self):
+        """Theorem 5, on random edits after the install."""
+        for seed in range(SEEDS):
+            rng = random.Random(seed)
+            opt = scheduler(tolerance=10 ** 6, lookahead=30)
+            demand = [Region.closed(x, x + F(rng.randint(1, 6), 2)) for x in range(2, 26, 4)]
+            m, clock, runner = start(opt, manager(*demand))
+            runner.finish()
+            m.poll()
+            for _ in range(4):
+                x = F(rng.randint(2, 56), 2)
+                part = Region.closed(x, x + F(rng.randint(1, 4), 2))
+                track = m.manager.track()
+                op = Remove("D", part & track["D"]) if part & track.get("D", Region()) and rng.random() < 0.5 \
+                    else Add("D", part - track.get("D", Region()))
+                if op.region:
+                    m.user_edit([op])
+            sched, chip = m.manager.text.follow, m.manager.chip
+            p = max(chip.position, sched.start)
+            track = m.manager.track()
+            y = opt.modes.index(chip.mode_at(p))
+            best = solve(opt.gains(track, opt.cuts(track, p, sched.end)), opt.cost, y)[2]
+            here = [(q, opt.modes.index(mode)) for q, mode in chip.transitions if p < q <= sched.end]
+            score = ProblemTests.integrate(opt, track, p, sched.end, y, here)
+            self.assertLessEqual(score, best)
+            self.assertLessEqual(best - score, 2 * sched.divergence(chip.position, track))
 
     def test_the_end_of_the_horizon_starts_a_run(self):
         opt = scheduler(lookahead=10)
@@ -314,7 +364,7 @@ class MachineTests(unittest.TestCase):
         view = m.runs[0].view
         texts = []
         for workers, chunk in ((1, 256), (2, 5)):
-            opt.order = Order(opt.order.start, opt.order.end, workers, chunk, 60.0, opt.order.already)
+            opt.order = Order(opt.order.start, opt.order.end, workers, chunk, 60.0, opt.order.lead)
             texts.append(opt.generate(view, Deadline(time.monotonic(), 60.0, time.monotonic), Resources(workers)))
         self.assertEqual(texts[0].follow.value, texts[1].follow.value)
         self.assertEqual(texts[0].follow.end, texts[1].follow.end)
@@ -350,10 +400,9 @@ class MachineTests(unittest.TestCase):
                 free = Region.closed(x, x + F(rng.randint(1, 4), 2)) - track.get("D", Region()) - track.get("E", Region())
                 m.user_edit([Add(rng.choice("DE"), free)] if free and rng.random() < 0.8 else [])
             else:
-                view = m._view()
-                stale = not m.running and opt.stale(view)
+                wanted = not m.running and asks(opt, m._view())
                 m.update_chip(m.manager.chip.position + F(rng.randint(0, 3), 4))
-                if not stale and not opt.stale(m._view()) and not opt._failures:
+                if not wanted and not asks(opt, m._view()) and not opt._failures:
                     self.assertEqual(len(m.runs), before)  # nothing changed: no new run
             p = m.manager.chip.position
             frozen.append((p, restrict(m.manager.track(), at_or_behind(p))))

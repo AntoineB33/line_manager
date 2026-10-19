@@ -141,22 +141,60 @@ def _pool_mapper(pool) -> Mapper:
 
 # ---- the text it generates --------------------------------------------------
 @dataclass(frozen=True)
-class Served:
-    """The continuous edit of a schedule text: `kind` on `region`, ahead of the chip.
+class Schedule:
+    """The rules of a schedule text: its continuous edit (calling it) and `rerun`.
 
-    The other fields record what the text was computed from, for `plan`."""
-    kind: str
-    region: Region
-    demand: tuple[tuple[str, Region], ...]  # the kinds of the problem, ahead of the chip, when generated
-    already: Region    # `kind` ahead of the chip that the text did not place
+    It holds what the text was computed from, so that it needs nothing else."""
+    kind: str  # the served kind
+    pieces: tuple[tuple[Region, tuple[str, ...]], ...]  # where the chip is planned in a mode, the kinds it serves
+    demand: tuple[tuple[str, Region], ...]  # the kinds of the problem ahead of the chip, when generated
+    rates: tuple[tuple[tuple[str, Fraction], ...], ...]  # per mode: (kind, rate)
     start: Fraction    # s: no transition of this text before it
     end: Fraction      # E: the schedule is optimal over (s, E]
     value: Fraction    # its value over (s, E]
     final: bool        # it is optimal over (s, X] for every X >= E as well
+    tolerance: Fraction
+    lead: Fraction     # how far before E it asks for a new text
 
-    def __call__(self, position: Fraction, mode: Mode):
-        r = self.region & ahead(position)
+    def __call__(self, position: Fraction, mode: Mode, state: Track):
+        """`kind` where the planned mode earns from a kind present now, unless it is there already."""
+        r = Region.union_of(*(where & Region.union_of(*(state.get(K, EMPTY) for K in kinds))
+                              for where, kinds in self.pieces))
+        r = (r & ahead(position)) - state.get(self.kind, EMPTY)
         return [(self.kind, r)] if r else []
+
+    def rerun(self, position: Fraction, mode: Mode, state: Track) -> bool:
+        """Near E (unless final), or once it may be more than `tolerance` below the optimum."""
+        if not self.final and position >= self.end - self.lead:
+            return True
+        return 2 * self.divergence(position, state) > self.tolerance
+
+    def divergence(self, position: Fraction, state: Track) -> Fraction | float:
+        """D: the integral, after the chip (up to E, unless final), of the largest
+        change of a mode's rate since the text was computed."""
+        if self.final:
+            span = ahead(position)
+        elif position < self.end:
+            span = Region.interval(position, self.end, False, True)
+        else:
+            return Fraction(0)
+        then = dict(self.demand)
+        diffs = []  # (kind, where, +1 added or -1 removed)
+        for K in sorted({K for rs in self.rates for K, _ in rs}):
+            now, was = state.get(K, EMPTY) & span, then.get(K, EMPTY) & span
+            diffs += [(K, r, sign) for r, sign in ((now - was, 1), (was - now, -1)) if r]
+        ends = sorted({e for _, r, _ in diffs for p in r.parts for e in (p[0], p[2])})
+        total = Fraction(0)
+        for lo, hi in zip(ends, ends[1:]):
+            mid = lo + 1 if math.isinf(hi) else (lo + hi) / 2
+            here = [(K, sign) for K, r, sign in diffs if mid in r]
+            change = max(abs(sum((sign * rate for K, sign in here for J, rate in rs if J == K), Fraction(0)))
+                         for rs in self.rates)
+            if change:
+                if math.isinf(hi):
+                    return INF
+                total += (hi - lo) * change
+        return total
 
 
 @dataclass(frozen=True)
@@ -167,7 +205,7 @@ class Order:
     workers: int
     chunk: int
     budget: float
-    already: Region  # the served kind ahead of the chip that the installed text did not place
+    lead: Fraction
 
 
 # ---- the optimizer ----------------------------------------------------------
@@ -178,14 +216,17 @@ class ModeScheduler:
     is present.  Every change of mode from a to b costs `switch_cost` (one
     number, or a mapping {(a, b): cost} for every pair of distinct modes); the
     costs must be non-negative and satisfy the triangle inequality.  A text
-    puts `served` wherever its mode earns from a kind present there."""
+    puts `served` wherever its mode earns from a kind present there, and asks
+    for a new one near the end of its horizon, or once the line has changed
+    enough that it may be more than `tolerance` below the optimum: a larger
+    tolerance means fewer runs, a smaller one a better schedule."""
 
     def __init__(self, rates: Mapping[Mode, Mapping[str, Number]],
                  switch_cost: Number | Mapping[tuple[Mode, Mode], Number], *,
                  base: Mapping[Mode, Number] | None = None, served: str = "S",
                  lookahead: Number = 20, max_budget: float = 30.0, min_lead: Number = Fraction(1, 10),
-                 speed: float | None = None, startup: float = 1.0, pool_startup: float = 1.0,
-                 name: str = "schedule"):
+                 tolerance: Number = 0, speed: float | None = None, startup: float = 1.0,
+                 pool_startup: float = 1.0, name: str = "schedule"):
         base = dict(base or {})
         self.modes: tuple[Mode, ...] = tuple(dict.fromkeys([*rates, *base]))
         if not self.modes:
@@ -220,6 +261,9 @@ class ModeScheduler:
         if self.lookahead <= 0 or self.min_lead <= 0 or not max_budget > 0:
             raise ValueError("lookahead, min_lead and max_budget must be positive")
         self.max_budget = float(max_budget)
+        self.tolerance = num(tolerance)
+        if self.tolerance < 0:
+            raise ValueError("the tolerance must be non-negative")
         self.speed = speed            # max-plus operations per second, measured if None
         self.startup = float(startup)  # seconds before a run's process starts working
         self.pool_startup = float(pool_startup)  # seconds to start its worker processes
@@ -250,8 +294,8 @@ class ModeScheduler:
         return [[(hi - lo) * self.rate(m, lambda K: present[K][i]) for m in range(len(self.modes))]
                 for i, (lo, hi) in enumerate(zip(cuts, cuts[1:]))]
 
-    def _served_by(self, m: int, track: Track) -> Region:
-        return Region.union_of(*(track.get(K, EMPTY) for K, r in self.rates[m] if r > 0))
+    def _serves(self, m: int) -> tuple[str, ...]:
+        return tuple(K for K, r in self.rates[m] if r > 0)
 
     # ---- Optimizer.plan -------------------------------------------------
     def plan(self, view: View, resources: Resources) -> float | None:
@@ -264,7 +308,7 @@ class ModeScheduler:
                 self._retry_at = view.time + min(30.0, 0.5 * 2 ** (self._failures - 1))
                 self.startup, self.pool_startup = min(60.0, self.startup * 2), min(60.0, self.pool_startup * 2)
             self._expect = None
-        if not self.stale(view) or view.time < self._retry_at:
+        if self._ours(view) is not None and not view.rerun or view.time < self._retry_at:
             return None
         self.order = self.order_for(view, resources)
         self._serial += 1
@@ -274,24 +318,10 @@ class ModeScheduler:
     def text_id(self, serial: int) -> str:
         return f"{self.name} {serial}"
 
-    def _ours(self, view: View) -> Served | None:
-        """The continuous edit of the installed text, if it is a schedule of this optimizer's kind."""
+    def _ours(self, view: View) -> Schedule | None:
+        """The rules of the installed text, if it is a schedule of this optimizer's kind."""
         follow = view.text.follow if view.text is not None else None
-        return follow if isinstance(follow, Served) and follow.kind == self.served else None
-
-    def stale(self, view: View) -> bool:
-        """Whether the installed text is no longer the one this optimizer would keep."""
-        ours = self._ours(view)
-        if ours is None:
-            return True
-        here = ahead(view.position)
-        then = dict(ours.demand)
-        if any(view.track.get(K, EMPTY) & here != then.get(K, EMPTY) & here for K in self.kinds):
-            return True  # the problem changed
-        now, mine = view.track.get(self.served, EMPTY) & here, ours.region & here
-        if now & mine not in (EMPTY, mine) or self._others(view, ours) != ours.already & here:
-            return True  # the served kind placed by others changed
-        return not ours.final and view.position + self._lead(self._estimate(view, 1)) >= ours.end
+        return follow if isinstance(follow, Schedule) and follow.kind == self.served else None
 
     def order_for(self, view: View, resources: Resources) -> Order:
         """Where the next schedule starts and ends, and the time and CPUs it gets."""
@@ -299,21 +329,11 @@ class ModeScheduler:
         nxt = next((q for q, _ in view.transitions if q > p), INF)
         budget = self._estimate(view, cpus)
         for _ in range(2):  # the lead depends on the budget, the budget on the cells
-            s = min(p + self._lead(budget), nxt)
+            lead = self._lead(budget)
+            s = min(p + lead, nxt)
             cuts = self.cuts(view.track, s, s + self.lookahead)
             workers, chunk, budget, n = self._fit(len(cuts) - 1, cpus)
-        return Order(s, cuts[n], workers, chunk, budget, self._others(view, self._ours(view)))
-
-    def _others(self, view: View, ours: Served | None) -> Region:
-        """The served kind ahead of the chip that the installed text did not place.
-
-        Its edit is one Add: shown whole, or refused (by the line's rules, or
-        because the kind is already there) and tried again at every step."""
-        here = ahead(view.position)
-        now = view.track.get(self.served, EMPTY) & here
-        if ours is not None and ours.region & here and now & ours.region & here == ours.region & here:
-            return now - ours.region
-        return now
+        return Order(s, cuts[n], workers, chunk, budget, lead)
 
     def _estimate(self, view: View, cpus: int) -> float:
         p = view.position
@@ -387,31 +407,29 @@ class ModeScheduler:
                 pool.terminate()
         if done == 0:
             return None
-        return self.text(view, order.start, cuts[:done + 1], modes, value, order.already, self._serial)
+        return self.text(view, order, cuts[:done + 1], modes, value, self._serial)
 
-    def text(self, view: View, s: Fraction, cuts: Sequence[Fraction], modes: Sequence[int],
-             value: Fraction, already: Region, serial: int) -> Text:
+    def text(self, view: View, order: Order, cuts: Sequence[Fraction], modes: Sequence[int],
+             value: Fraction, serial: int) -> Text:
         """The text of a schedule: mode modes[i] from cuts[i] on, the mode of the view before s."""
         p, track = view.position, view.track
         y = self.modes.index(view.mode)
-        end = cuts[-1]
+        s, end = order.start, cuts[-1]
         starts = [(cuts[i], m) for i, m in enumerate(modes) if i == 0 or m != modes[i - 1]]
         parts: dict[int, list] = {}  # mode -> where the schedule is in it: [q, next q[, and [q, end] last
         for j, (q, m) in enumerate(starts):
             last = j == len(starts) - 1
             parts.setdefault(m, []).append((q, True, end if last else starts[j + 1][0], last))
-        served = Region.union_of(self._served_by(y, track) & Region.interval(p, s, False, False),
-                                 *(self._served_by(m, track) & Region(tuple(ps)) for m, ps in parts.items()))
-        # The first one, at s, even to the mode of the view: whatever the chip went through
-        # before s, the schedule holds from s on, or the install is refused.
-        transitions = [(q, self.modes[m]) for q, m in starts]
+        pieces = [(Region.interval(p, s, False, False), self._serves(y)),
+                  *((Region(tuple(ps)), self._serves(m)) for m, ps in parts.items())]
         here = ahead(p)
-        already &= here
-        served = (served & here) - already
         demand = tuple((K, track[K] & here) for K in self.kinds if K in track and track[K] & here)
-        follow = Served(self.served, served, demand, already, s, end, value,
-                        self._final(track, end, modes[-1] if modes else y))
-        return Text(self.text_id(serial), follow=follow, transitions=tuple(transitions))
+        schedule = Schedule(self.served, tuple((w, ks) for w, ks in pieces if ks), demand, self.rates, s, end,
+                            value, self._final(track, end, modes[-1]), self.tolerance, order.lead)
+        # The first transition is at s, even to the mode of the view: whatever the chip
+        # went through before s, the schedule holds from s on, or the install is refused.
+        return Text(self.text_id(serial), follow=schedule, rerun=schedule.rerun,
+                    transitions=tuple((q, self.modes[m]) for q, m in starts))
 
     def _final(self, track: Track, end: Fraction, last: int) -> bool:
         """Nothing changes after `end`, and `last` earns the most there."""

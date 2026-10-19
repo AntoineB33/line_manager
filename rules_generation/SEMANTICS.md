@@ -30,19 +30,30 @@ happened (at or before the chip) and replaces the others.
 finite list, and a run installs finitely many texts, so the whole list of
 transitions is finite. ∎
 
-**R4. A text's rules edit the right side of the chip, from (position, mode).**
-`Text.rules(position, mode)` yields edits (any reverse-logic op). Every region
+**R4. A text's rules edit the right side of the chip, from (position, mode,
+state).** Every rule of a text is called with the chip's position, its mode and the
+state of the line: the line without the text's continuous edit (hidden then, so
+that this edit never depends on itself), a read-only mapping kind → region.
+`Text.rules(position, mode, state)` yields edits (any reverse-logic op). Every region
 they take from or put on must lie in (position, +∞); otherwise `ValueError` and
 nothing changes. They are evaluated at every chip position and right after the
 text is installed. An edit that is refused by reverse logic (it removes
 something absent, contradicts the rules, …) is skipped, recorded in
 `TrackManager.refused`, and the text keeps running.
 
-**R5. Continuous edits.** `Text.follow(position, mode)` gives elements whose
-region depends on the chip's position. They are shown as the pending edit of
+**R5. Continuous edits.** `Text.follow(position, mode, state)` gives elements whose
+region depends on the chip's position (and on the state). They are shown as the pending edit of
 the `LineSystem`, recomputed from scratch at every chip position, exactly like
 a drag step (T6 of reverse logic). When the chip moves, the part of the shown
 elements that the chip has reached stays on the line, as an edit of the text.
+
+**R5'. A text says when the generator runs again.** `Text.rerun(position, mode,
+state)` is evaluated after every operation of the track (a chip move, a user
+edit, an install), and its answer is `TrackManager.rerun` (`False` without a
+text). The machine passes it to the optimizer in the `View` (R9): the text is the
+optimizer's own product, so this is how its decision "the generator runs again
+when …" is written in the text (the example of `requirements.md`). The rules of a
+text are evaluated at chip positions only (R4), not after a user edit.
 
 **R6. The left side of the chip never changes.** Let B = (−∞, position]. Every
 text edit and user edit is applied with `keep=B`: it is refused if the line on
@@ -90,7 +101,7 @@ in this order:
 2. if no run is in progress, `plan` is called with a snapshot `View` of the line
    and the current `Resources`, and a run starts if it returns a time. The view
    holds the chip's position, mode and every transition, the line, the installed
-   text and the refused edits; the run is given the same view without the text
+   text, whether it asks for a new one (R5'), and the refused edits; the run is given the same view without the text
    (a text installed directly need not be picklable).
 
 So the optimizer is asked at every observation where it could start a run, and
@@ -200,12 +211,15 @@ that is, an optimum of P(L, y, s, e_d), d the cells done. ∎
 **The text.** `generate` computes the schedule for its view (position p_0, mode
 y, line L) on (s, E], s and E chosen by `plan` (below), and returns a text with
 * transitions: (s, m_1), even if m_1 = y, then every change of mode;
-* a continuous edit (`Served`): the kind `served` (default "S") wherever the
-  schedule's mode earns from a kind present there (rate > 0), on (p_0, E] (on
-  (p_0, s) with mode y), minus where `served` already is, placed by others than
-  the installed text (whose edits the switch reverses).
-  It is one Add, shown ahead of the chip at every step (R5), so what the chip
-  goes through stays on the line, as an edit of the text.
+* a continuous edit (`Schedule`, R5): the kind `served` (default "S") wherever the
+  schedule's mode earns from a kind present *in the state at that step* (rate > 0),
+  on (p_0, E] (on (p_0, s) with mode y), minus where `served` already is. So it
+  follows the line without a new text: a demand added where the chip will be in
+  a mode that serves it is served at once. It is one Add, shown ahead of the chip
+  at every step, so what the chip goes through stays on the line, as an edit of
+  the text;
+* `rerun` (R5'): true when the chip is within the lead (below) of E, unless the
+  schedule is final, or when 2·D > `tolerance`, D the divergence (Theorem 5).
 
 The served kind cannot be one that earns (`ValueError`), and the line's rules should
 not mention it: the optimizer does not see them. If they refuse the edit, it is
@@ -234,17 +248,32 @@ And σ is *final* when no cell end lies after E and σ's last mode has the best
 rate on (E, +∞): then σ, its last mode kept forever, is optimal on (s, X] for
 every X ≥ E (any schedule earns at most that rate after E, and costs are ≥ 0).
 
-**When it generates (`plan`).** At every observation without a run (R9), a run
-starts when, and only when, the installed text is *stale*:
-1. it is not one of this optimizer's (at the start, or after a foreign text);
-2. a kind of the problem changed ahead of the chip (a user edit, an adaptation);
-3. the served kind not placed by the text changed ahead of the chip, or got
-   inside the text's region (which refuses the text's edit);
-4. the chip is within the lead (below) of E, and the text is not final.
+**Theorem 5 (the score of the installed text, as the line changes).** Let σ, s,
+E, L be as in Theorem 4, the chip at p, the line now L', and p' = max(p, s). The
+*divergence* is D = ∫ max_m |r'_m(x) − r_m(x)| dx over (p, E] ((p, +∞) if σ is
+final), r and r' the rates for L and L'. Then σ is at most 2·D below the optimum
+of P(L', mode at p', p', E) (of every horizon X ≥ E if σ is final).
+*Proof.* Every schedule μ on (p', E] has the same switching costs for L and L', so
+|J'(μ) − J(μ)| ≤ D. σ is optimal for L there (Theorem 4), so for an optimum μ' of
+L': J'(μ') ≤ J(μ') + D ≤ J(σ) + D ≤ J'(σ) + 2·D. ∎
+D is computed exactly from what the text recorded (the kinds of the problem ahead
+of the chip when it was generated) and the state (R5'); it is 0 while nothing
+changes, and +∞ if a change with a rate reaches +∞ after a final schedule.
 
-Otherwise, by Theorem 4 the installed text is still the optimum over the rest
-of its horizon, so `plan` returns `None`: moving the chip a little, however
-complex the line, starts no run. After a run that installed nothing (no text,
+**When it generates (`plan`).** At every observation without a run (R9), a run
+starts when, and only when, the installed text is not one of this optimizer's
+(at the start, or after a foreign text), or it asks for one (`view.rerun`): the
+chip is near E (and the schedule is not final), or 2·D > `tolerance`.
+
+So `tolerance` (≥ 0, in units of the value) is the user's choice between CPU and
+quality. With 0, any change of the problem ahead of the chip starts a run, and by
+Theorem 4 the line is always run by an optimal schedule (over its horizon). With
+more, changes add up (D is measured from the text's own data, so small ones are
+not forgotten) until the installed text may be more than `tolerance` below the
+optimum, by Theorem 5; until then the text keeps following the line (its
+continuous edit) and no run starts. Either way, moving the chip a little, however
+complex the line, starts no run (Theorem 4). The time a run gets is a separate
+choice: `max_budget` (below). After a run that installed nothing (no text,
 late, stopped, refused, error), it waits 0.5 s, doubled at each further failure
 (at most 30 s), and doubles its time estimates (`startup`, `pool_startup`).
 
@@ -255,6 +284,7 @@ once if not given. With c = `resources.cpus` (R10), `plan` takes w = 1 or w = c,
 whichever is faster, and the time 1.25·(`startup` + work) + 0.1 s. Above
 `max_budget`, it shortens the horizon (n), down to one cell. So a run is given less
 time when it may use more CPUs, and uses them only when that is faster.
+A smaller `max_budget` or `lookahead` means shorter runs on shorter horizons.
 The *lead*: s = min(p_0 + lead, q), lead = 2·v·t + `min_lead`, v the chip's
 speed seen by `plan` (a maximum decaying by half per second), t the run's time;
 E = s + `lookahead`, or less, as above. `generate` keeps 0.05 s + 5 % of its time

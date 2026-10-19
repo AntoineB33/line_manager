@@ -38,7 +38,7 @@ F = Fraction
 
 def put_ahead(seed: int):
     """Discrete rules: random edits to the right of the chip."""
-    def rules(position, mode):
+    def rules(position, mode, state):
         rng = random.Random(hash((seed, position, mode)))
         for _ in range(rng.randint(0, 2)):
             a = position + F(rng.randint(1, 12), 2)
@@ -50,7 +50,7 @@ def put_ahead(seed: int):
 
 def follow_ahead(seed: int):
     """Continuous rules: an element that follows the chip."""
-    def follow(position, mode):
+    def follow(position, mode, state):
         if mode != 1:
             yield "F", Region.closed(position + F(seed % 3 + 1, 2), position + F(seed % 3 + 3, 2))
     return follow
@@ -88,10 +88,39 @@ class ChipTests(unittest.TestCase):
     def test_rules_get_position_and_mode(self):
         seen = []
         m = TrackManager(modes=(1, 2))
-        m.switch_rules_text(Text("t", rules=lambda p, mode: seen.append((p, mode)) or (), transitions=((1, 2),)))
+        m.switch_rules_text(Text("t", rules=lambda p, mode, state: seen.append((p, mode)) or (), transitions=((1, 2),)))
         m.update_chip(F(1, 2))
         m.update_chip(1)
         self.assertEqual(seen, [(0, 1), (F(1, 2), 1), (1, 2)])
+
+    def test_rules_get_the_state_of_the_line_without_the_continuous_edit(self):
+        seen = []
+
+        def rules(p, mode, state):
+            seen.append(("rules", dict(state)))
+            return [Add("B", Region.point(p + 3))] if "A" in state and p == 0 else []
+
+        def follow(p, mode, state):
+            seen.append(("follow", dict(state)))
+            return [("X", Region.closed(p + 1, p + 2))]
+
+        def rerun(p, mode, state):
+            seen.append(("rerun", dict(state)))
+            return "U" in state
+        m = TrackManager(initial_elements=[("A", Region.point(5))])
+        m.switch_rules_text(Text("t", rules=rules, follow=follow, rerun=rerun))
+        a, b = {"A": Region.point(5)}, {"A": Region.point(5), "B": Region.point(3)}
+        self.assertEqual(seen, [("rules", a), ("rerun", b), ("follow", b)])
+        self.assertFalse(m.rerun)
+        seen.clear()
+        m.user_edit([Add("U", Region.point(9))])  # a user edit asks the text again, not its rules
+        self.assertEqual([w for w, _ in seen], ["rerun", "follow"])
+        self.assertNotIn("X", seen[0][1])
+        self.assertTrue(m.rerun)
+        m.update_chip(1)
+        self.assertTrue(m.rerun)
+        m.switch_rules_text(Text("u"))
+        self.assertFalse(m.rerun)
 
 
 class TrackTests(unittest.TestCase):
@@ -99,24 +128,24 @@ class TrackTests(unittest.TestCase):
         for bad in (Region.point(0), Region.closed(0, 1), Region.closed(-2, -1)):
             m = TrackManager()
             with self.assertRaises(ValueError):
-                m.switch_rules_text(Text("t", rules=lambda p, mode, bad=bad: [Add("A", Region.point(5)),
+                m.switch_rules_text(Text("t", rules=lambda p, mode, state, bad=bad: [Add("A", Region.point(5)),
                                                                               Add("A", bad)]))
             self.assertEqual(dict(m.track()), {})
             self.assertIsNone(m.current_text_id)
         m = TrackManager()
-        m.switch_rules_text(Text("t", rules=lambda p, mode: [Add("A", Region.interval(0, 1, left_closed=False))]))
+        m.switch_rules_text(Text("t", rules=lambda p, mode, state: [Add("A", Region.interval(0, 1, left_closed=False))]))
         self.assertEqual(dict(m.track()), {"A": Region.interval(0, 1, left_closed=False)})
 
     def test_refused_edit_is_skipped(self):
         m = TrackManager()
-        m.switch_rules_text(Text("t", rules=lambda p, mode: [Remove("A", Region.point(5)),
+        m.switch_rules_text(Text("t", rules=lambda p, mode, state: [Remove("A", Region.point(5)),
                                                             Add("B", Region.point(6))]))
         self.assertEqual(dict(m.track()), {"B": Region.point(6)})
         self.assertEqual([r.text_id for r in m.refused], ["t"])
 
     def test_switch_reverses_right_side_only_and_cuts_at_the_chip(self):
         m = TrackManager(initial_elements=[("I", Region.point(10))])
-        m.switch_rules_text(Text("alpha", rules=lambda p, mode: [Add("A", Region.point(2)),
+        m.switch_rules_text(Text("alpha", rules=lambda p, mode, state: [Add("A", Region.point(2)),
                                                                 Add("A", Region.closed(3, 6)),
                                                                 Add("A", Region.point(8))] if p == 0 else []))
         m.update_chip(4)
@@ -126,7 +155,7 @@ class TrackTests(unittest.TestCase):
 
     def test_left_side_keeps_what_it_requires_on_the_right(self):
         m = TrackManager(rules=[implies("A", ("B", 2))])
-        m.switch_rules_text(Text("alpha", rules=lambda p, mode: [Add("A", Region.point(1))] if p == 0 else []))
+        m.switch_rules_text(Text("alpha", rules=lambda p, mode, state: [Add("A", Region.point(1))] if p == 0 else []))
         self.assertEqual(dict(m.track()), {"A": Region.point(1), "B": Region.point(3)})
         m.update_chip(2)
         m.switch_rules_text(Text("beta"))
@@ -134,14 +163,14 @@ class TrackTests(unittest.TestCase):
 
     def test_switch_brings_back_what_the_text_had_removed(self):
         m = TrackManager(initial_elements=[("U", Region.closed(5, 6))])
-        m.switch_rules_text(Text("alpha", rules=lambda p, mode: [Remove("U", Region.closed(5, 6))] if p == 0 else []))
+        m.switch_rules_text(Text("alpha", rules=lambda p, mode, state: [Remove("U", Region.closed(5, 6))] if p == 0 else []))
         self.assertEqual(dict(m.track()), {})
         m.switch_rules_text(Text("beta"))
         self.assertEqual(dict(m.track()), {"U": Region.closed(5, 6)})
 
     def test_user_edits_that_require_the_text_are_reversed_too(self):
         m = TrackManager()
-        m.switch_rules_text(Text("alpha", rules=lambda p, mode: [Add("A", Region.point(5))] if p == 0 else []))
+        m.switch_rules_text(Text("alpha", rules=lambda p, mode, state: [Add("A", Region.point(5))] if p == 0 else []))
         moved = m.user_edit([Move("A", Region.point(5), 2)])  # moves what alpha placed
         kept = m.user_edit([Add("U", Region.point(9))])
         m.switch_rules_text(Text("beta"))
@@ -160,7 +189,7 @@ class TrackTests(unittest.TestCase):
 
     def test_continuous_edit_follows_the_chip(self):
         m = TrackManager()
-        m.switch_rules_text(Text("t", follow=lambda p, mode: [("X", Region.closed(p + 1, p + 2))]))
+        m.switch_rules_text(Text("t", follow=lambda p, mode, state: [("X", Region.closed(p + 1, p + 2))]))
         self.assertEqual(dict(m.track()), {"X": Region.closed(1, 2)})
         m.update_chip(F(1, 2))
         self.assertEqual(dict(m.track()), {"X": Region.closed(F(3, 2), F(5, 2))})
@@ -171,9 +200,9 @@ class TrackTests(unittest.TestCase):
 
     def test_failed_switch_changes_nothing(self):
         m = TrackManager()
-        m.switch_rules_text(Text("alpha", rules=lambda p, mode: [Add("A", Region.point(3))] if p == 0 else []))
+        m.switch_rules_text(Text("alpha", rules=lambda p, mode, state: [Add("A", Region.point(3))] if p == 0 else []))
 
-        def broken(position, mode):
+        def broken(position, mode, state):
             yield Add("B", Region.point(5))
             raise RuntimeError("bad text")
 
@@ -328,6 +357,21 @@ class MachineTests(unittest.TestCase):
         self.assertEqual(len(opt.plans), asked)  # not asked while a run is in progress
         self.assertEqual(len(runner.pending()), 1)
 
+    def test_the_view_holds_the_text_and_whether_it_asks_for_a_new_one(self):
+        opt = Scripted()
+        m, clock, runner = machine(opt, modes=(1, 2))
+        text = Text("t", rerun=lambda p, mode, state: p >= 2, transitions=((3, 2),))
+        m.manager.switch_rules_text(text)
+        m.update_chip(1)
+        view = opt.plans[-1][0]
+        self.assertEqual((view.text, view.transitions, view.rerun), (text, ((3, 2),), False))
+        m.update_chip(2)
+        self.assertTrue(opt.plans[-1][0].rerun)
+        opt.budget = 1
+        m.poll()
+        self.assertIsNone(m.runs[0].view.text)  # a run is not sent the text
+        self.assertTrue(m.runs[0].view.rerun)
+
     def test_invalid_plan_is_recorded_and_raises_nothing(self):
         def raises(view, resources):
             raise RuntimeError("plan bug")
@@ -357,7 +401,7 @@ class MachineTests(unittest.TestCase):
     def test_text_applies_from_the_chip_at_install(self):
         calls = []
 
-        def rules(p, mode):
+        def rules(p, mode, state):
             calls.append(p)
             return [Add("A", Region.point(p + 1))] if len(calls) == 1 else []
 
@@ -402,13 +446,13 @@ class MachineTests(unittest.TestCase):
         self.assertEqual((m.runs[2].outcome, m.manager.current_text_id), ("installed", "on time"))
 
     def test_failed_empty_and_refused_runs_change_nothing(self):
-        def bad_rules(p, mode):
+        def bad_rules(p, mode, state):
             raise RuntimeError("bad text")
 
         def broken(view):
             raise RuntimeError("generator bug")
 
-        results = iter([lambda v: Text("first", rules=lambda p, mode: [Add("A", Region.point(p + 5))]
+        results = iter([lambda v: Text("first", rules=lambda p, mode, state: [Add("A", Region.point(p + 5))]
                                        if p == 0 else []),
                         broken, lambda v: None,
                         lambda v: Text("behind", transitions=((v.position + 1, 2),)),
@@ -445,9 +489,9 @@ class MachineTests(unittest.TestCase):
             tid, seed = f"t{rng.randrange(10**9)}", rng.randrange(10**6)
             inner = put_ahead(seed)
 
-            def rules(p, mode):
+            def rules(p, mode, state):
                 first.setdefault(tid, p)
-                return inner(p, mode)
+                return inner(p, mode, state)
             return Text(tid, rules=rules, follow=follow_ahead(seed),
                         transitions=((view.position + F(rng.randint(1, 6), 2), rng.choice((1, 2))),))
 
@@ -498,7 +542,7 @@ class PointAhead:
     """A picklable rules text: an A `offset` ahead of the chip."""
     offset: int
 
-    def __call__(self, p, mode):
+    def __call__(self, p, mode, state):
         return [Add("A", Region.point(p + self.offset))]
 
 
@@ -554,7 +598,7 @@ def _runaway(view, deadline, resources, run_path, child_path):
 
 
 def _unpicklable_text(view, deadline, resources):
-    return Text("lambda", rules=lambda p, mode: [])
+    return Text("lambda", rules=lambda p, mode, state: [])
 
 
 def _wait(m: Machine, timeout: float = 60) -> None:

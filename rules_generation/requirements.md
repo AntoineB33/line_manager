@@ -14,3 +14,10 @@ if element D exceeds a presence ratio of y when chip is between $x_2$ and $x_6$ 
 if the optimization score becomes less than $z$, then the generator runs again.
 if chip is between $x_7$ and $x_8$ and mode is 2, then the generator runs again.
 ...
+
+
+
+There should be a number variable from 0 to 1.
+0 is the generator takes an infinite amount of time and all CPU resources to reach the best possible optimization score in all the infinite scenarios.
+1 is 0 time generation and never ran again.
+A good in between would allow the generator to have a reasonable amount of time and resources for the generation of a text of rules, and this text includes scenarios for a re-run of the generator that makes it re-run in a reasonable frequency depending on the actual scenario.

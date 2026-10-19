@@ -12,4 +12,5 @@ Examples:
 - when there is element A, there is not element B
 - when there is element A and B, there is element C 3 units on the left
 
-The same element type can't be present several time at the same position on the line.
+The same element type can't be present several times at the same position on the line.
+

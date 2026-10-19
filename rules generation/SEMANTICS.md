@@ -2,6 +2,7 @@
 
 Code: `chip.py` (chip position and mode transitions), `track.py` (a
 reverse-logic `LineSystem` edited by rules texts and by the user),
+`machine.py` (the optimizer that generates the texts),
 `rules_generation_logic.py` (public API and the demo).
 `test_rules_generation.py` checks every item below, including on random runs.
 
@@ -70,6 +71,79 @@ Elements the track starts with, and user edits that require no text edit, are ke
 
 **R8. Generation time.** It is outside of this system: the new text applies
 from the position of the chip when `switch_rules_text` is called.
+
+**R9. The machine generates the texts, when it decides to.** `Machine` drives a
+`TrackManager` with an `Optimizer`, which supplies its own policy: `plan(view,
+resources)` returns the time to allow a new run, or `None`; `generate(view,
+deadline)` returns a text, or `None`. The objective is the optimizer's own; the
+requirements constrain only how its runs reach the line, which is what is proved
+and tested, for any optimizer (the tests use scripted ones, a simulated clock and
+a runner that finishes runs when the test chooses, plus real processes for R11
+and R12).
+An observation is the start, a chip move, a user edit, or `poll`. At each one,
+in this order:
+1. the run in progress is handled: stopped past its deadline (R12), or, if it has finished, as in R13;
+2. if no run is in progress, `plan` is called with a snapshot `View` of the line
+   and the current `Resources`, and a run starts if it returns a time.
+
+So the optimizer is asked at every observation where it could start a run, and
+never while one is in progress: *at most one run is in progress at a time.* ∎
+
+**R10. CPU resources: every CPU, up to a limit the user sets.**
+`Resources(limit)`: a run may use every CPU this process may run on
+(`usable_cpus()`), or only `limit` of them, an integer from 1 to that number
+(`None` means all; anything else is `ValueError`). The user may replace
+`machine.resources` at any time; `plan` and `generate` receive the current value.
+The time of a run is the optimizer's choice: `plan` returns any positive, finite
+number of seconds t, and the run gets `Deadline(start, t)`, with `start` the clock
+when it starts. Any other answer from `plan`, or an exception in it, is recorded
+in `refused_plans` and starts no run. *Nothing the optimizer does makes a chip
+move or a user edit raise:* that move or edit has already happened when `plan`
+is asked, so an exception there would wrongly suggest that it failed.
+
+**R11. Each run is a process of its own, held by the operating system**
+(`ProcessRunner`). The process is started fresh ("spawn") and waits until the
+machine has put it under its limits; only then does it call `generate`. On
+Windows the machine holds a job object, with the CPUs of the limit as its
+affinity and "kill on close": Windows keeps every process of the job, including
+the processes the run starts, on those CPUs, and ends all of them together. On
+Linux the CPU affinity of the run is set before it starts working, the processes
+it starts inherit it, and the run is a process group of its own. Platforms that
+cannot limit the CPUs of a process refuse a limit below all CPUs (the run's
+outcome is `error`). Since the optimizer, the view and the text are sent between
+processes, they must be picklable: functions in a text must be defined at module
+level (or be instances of such classes), not lambdas or nested functions. An
+unpicklable optimizer is found before any process starts, and an unpicklable text
+inside the run; both make the run's outcome `error`.
+
+**R12. Hard stop.** At `start + t`, a timer ends the run's job (Windows) or
+process group (elsewhere), even if nothing observes the machine at that moment;
+an observation past the deadline also stops it. *The run, and every process it
+started, stop running at the deadline* (up to the time the operating system takes
+to end them; the test allows 0.5 s and checks that nothing they write grows
+afterwards). Its outcome is `stopped`, and it gives no text. When a run returns,
+whatever it left running is ended too. On Linux, a process that leaves its group
+on purpose (`setsid`) escapes the stop; on Windows nothing of the job can.
+
+**R13. A finished run.** The clock is read in the run's process when `generate`
+returns (`finished`; `time.monotonic` is the same clock in every process). Then,
+at the next observation:
+* it raised: outcome `error`, nothing changes;
+* `finished > start + t`: outcome `late`, the text is discarded (possible when it
+  returns just before the stop takes effect). With R12, *no text produced after
+  the time the run allowed itself is ever installed*, however late the
+  observation comes;
+* it returned `None`: outcome `no text`;
+* otherwise `switch_rules_text(text)` at the chip's position at that moment (R7,
+  R8): outcome `installed`, or `refused` if the switch raised (for example
+  transitions now behind the chip). The switch is a transaction, so a refused
+  text changes nothing.
+
+The run's `View` is a copy taken when it started, and the chip may have moved
+since: the text applies from the chip's position at install, not from
+`view.position`. Every installed text goes through `switch_rules_text`, so R1–R7
+hold for the machine as they do for direct calls. The run's process start-up
+time counts in its time t.
 
 ## Running
 

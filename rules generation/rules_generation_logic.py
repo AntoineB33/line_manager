@@ -6,6 +6,16 @@ import sys
 from fractions import Fraction
 
 from chip import Chip, Mode
+from machine import (
+    Deadline,
+    Machine,
+    Optimizer,
+    ProcessRunner,
+    Resources,
+    Run,
+    View,
+    usable_cpus,
+)
 from reverse_logic import (
     Add,
     Extend,
@@ -31,23 +41,31 @@ from track import (
 __all__ = [
     "Add",
     "Chip",
+    "Deadline",
     "Extend",
     "FollowText",
+    "Machine",
     "Mode",
     "Move",
+    "Optimizer",
+    "ProcessRunner",
     "Refused",
     "Region",
     "Remove",
+    "Resources",
     "Retract",
     "RulesText",
+    "Run",
     "Text",
     "Track",
     "TrackManager",
+    "View",
     "ahead",
     "at_or_behind",
     "forbids",
     "implies",
     "restrict",
+    "usable_cpus",
 ]
 
 

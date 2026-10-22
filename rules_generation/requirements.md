@@ -19,3 +19,5 @@ There is a performance hyperparameter included in (0, 1). A value of 0 means the
 
 There is a scenario that acts like a tendency, where the actual scenario will probably more or less follow it. For example, element A incites the user to switch to mode 2.
 The generator should take this into account to be efficient.
+
+The goal is to get the best possible score while not knowing in advance the modes and getting limited resources and time to calculate the text of rules for it.

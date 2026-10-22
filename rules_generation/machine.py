@@ -1,6 +1,7 @@
 """The machine: an optimizer that generates the texts.  It decides itself when a
-new text is relevant and how much time a run gets.  A run may use every CPU,
-up to the limit the user sets.  See SEMANTICS.md."""
+new text is relevant and how much time a run gets, with the performance
+hyperparameter set by the user.  A run may use every CPU, up to the limit the
+user sets.  See SEMANTICS.md."""
 from __future__ import annotations
 
 import math
@@ -18,6 +19,7 @@ from numbers import Real
 from typing import Protocol
 
 from chip import Mode, Number
+from region import num
 from track import Refused, Text, Track, TrackManager
 
 Clock = Callable[[], float]
@@ -99,9 +101,10 @@ class View:
     text_id: str | None
     refused: tuple[Refused, ...]
     time: float
-    transitions: tuple[tuple[Fraction, Mode], ...] = ()  # every mode transition, past and planned
+    transitions: tuple[tuple[Fraction, Mode], ...] = ()  # the mode transitions the chip went through
     text: Text | None = None  # the installed text, for plan; a run is not sent it
     rerun: bool = False  # the installed text asks for a new one
+    performance: Fraction = Fraction(1, 2)  # the hyperparameter, in (0, 1)
 
 
 @dataclass(frozen=True)
@@ -170,13 +173,19 @@ class Machine:
     and discarded otherwise.  Then, if no run is in progress, the optimizer's
     `plan` decides whether to start one and how long it may take.  At most one
     run is in progress at a time.  Nothing the optimizer does raises here:
-    every failure is recorded in `runs` or `refused_plans`."""
+    every failure is recorded in `runs` or `refused_plans`.
+
+    `performance`, in (0, 1), is passed to the optimizer in every view: towards
+    0, runs get more time and are rarer, towards 1 they get less and follow
+    every change of the score (SEMANTICS.md, R14)."""
 
     def __init__(self, manager: TrackManager, optimizer: Optimizer, resources: Resources | None = None,
-                 clock: Clock = time.monotonic, runner: Runner | None = None):
+                 clock: Clock = time.monotonic, runner: Runner | None = None,
+                 performance: Number = Fraction(1, 2)):
         self.manager = manager
         self.optimizer = optimizer
         self.resources = resources or Resources()  # the user may change it at any time
+        self.performance = performance  # so may they
         self.clock = clock  # the default runner needs time.monotonic: it is the same in every process
         self.runner = runner or ProcessRunner()
         self.runs: list[Run] = []
@@ -188,8 +197,19 @@ class Machine:
     def running(self) -> bool:
         return self._job is not None
 
-    def update_chip(self, new_position: Number) -> None:
-        self.manager.update_chip(new_position)
+    @property
+    def performance(self) -> Fraction:
+        return self._performance
+
+    @performance.setter
+    def performance(self, value: Number) -> None:
+        h = num(value)
+        if not 0 < h < 1:
+            raise ValueError(f"the performance hyperparameter must be in (0, 1), got {value!r}")
+        self._performance = h
+
+    def update_chip(self, new_position: Number, transitions=()) -> None:
+        self.manager.update_chip(new_position, transitions)
         self.poll()
 
     def user_edit(self, ops) -> int:
@@ -220,7 +240,8 @@ class Machine:
     def _view(self) -> View:
         m = self.manager
         return View(m.chip.position, m.chip.mode, dict(m.track()), m.current_text_id,
-                    tuple(m.refused), self.clock(), tuple(m.chip.transitions), m.text, m.rerun)
+                    tuple(m.refused), self.clock(), tuple(m.chip.transitions), m.text, m.rerun,
+                    self.performance)
 
     def _maybe_start(self) -> None:
         view, resources = self._view(), self.resources

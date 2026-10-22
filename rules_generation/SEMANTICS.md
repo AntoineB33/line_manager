@@ -1,85 +1,99 @@
 # Rules generation: semantics and proofs
 
-Code: `chip.py` (chip position and mode transitions), `track.py` (a
-reverse-logic `LineSystem` edited by rules texts and by the user),
-`machine.py` (the machine that runs an optimizer to generate the texts),
-`scheduler.py` (the optimizer: an optimization problem and its solver),
-`rules_generation_logic.py` (public API and the demo).
-`test_rules_generation.py` checks every item of the requirements below, for any
-optimizer, and `test_scheduler.py` every item of "The optimizer", both including
-on random runs.
+Code: `chip.py` (chip position and the mode transitions it goes through),
+`track.py` (texts, and a reverse-logic `LineSystem` edited by them and by the
+user), `machine.py` (the machine that runs an optimizer to generate the texts),
+`scheduler.py` (an optimizer: a problem and its solver),
+`rules_generation_logic.py` (public API and the demo). `test_rules_generation.py`
+checks every item of the requirements below, for any optimizer, and
+`test_scheduler.py` every item of "The optimizer", both including random runs.
 
 Requirements: `../requirement.md` and `requirements.md`. Everything about edits,
-rules, adaptation and reversal comes from `../reverse logic/SEMANTICS.md`.
+rules, adaptation and reversal comes from `../reverse_logic/SEMANTICS.md`.
+Section "Choices the requirements leave open" lists where several behaviours
+satisfy the requirements, and which one is implemented.
 
 ## Requirements and how each one is met
 
 **R1. The chip moves right, continuously; it can stop.** Positions are exact
-rationals. `update_chip(q)` refuses q < position and accepts q = position. A
-program can only observe the chip at a sequence of positions, like a mouse
-drag; every observed position is handled (no step is skipped).
+rationals. `update_chip(q, transitions)` refuses q < position and accepts
+q = position. A program tells the chip's moves one at a time, but the chip goes
+through every position on the way, and the track computes what happens at
+every one of them, exactly (R5, Theorem M): the result does not depend on how a
+move is split into steps.
 
-**R2. One mode per position, transitions decided by the text.** Each text
-gives a finite list of transitions `(position, mode)`, strictly increasing and
-strictly to the right of the chip (`Chip.schedule`). The mode at q is the mode
-of the last transition at or before q, or the initial mode: the new mode applies
-from the transition position on. A new text keeps the transitions that already
-happened (at or before the chip) and replaces the others.
+**R2. One mode per position; transitions are given externally, not known to the
+generator.** The modes are not decided by the system: the user tells each transition `(position, mode)`
+with the move that goes through it, in (chip, q], strictly increasing
+(`Chip.check`). The mode at x is the mode of the last transition at or before x
+(the new mode applies from the transition position on). Nothing ever sees a
+transition before the chip reaches it: texts have no transitions, and the
+optimizer only knows a tendency (see "The optimizer").
 
-**R3. Finitely many transitions in every bounded stretch.** Each text adds a
-finite list, and a run installs finitely many texts, so the whole list of
-transitions is finite. ∎
+**R3. Finitely many transitions in every bounded stretch.** This is a property
+of the user's moves, which the system cannot check in advance; each move tells
+finitely many, so every stretch the chip has gone through has finitely many.
 
 **R4. A text's rules edit the right side of the chip, from (position, mode,
-state).** Every rule of a text is called with the chip's position, its mode and the
-state of the line: the line without the text's continuous edit (hidden then, so
-that this edit never depends on itself), a read-only mapping kind → region.
-`Text.rules(position, mode, state)` yields edits (any reverse-logic op). Every region
-they take from or put on must lie in (position, +∞); otherwise `ValueError` and
-nothing changes. They are evaluated at every chip position and right after the
-text is installed. An edit that is refused by reverse logic (it removes
-something absent, contradicts the rules, …) is skipped, recorded in
+state).** A `Text` has discrete rules (`Rule`), continuous edits (`Follow`) and
+`rerun`. A `Rule(action, where, modes, when=…)` runs `action(position, mode,
+state)` where the chip enters each stretch of positions where it is in `where`,
+its mode in `modes` and, with `when`, a condition on the state holds ("if
+element D exceeds a presence ratio of y …", `Ratio`, see "Conditions on the
+state"): at the first position of the stretch, or at its start if the stretch is
+open there (the chip is then at the start, about to enter it); and at the install
+if the chip is inside such a stretch. `state` is a read-only mapping kind →
+region: the line without the text's continuous edit. Every region an edit takes from or
+puts on must lie in (position, +∞): otherwise `ValueError` and nothing changes.
+An edit that reverse logic refuses (it removes something absent, contradicts
+the rules, changes the left side, …) is skipped, recorded in
 `TrackManager.refused`, and the text keeps running.
 
-**R5. Continuous edits.** `Text.follow(position, mode, state)` gives elements whose
-region depends on the chip's position (and on the state). They are shown as the pending edit of
-the `LineSystem`, recomputed from scratch at every chip position, exactly like
-a drag step (T6 of reverse logic). When the chip moves, the part of the shown
-elements that the chip has reached stays on the line, as an edit of the text.
+**R5. Continuous edits.** `Follow(kind, lo, hi, …, where, modes)` puts `kind`
+between `lo` and `hi`, each a fixed position or `Rel(a)`, the chip's position
+plus a, wherever the chip is in `where` and in one of `modes`. At every chip
+position p it is shown, strictly right of p, as the pending edit of the
+`LineSystem`, computed from the active edits at p exactly like a drag step (T6
+of reverse logic), if that is valid there; otherwise it is refused at p. What
+the chip leaves behind is defined in R6 and computed exactly (Theorem M).
 
 **R5'. A text says when the generator runs again.** `Text.rerun(position, mode,
 state)` is evaluated after every operation of the track (a chip move, a user
-edit, an install), and its answer is `TrackManager.rerun` (`False` without a
-text). The machine passes it to the optimizer in the `View` (R9): the text is the
-optimizer's own product, so this is how its decision "the generator runs again
-when …" is written in the text (the example of `requirements.md`). The rules of a
-text are evaluated at chip positions only (R4), not after a user edit.
+edit, an install); a `Rule` with `rerun=True` that runs asks too. The answer is
+`TrackManager.rerun`, which the machine passes to the optimizer in the `View`
+(R9). The time of a run is outside of the line (R8), so this needs no more
+precision than the operations.
 
-**R6. The left side of the chip never changes.** Let B = (−∞, position]. Every
-text edit and user edit is applied with `keep=B`: it is refused if the line on
-B would change (for example through a rule "C 3 units on the left"). Moving the
-chip changes no edit. When something else changes B (a text switch, or a
-swept continuous edit that cannot be kept), `_pin_left` adds an internal edit,
-newest of all, claiming every element that was on B present and everything
-else on B absent; the right side adapts to it.
-*The pin is never refused.* It is the newest level, processed with Γ = ∅, and
-its claims are those of a line that satisfies the rules (the line before the
-operation), restricted to B; that line's own choice of operands is an
-assignment without violation, so by Lemma 3.3 of reverse logic nothing of the
-pin is dropped, and it holds exactly on B (T2). ∎
-Every operation also runs on a copy, which replaces the manager only if the
-whole operation succeeded and the left side is unchanged.
+**R6. Only user edits change the left side of the chip.** Let B = (−∞, chip].
+Every edit of a text is applied with `keep=B`: it is refused if the line on B
+would change (for example through a rule "C 3 units on the left"); since the
+chip's position is in B, a text never changes the point the chip is at. So a
+point keeps what it had when the chip reached it: the state it had just before,
+lim_{p→x⁻} L_p(x), where L_p is the line with the chip at p. The track records
+it with `_pin_left`/`_freeze`: an internal edit, newest of all, claiming what
+is on B present and everything else on B absent (consecutive ones merge into
+one). User edits are newer than the pins and are not limited: they may change
+the left side, and nothing else does.
+*A pin is never refused.* Its claims are the left side of a line that satisfies
+the rules: the line before the operation, or, for what the chip leaves, the
+limit of lines L_p that do (a rule instance among points of B holds in every
+L_p near the limit, and the points' states are constant there, Theorem M). It is
+processed first, with Γ = ∅, so by Lemma 3.3 of reverse logic nothing of it is
+dropped, and it holds exactly on B (T2). The code asserts it.
+Every operation runs on a copy, which replaces the manager only if the whole
+operation succeeded (and, except for a user edit, the left side is unchanged).
 
 **R7. A text switch.** `switch_rules_text(text)`:
-1. hides the previous text's continuous edit (it lies strictly to the right of the chip);
+1. hides the previous text's continuous edit (it lies strictly right of the chip);
 2. reverses every edit of the previous text, and every user edit that requires one of
    them, with `LineSystem.reverse_all`; the line becomes the line of the remaining edits,
-   that is, as if the reversed edits had never been made (T4 of reverse logic);
-3. pins the left side as in R6. So nothing changes on B, the right side is what it would
-   be without the previous text's edits, adapted where B requires it (for example, an A
-   just left of the chip with "A → B 2 units on the right" keeps its B), and an element
-   that straddles the chip is cut there;
-4. installs the new text's transitions and applies its rules.
+   as if the reversed ones had never been made (T4 of reverse logic);
+3. pins the left side as in R6. So nothing changes on B; the right side is what it would
+   be without the previous text's edits, adapted where B requires it (an A just left of
+   the chip with "A → B 2 units on the right" keeps its B: rules triggering from the left
+   still project their consequences to the right), and an element that straddles the
+   chip is cut there;
+4. runs the new text's rules that hold at the chip, then shows its continuous edit.
 
 Elements the track starts with, and user edits that require no text edit, are kept.
 
@@ -89,20 +103,19 @@ from the position of the chip when `switch_rules_text` is called.
 **R9. The machine generates the texts, when it decides to.** `Machine` drives a
 `TrackManager` with an `Optimizer`, which supplies its own policy: `plan(view,
 resources)` returns the time to allow a new run, or `None`; `generate(view,
-deadline)` returns a text, or `None`. The objective is the optimizer's own; the
-requirements constrain only how its runs reach the line, which is what is proved
-and tested, for any optimizer (the tests use scripted ones, a simulated clock and
-a runner that finishes runs when the test chooses, plus real processes for R11
-and R12). The optimization problem the machine solves is the one of
-`ModeScheduler`, below ("The optimizer").
+deadline, resources)` returns a text, or `None`. The requirements constrain how
+runs reach the line, which is what is proved and tested for any optimizer (the
+tests use scripted ones, a simulated clock and a runner that finishes runs when
+the test chooses, plus real processes for R11 and R12).
 An observation is the start, a chip move, a user edit, or `poll`. At each one,
 in this order:
 1. the run in progress is handled: stopped past its deadline (R12), or, if it has finished, as in R13;
 2. if no run is in progress, `plan` is called with a snapshot `View` of the line
    and the current `Resources`, and a run starts if it returns a time. The view
-   holds the chip's position, mode and every transition, the line, the installed
-   text, whether it asks for a new one (R5'), and the refused edits; the run is given the same view without the text
-   (a text installed directly need not be picklable).
+   holds the chip's position, mode and the transitions it went through, the line, the
+   installed text, whether it asks for a new one (R5'), the refused edits and the
+   performance (R14); the run is given the same view without the text (a text installed
+   directly need not be picklable).
 
 So the optimizer is asked at every observation where it could start a run, and
 never while one is in progress: *at most one run is in progress at a time.* ∎
@@ -112,12 +125,12 @@ never while one is in progress: *at most one run is in progress at a time.* ∎
 (`usable_cpus()`), or only `limit` of them, an integer from 1 to that number
 (`None` means all; anything else is `ValueError`). The user may replace
 `machine.resources` at any time; `plan` and `generate` receive the current value.
-The time of a run is the optimizer's choice: `plan` returns any positive, finite
-number of seconds t, and the run gets `Deadline(start, t)`, with `start` the clock
-when it starts. Any other answer from `plan`, or an exception in it, is recorded
-in `refused_plans` and starts no run. *Nothing the optimizer does makes a chip
-move or a user edit raise:* that move or edit has already happened when `plan`
-is asked, so an exception there would wrongly suggest that it failed.
+The time of a run is the optimizer's choice: `plan` returns a positive number of
+seconds t, finite, and the run gets `Deadline(start,
+t)`, with `start` the clock when it starts. Any other answer from `plan`, or an
+exception in it, is recorded in `refused_plans` and starts no run. *Nothing the
+optimizer does makes a chip move or a user edit raise:* that move or edit has
+already happened when `plan` is asked.
 
 **R11. Each run is a process of its own, held by the operating system**
 (`ProcessRunner`). The process is started fresh ("spawn") and waits until the
@@ -147,155 +160,237 @@ on purpose (`setsid`) escapes the stop; on Windows nothing of the job can.
 returns (`finished`; `time.monotonic` is the same clock in every process). Then,
 at the next observation:
 * it raised: outcome `error`, nothing changes;
-* `finished > start + t`: outcome `late`, the text is discarded (possible when it
-  returns just before the stop takes effect). With R12, *no text produced after
-  the time the run allowed itself is ever installed*, however late the
-  observation comes;
+* `finished > start + t`: outcome `late`, the text is discarded. With R12, *no text
+  produced after the time the run allowed itself is ever installed*;
 * it returned `None`: outcome `no text`;
 * otherwise `switch_rules_text(text)` at the chip's position at that moment (R7,
-  R8): outcome `installed`, or `refused` if the switch raised (for example
-  transitions now behind the chip). The switch is a transaction, so a refused
-  text changes nothing.
+  R8): outcome `installed`, or `refused` if the switch raised. The switch is a
+  transaction, so a refused text changes nothing.
 
 The run's `View` is a copy taken when it started, and the chip may have moved
-since: the text applies from the chip's position at install, not from
-`view.position`. Every installed text goes through `switch_rules_text`, so R1–R7
-hold for the machine as they do for direct calls. The run's process start-up
-time counts in its time t.
+since: the text applies from the chip's position at install.
 
-## The optimizer: mode scheduling with switching costs
+**R14. The performance hyperparameter**, `Machine.performance` ∈ (0, 1)
+(`ValueError` otherwise, 0 and 1 included; the user may change it at any time),
+is in every view. What it means depends on the problem, so the optimizer applies
+it; the machine only requires a positive, finite time for every run. For the
+optimizer of this module, with f = (1 − h)/h (f → +∞ as h → 0, f → 0 as h → 1,
+f = 1 at h = 1/2): a run is allowed `time_scale`·f seconds, its horizon is
+`lookahead`·f, its grid `resolution`/f, and a text asks for a new one when its
+score may be more than `scale`·f below the optimum (Theorem 4), or near the end
+of its horizon. So the ends of the range are limits, never reached:
+* as h → 0, time, horizon and tolerance grow without bound and the grid gets
+  infinitely fine: the value of a text tends to the best value of all placements
+  for every scenario of modes (Theorems 3 and 5), and no change starts a new run;
+* as h → 1, the time tends to 0: once it is too short for a single unit, the text
+  is empty, and it asks for a new one at every change of the score (tolerance → 0).
 
-The requirements leave the optimization problem open; the one chosen here
-decides the chip's modes, and so uses what the texts control: mode transitions
-(R2) and continuous edits (R5). `ModeScheduler(rates, switch_cost, base=...)`.
+## Moving the chip
+
+The track computes, for a move from a to b, the line at every position on the
+way, without sampling: `_advance` goes from one *candidate* position to the
+next, and handles each gap between candidates at once.
+
+**Candidates.** Let g be the gcd of the rule offsets (g = 0 if there is none),
+A the offsets of the moving ends of the text's continuous edits and of the
+windows of its conditions (with 0), and C the fixed positions: the ends of the
+elements and of the active edits, of the positions of the text's rules and
+continuous edits, the fixed ends of its continuous edits and windows, the
+transitions, 0 and b. The candidates after the chip are the numbers c − a + k·g
+(c ∈ C, a ∈ A, k ∈ ℤ); without continuous edit or condition, C itself. At a
+candidate the chip stops: the transitions there apply, the left side is pinned,
+and the rules whose stretch starts there run; it also stops where a condition
+changes (next section).
+
+**Theorem M (moves are exact).** With the chip at p, the line L_p is: the active
+edits, the pins of what the chip left on (−∞, p], and the continuous edit at p
+if valid there (R5). Then (a) between two candidates, L_p changes only by its
+ends moving with p; (b) what the chip leaves on a gap, and at its end, is
+computed exactly; (c) the line after a move, and every edit made during it, are
+the same however the move is split into steps.
+*Proof.* (a) Every region in the computation at p has ends of the form
+c + k·g or p + a + k·g: the active edits have fixed ends, the continuous edit
+ends p + a or fixed, the pin, `keep` and the clipping at the chip end at p, and
+the solver only shifts by rule offsets (multiples of g) and takes ∪, ∩, \, which
+select ends. Every decision of the solver (an empty region, a comparison, the
+order of ends modulo g in its exact choices) compares two such numbers; two can
+only change order where p = c − a + k·g, a candidate, since the other
+differences do not depend on p. (Candidates stay discrete: new fixed positions
+come from pins and rules at candidates, so all candidates lie in C₀ + dℤ, d the
+generator of the group spanned by g and A — a finitely generated subgroup of ℚ is
+cyclic — and there are finitely many in a bounded stretch.)
+(b) With continuous edits the candidates include every multiple of g, so a gap
+is shorter than g, and no rule relates two of its points; the state the chip
+leaves at x in the gap, lim_{p→x⁻} L_p(x), depends on the pins in the gap only
+through whether the continuous edit is shown. By (a) it is the same for every x
+of the gap: the kinds K with (p, p + ε) ⊂ L_p[K], for any p of the gap. At the
+gap's end c′ it is whether c′ ∈ L_p, for p = c′ − η with η smaller than every
+|a + k·g| ≠ 0, so that c′ lies where it lies for p → c′⁻. Whether the
+continuous edit is shown is the same on the whole gap, by (a); it is shown iff
+it is valid at p with the left side that showing it leaves (`_sweep`). This last
+choice is a convention (see "Choices the requirements leave open", 3).
+(c) A stop at s inside a gap splits it into two gaps of the same kind, with the
+same results (by (a)); no rule starts at s unless s is a candidate, and the pins
+of the two halves merge. ∎ (`test_random_moves_do_not_depend_on_the_steps`.)
+
+**Conditions on the state.** `Ratio(kind, lo, hi, y)` holds at p when kind
+covers more than a fraction y of the window [lo(p), hi(p)] (each end fixed or
+moving with the chip) in the state the rules see; its *excess* is
+e(p) = measure(kind ∩ window) − y·length. *Lemma C.* On a gap, e is affine in p.
+*Proof.* By Theorem M (a) (the windows' ends are among the candidates' offsets
+and fixed positions), the regions of the state have ends fixed or p + const, in
+an order that does not change on the gap, and so do the window's ends; the
+measure of an intersection is then a sum of differences of such ends. ∎ So two
+positions of a gap give e exactly, with the position where it changes sign: the
+chip stops there, and a rule whose condition starts to hold there runs at it. A
+rule runs at x when it holds at x but not just before (the stretch is closed at
+x), or when it does not hold at x but holds just after (the stretch is open at x:
+it runs as the chip leaves x). Just before and just after are signs of e near x,
+computed from its affine form; so the rules run at the same positions however a
+move is split (`test_conditions_on_the_state_are_watched_at_every_position`, and
+the random runs, which use conditions and open stretches). A condition on an
+arbitrary function of the state could not be watched this way: the first
+position where it holds need not exist, and it may change at positions no finite
+evaluation finds; conditions are therefore of this form.
+
+Examples (tests in `ContinuousTests`): X on (chip, chip + 1] leaves X on the
+whole path, whatever the steps; X on [chip + 1, chip + 2] leaves nothing; "A from
+the chip to 3" leaves A on (start, 3]; an edit active in one mode stops exactly
+at the transitions.
+
+## The optimizer: elements for the modes the user tends to follow
+
+The requirements leave the optimization problem open, and give a tendency: the
+actual scenario of modes probably more or less follows it ("element A incites
+the user to switch to mode 2"). `TendencyPlanner(rates, base=…, controlled=…,
+cost=…, tendency=…)` uses it to predict the modes.
 
 **The problem.** Modes M. Per unit of length, mode m earns `base[m]`, plus
-`rates[m][K]` wherever kind K is present (rates may be negative: a cost). A
-change from mode a to mode b costs c(a, b) ≥ 0, with c(a, a) = 0 and the triangle
-inequality c(a, d) ≤ c(a, b) + c(b, d); anything else is `ValueError`. For a line
-L, the rate of m at x is r_m(x) = base[m] + Σ{rates[m][K] : x ∈ L[K]}. A
-*schedule* on (s, E] from mode y is a finite list of transitions
-s ≤ t_1 < … < t_r ≤ E to modes m_1 … m_r (m_j applies from t_j on, as in R2;
-m_0 = y). Its value is
+`rates[m][K]` wherever kind K is present (negative rates are costs). The texts
+place the controlled kinds U; each element of K ∈ U costs `cost[K]` ≥ 0. The
+tendency is a list of (kind, mode), for any kinds, placed by the texts or not:
+at a position where one of them is present, the predicted mode is the mode of
+the first such kind; elsewhere the predicted mode stays what it was. A
+*placement* puts a set of controlled kinds on each piece of a finite partition of
+the horizon (p, E] into intervals and points; its value J is the integral of the
+predicted mode's rate minus the cost of its elements (for E = +∞, J is an affine
+function a·X + b of the horizon X, compared lexicographically: the best for every
+horizon long enough). Watched kinds are the uncontrolled kinds the rates or the
+tendency read; *steering* kinds are those the tendency reads.
 
-  J = ∫_(s, E] r_μ(x)(x) dx − Σ_j c(m_(j−1), m_j),  μ(x) = the mode at x.
+**The units.** A text decides on *units*: the open intervals between the chip,
+the multiples of the grid g, the ends of the steering kinds and E, and their end
+points. Its placements are constant on each unit; S_g is the best value among
+them. Inside a unit the predicted mode is constant (the steering kinds and the
+placement are), and the rates change only at the ends of the other watched kinds.
 
-P(L, y, s, E) is: maximize J. The *cells* are the open intervals between
-s = e_0 < e_1 < … < e_n = E, where e_1 … e_(n−1) are the endpoints, strictly
-between s and E, of the regions of the kinds that some rate mentions. On a cell
-every rate is constant; g_i(m) is what m earns on cell i.
+**Lemma 1 (without steering, cells suffice).** If the tendency reads no
+controlled kind, for every placement there is one at least as good, constant
+between consecutive ends of the watched kinds. *Proof.* Predicted modes then do
+not depend on the placement, and are constant there. Replace every piece's set by
+the set of the piece with the best rate: the integral does not decrease, and for
+every kind the number of runs of presence does not increase (a block replaced by
+one of its values), so neither do element costs. ∎ With steering this is false: a
+placed A, however short, can switch the mode (Theorem 5).
 
-**Lemma 1 (it suffices to switch at cell ends).** For every schedule there is
-one, at least as good, with one mode per cell, its transitions at cell ends.
-*Proof.* In each cell i, let the new schedule use the mode of best rate among the
-modes the old one uses in that cell. The gain does not decrease: on cell i the
-old one earns a combination of those rates with total length that of the cell
-(single points have no length). The new list of modes is a subsequence of the old
-one (cells are in order, and each pick is used inside its cell), and by the triangle
-inequality removing a mode b from …, a, b, d, … does not increase the cost:
-c(a, d) ≤ c(a, b) + c(b, d); equal neighbours cost 0. ∎
-So P has a maximum (over the finitely many such schedules) and it is the best
-one-mode-per-cell schedule.
+**Theorem 2 (`solve` is exact).** For every state (mode, controlled kinds present)
+at the start of every unit, `solve` gives the best value of the rest of the
+horizon among placements constant on units: W_n = 0 (or nothing after an infinite
+last unit), W_i(s) = max over the sets on the open unit and on its end point of
+the unit's value plus W_{i+1} of the state it leads to (induction). All numbers
+are exact. With several workers, each computes the max-plus matrix of a chunk of
+units; products are associative, so composing them gives the same W at every chunk
+end, and each chunk is then swept from its end: the same values
+(`test_parallel_is_the_same`). ∎
 
-**Theorem 2 (`solve` is exact).** V_0 = (0 at y, −∞ elsewhere),
-V_(i+1)(b) = max_a (V_i(a) − c(a, b)) + g_i(b): V_n(b) is the best value of a
-schedule ending in b (induction on i, by Lemma 1), and back pointers give one
-schedule of value max_b V_n(b). All numbers are exact fractions. With several
-workers, each computes, for a chunk of cells, the best value from every entry
-mode to every exit mode (a max-plus matrix); these products are associative, so
-composing them in order gives the same V at every chunk end, and the back pointers
-of the entry mode chosen on the way back give the schedule. *Anytime:* cells are
-taken in rounds, and the result is always V and a schedule for the cells done,
-that is, an optimum of P(L, y, s, e_d), d the cells done. ∎
+**Theorem 3 (texts are optimal for the tendency, whatever the actual modes).**
+The text has, for every unit and mode, a rule on [unit start, unit end) for that
+mode; it runs where the chip enters the unit, at every actual transition inside
+it, and at the install. It reads the actual mode m and the controlled kinds
+present at the chip, and places on the rest of the unit the sets maximizing the
+rest of the unit's value plus W_{i+1}: by Theorem 2 this is the best placement on
+units from that position, that mode and that state, for the tendency. So whatever
+the user actually does, at every position where the text can act, it acts
+optimally for the predicted future; a deviation of the user needs no new run.
+∎ (`test_texts_react_to_the_actual_modes`.)
 
-**The text.** `generate` computes the schedule for its view (position p_0, mode
-y, line L) on (s, E], s and E chosen by `plan` (below), and returns a text with
-* transitions: (s, m_1), even if m_1 = y, then every change of mode;
-* a continuous edit (`Schedule`, R5): the kind `served` (default "S") wherever the
-  schedule's mode earns from a kind present *in the state at that step* (rate > 0),
-  on (p_0, E] (on (p_0, s) with mode y), minus where `served` already is. So it
-  follows the line without a new text: a demand added where the chip will be in
-  a mode that serves it is served at once. It is one Add, shown ahead of the chip
-  at every step, so what the chip goes through stays on the line, as an edit of
-  the text;
-* `rerun` (R5'): true when the chip is within the lead (below) of E, unless the
-  schedule is final, or when 2·D > `tolerance`, D the divergence (Theorem 5).
+**Theorem 4 (the score as the line changes).** Let L be the line the text was
+computed for and L′ the line now. If no steering kind changed after the chip, let
+D = ∫ max_m |r′_m(x) − r_m(x)| dx over the horizon after the chip. Then the text
+is at most 2·D below the best placement on units for L′. *Proof.* The units are
+the same for L and L′ (they depend only on the grid and the steering kinds), and
+so are the predicted modes and costs of every placement on them; its value changes
+by at most D. The text is optimal for L (Theorem 3), so for an optimum μ′ of L′:
+J′(μ′) ≤ J(μ′) + D ≤ J(text) + D ≤ J′(text) + 2·D. If a steering kind changed,
+D is +∞. ∎ (`test_the_score_is_within_twice_the_divergence`.)
 
-The served kind cannot be one that earns (`ValueError`), and the line's rules should
-not mention it: the optimizer does not see them. If they refuse the edit, it is
-skipped and tried again at every step (R4, R5).
+**Theorem 5 (finer grids tend to the best of all placements).** Let J* be the
+supremum of J over all placements. Then S_g → J* as g → 0. *Proof.* Take a
+placement P with N pieces and J(P) > J* − ε. When g is smaller than every piece
+of P and every distance between a boundary of P and an end of a steering kind,
+move every boundary of P that is not such an end to a multiple of g within g, on
+the same side of every end and every other boundary; move every point piece to a
+unit end the same way. The order of the pieces, the steering kinds and the placed
+sets they meet are unchanged, so the predicted modes and the runs of every kind,
+hence the costs, are unchanged; each move changes the integral by at most g·2R,
+R the largest |rate|. The result is constant on units, so S_g ≥ J(P) − 2N·g·R >
+J* − 2ε for g small enough; and S_g ≤ J*. ∎ The supremum need not be reached: with
+"A incites busy", A costing 3 per unit and busy earning 1, J* = 4 on (0, 4] but
+every placement is below, and S_g = 4 − g
+(`test_steering_tends_to_the_best_value_as_the_grid_gets_finer`).
 
-**Theorem 3 (an installed text holds its schedule from s on).** Let q be the
-first transition of the chip after p_0, in the view (+∞ if none); `plan` takes
-p_0 < s ≤ q. Only the machine installs texts, one run at a time, so the
-transitions do not change between the view and the install, at the chip's position
-p_1 ≥ p_0. *If p_1 ≥ s, the install is refused* (its first transition is not
-right of the chip, R2), nothing changes, and `plan` tries again (below).
-*Otherwise* the chip's mode is y on [p_1, s), and the schedule's from s on.
-*Proof.* After the switch the transitions are the old ones at or before p_1, then
-the text's (R2). An old one in (p_0, p_1] would be in (p_0, q): there is none. So
-the mode on [p_1, s) is the one at p_0, y; from s, the text's transitions decide. ∎
+**When it generates (`plan`).** At every observation without a run, a run starts
+when, and only when, the installed text is not one of this optimizer's, or it
+asks for one (`view.rerun`): the chip is within the lead of E (2·v·t +
+`min_lead`, v the chip's speed as seen by `plan`, t the run's time), or 2·D >
+tolerance (R14). After a run that installed nothing it waits 0.5 s, doubled at
+each further failure (at most 30 s), and doubles its time estimates.
 
-**Theorem 4 (no new text is needed while nothing changes).** Say the installed
-text has schedule σ on (s, E] for line L, the chip is at p ≥ s, and ahead of the
-chip the kinds of the problem are as in L. Then σ on (p, E] is optimal for
-P(line now, mode at p, p, E). *Proof.* The data of that problem are those of L on
-(p, E]. A better schedule on (p, E], put after σ on (s, p], would give a schedule
-on (s, E] better than σ (a switch at p is allowed, since Lemma 1 compares with
-every schedule; two at p merge into one, no dearer by the triangle inequality),
-which contradicts Theorem 2. ∎
-And σ is *final* when no cell end lies after E and σ's last mode has the best
-rate on (E, +∞): then σ, its last mode kept forever, is optimal on (s, X] for
-every X ≥ E (any schedule earns at most that rate after E, and costs are ≥ 0).
+**How much time, with how many CPUs.** With n units, P parts, S states and u
+sets, one process does P·S·u² operations; w > 1 workers do (2·P·S·u² + n·S³)/w
+each, after starting (`pool_startup`). `speed` is measured once if not given. With
+c = `resources.cpus`, `plan` takes w = 1 or w = c, whichever is faster, and the
+time 1.25·(`startup` + work) + 0.1 s, for the most units of the horizon whose time
+fits in `time_scale`·f (R14); if none fits, the text is empty. A run that cannot
+finish in time gives no text.
 
-**Theorem 5 (the score of the installed text, as the line changes).** Let σ, s,
-E, L be as in Theorem 4, the chip at p, the line now L', and p' = max(p, s). The
-*divergence* is D = ∫ max_m |r'_m(x) − r_m(x)| dx over (p, E] ((p, +∞) if σ is
-final), r and r' the rates for L and L'. Then σ is at most 2·D below the optimum
-of P(L', mode at p', p', E) (of every horizon X ≥ E if σ is final).
-*Proof.* Every schedule μ on (p', E] has the same switching costs for L and L', so
-|J'(μ) − J(μ)| ≤ D. σ is optimal for L there (Theorem 4), so for an optimum μ' of
-L': J'(μ') ≤ J(μ') + D ≤ J(σ) + D ≤ J'(σ) + 2·D. ∎
-D is computed exactly from what the text recorded (the kinds of the problem ahead
-of the chip when it was generated) and the state (R5'); it is 0 while nothing
-changes, and +∞ if a change with a rate reaches +∞ after a final schedule.
+## Choices the requirements leave open
 
-**When it generates (`plan`).** At every observation without a run (R9), a run
-starts when, and only when, the installed text is not one of this optimizer's
-(at the start, or after a foreign text), or it asks for one (`view.rerun`): the
-chip is near E (and the schedule is not final), or 2·D > `tolerance`.
+The requirements fix what must hold; where they allow several behaviours, these
+are the choices made. Each satisfies the requirements.
 
-So `tolerance` (≥ 0, in units of the value) is the user's choice between CPU and
-quality. With 0, any change of the problem ahead of the chip starts a run, and by
-Theorem 4 the line is always run by an optimal schedule (over its horizon). With
-more, changes add up (D is measured from the text's own data, so small ones are
-not forgotten) until the installed text may be more than `tolerance` below the
-optimum, by Theorem 5; until then the text keeps following the line (its
-continuous edit) and no run starts. Either way, moving the chip a little, however
-complex the line, starts no run (Theorem 4). The time a run gets is a separate
-choice: `max_budget` (below). After a run that installed nothing (no text,
-late, stopped, refused, error), it waits 0.5 s, doubled at each further failure
-(at most 30 s), and doubles its time estimates (`startup`, `pool_startup`).
-
-**How much time, with how many CPUs.** With n cells and k modes, one process
-does n·k² max-plus operations; w > 1 worker processes do n·k³/w each (every entry
-mode) and n·k to compose, after starting (`pool_startup`). `speed` is measured
-once if not given. With c = `resources.cpus` (R10), `plan` takes w = 1 or w = c,
-whichever is faster, and the time 1.25·(`startup` + work) + 0.1 s. Above
-`max_budget`, it shortens the horizon (n), down to one cell. So a run is given less
-time when it may use more CPUs, and uses them only when that is faster.
-A smaller `max_budget` or `lookahead` means shorter runs on shorter horizons.
-The *lead*: s = min(p_0 + lead, q), lead = 2·v·t + `min_lead`, v the chip's
-speed seen by `plan` (a maximum decaying by half per second), t the run's time;
-E = s + `lookahead`, or less, as above. `generate` keeps 0.05 s + 5 % of its time
-to send the text back, and starts a round only if the time left exceeds the last
-round's; whatever it returns is exact for its cells (Theorem 2), and a text it
-cannot finish in time is never installed (R13).
+1. **The form of texts.** A text is given as rules on stretches of positions and
+   modes (`Rule`) and continuous edits whose ends are fixed or move with the chip
+   (`Follow`), so that the system can compute their effect at every position the
+   chip goes through (Theorem M); a black-box function of the position could only
+   be evaluated at finitely many. A rule's action may be any function of
+   (position, mode, state), since it runs at one known position, and its
+   condition is a presence ratio on a window (Lemma C). Continuous edits
+   do not read the state: some state-dependent ones have no consistent behaviour
+   ("X on (chip, chip + 1] when X is not at the chip" would have to switch at every
+   position), and a generator must not write such texts.
+2. **Where a rule runs.** "If the chip is between x₁ and x₂ …" runs once, where the
+   chip enters the stretch: at x₁, whether the stretch is [x₁, x₂] or (x₁, x₂].
+3. **A continuous edit that its own trace sustains is shown.** With
+   "X → Y 1 unit to the left", X on (chip, chip + 2] and Y already on [−1, 0] at the
+   install at 0, showing the edit and hiding it from some position on are both
+   consistent; the requirement of a unique result is met by showing it whenever
+   that is consistent (`test_an_edit_sustained_by_its_trace`).
+4. **The optimization problem** of the demo optimizer, its units and its grid
+   (above). The line's rules should not involve the problem's kinds, or its edits
+   may adapt or be refused (R4) and the optimum is that of the line as the problem
+   describes it.
+5. **Elements that repeat forever.** An ordered disjunction over a ray or the whole
+   line can give infinitely many intervals (B on [0, 1) ∪ [2, 3) ∪ … with "no B 1 unit
+   right of B", reverse logic, Theorem 3.4). The track only reads the ends of
+   elements within bounded windows (around the move, and one common period for the
+   residues modulo g), so moves stay exact (`test_elements_that_repeat_forever`);
+   `TendencyPlanner` needs a finite horizon over them.
 
 ## Running
 
 ```
 python rules_generation_logic.py                 # the demo
-python -m unittest test_rules_generation         # RULESGEN_SEEDS=300 for a stress run
+python -m unittest test_rules_generation         # RULESGEN_SEEDS=150 for a stress run
 python -m unittest test_scheduler                # the optimizer; RULESGEN_SEEDS as well
 ```

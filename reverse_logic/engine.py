@@ -26,7 +26,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from fractions import Fraction
 
-from region import EMPTY, FULL, Region, cells_of, num
+import choice
+from region import EMPTY, FULL, Region, cells_of, lcm, num
 from rules import Forbids, Implies, ImpliesAny, RuleSet, anchors
 
 
@@ -40,6 +41,7 @@ class MissingElementError(ValueError):
 
 class DependencyError(ValueError):
     """The edit cannot be reversed because a later active edit requires it."""
+
 
 
 # ============================================================================
@@ -143,9 +145,17 @@ def put(op: Op) -> Region:
 def touches(part: Region, other: Region) -> bool:
     """`part` (one interval, disjoint from `other`) is adjacent to `other`.
 
-    Both are canonical and disjoint, so their union has fewer parts iff some
-    part of `other` merges with `part`."""
-    return len((part | other).parts) < 1 + len(other.parts)
+    They can only meet at an end of `part`; near it, both are canonical and
+    disjoint, so their union has fewer parts iff some part of `other` merges
+    with `part`."""
+    for e in (part.start, part.end):
+        if math.isinf(e):
+            continue
+        window = Region.closed(e - 1, e + 1)
+        near, here = other.within(e - 1, e + 1), part & window
+        if len((here | near).parts) < len(here.parts) + len(near.parts):
+            return True
+    return False
 
 
 # ============================================================================
@@ -219,6 +229,25 @@ def _gcd(values) -> Fraction:
     return g
 
 
+def _tail_copies(region: Region, g: Fraction):
+    """(tail, its pattern shifted to the copies whose residues mod g differ)."""
+    for tail in (region.left, region.right):
+        if tail is not None:
+            n = int(lcm(tail.period, g) / tail.period)
+            pat = Region(tail.pattern)
+            for i in range(n):
+                yield tail, pat.shift(tail.at + i * tail.period)
+
+
+def _ends_mod(region: Region, g: Fraction) -> set[Fraction]:
+    """The residues mod g of every finite end of the region's parts."""
+    out = {e % g for p in region.parts for e in (p[0], p[2]) if not math.isinf(e)}
+    for tail, copy in _tail_copies(region, g):
+        out.add(tail.at % g)
+        out |= {e % g for p in copy.parts for e in (p[0], p[2])}
+    return out
+
+
 def _union(a: Claims, b: Claims) -> Claims:
     out = dict(a)
     for k, r in b.items():
@@ -262,6 +291,11 @@ class Solver:
         offsets = [o for r in self.rules for _, o in _rule_atoms(r)]
         self.g = _gcd(offsets) or Fraction(1)
         self.steps = [[(k, int(o / self.g)) for k, o in _rule_atoms(r)] for r in self.rules]
+        # Decisions at an anchor reach atoms at most `reach` away: a derivation
+        # chain has at most one rule per kind, and a violation one more rule.
+        span = max((max(o for _, o in _rule_atoms(r)) - min(o for _, o in _rule_atoms(r))
+                    for r in self.rules), default=Fraction(0))
+        self.reach = (len(self.order) + 1) * span
         for ri, r in enumerate(self.rules):
             read = [k for k, _ in r.premises] + ([r.head[0]] if isinstance(r, Forbids) else [])
             self.trig[max(self.idx[k] for k in read)].append(ri)
@@ -363,123 +397,110 @@ class Solver:
         return chi
 
     # ---- exact ordered-disjunction choice --------------------------------
-    def exact_choices(self, base: Claims, nb: Claims, acc: _Accepted):
+    def exact_choices(self, base: Claims, nb: Claims, acc: _Accepted, p: Claims):
         """Operands for the new ImpliesAny anchors such that the level has no
-        violation, if such operands exist: the first such assignment, with
-        anchors taken in topological order, then rule order, then left to
-        right, and operands in their written order.
+        violation: positions are decided one after the other, the closest to 0
+        first (the one on the left first when two are equally close), the rules
+        at one position in topological order, and each takes the first operand
+        that still lets the remaining positions be placed (`choice.py`).
 
         Rules only relate points of one lattice r + g*Z, and on every cell of
-        residues r below the same finite problem arises, so it is solved once
-        per cell by backtracking.  On cells where no assignment exists, the
-        approximate choice of `choices` is used: the level then has a
-        violation whatever the choice, and its claims adapt."""
+        residues r below the same problem arises, so it is solved once per cell.
+        On a cell where no assignment exists, the level's present claims `p`
+        there are kept one after the other in the same order (`_keep_in_order`),
+        and the others are returned, to be dropped. With infinitely many anchors
+        there, the approximate choice of `choices` is used instead, and the
+        level adapts by its support (`level`, step 3).
+
+        The line of no new anchor has no violation (`level`, step 1)."""
         g = self.g
         upper, new_anchor = self.close(base, acc, {
             ri: ([FULL] * len(self.rules[ri].options), EMPTY) for ri in self.any_rules})
         chosen = {ri: [[] for _ in self.rules[ri].options] for ri in self.any_rules}
+        drop: dict[str, list[Region]] = defaultdict(list)
         if not any(new_anchor.values()):
-            return {ri: ([EMPTY] * len(ch), EMPTY) for ri, ch in chosen.items()}
-        parts = [p for r in upper.values() for p in r.parts]
-        lo, hi = min(p[0] for p in parts), max(p[2] for p in parts)
+            return {ri: ([EMPTY] * len(ch), EMPTY) for ri, ch in chosen.items()}, {}
+        anchors_ = Region.union_of(*new_anchor.values())
+        finite = anchors_.is_finite() and not math.isinf(anchors_.start) and not math.isinf(anchors_.end)
 
         regions = [*base.values(), *nb.values(), *acc.anchor.values(),
-                   *(r for ch in acc.choice.values() for r in ch)]
-        breaks = sorted({Fraction(0)} | {e % g for r in regions for p in r.parts
-                                          for e in (p[0], p[2]) if not math.isinf(e)})
+                   *(r for ch in acc.choice.values() for r in ch), *new_anchor.values()]
+        # Within a cell, every region is the same on every lattice, and so is the
+        # order of the positions by distance to 0 (it changes at 0 and g/2).
+        breaks = sorted({Fraction(0), g / 2} | {e for r in regions for e in _ends_mod(r, g)})
         cells = [(b, b) for b in breaks]
         cells += [(a, b) for a, b in zip(breaks, breaks[1:] + [g])]
 
         unsat = []
-        for cell in cells:
-            a, b = cell
+        for a, b in cells:
+            unit = Region.point(a) if a == b else Region.open(a, b)
             r = a if a == b else (a + b) / 2
-            ks = range(math.floor((lo - r) / g), math.ceil((hi - r) / g) + 1)
-            dec = self._solve_cell(r, ks, base, nb, acc)
-            orbit = [Region.point(a + k * g) if a == b else Region.open(a + k * g, b + k * g) for k in ks]
-            if dec is None:
-                unsat.extend(orbit)
-                continue
-            for (ri, k), j in dec.items():
-                chosen[ri][j].append(orbit[k - ks.start])
+            if finite:
+                # Decisions only matter within `reach` of the anchors, and atoms
+                # there are derived from atoms within `reach` again.
+                lo, hi = anchors_.start - 2 * self.reach, anchors_.end + 2 * self.reach
+                ks = range(math.floor((lo - r) / g), math.ceil((hi - r) / g) + 1)
+                dec = self._solve_cell(r, ks, base, nb, acc, new_anchor)
+                if dec is None:
+                    dec, removed = self._keep_in_order(r, ks, base, nb, acc, new_anchor, p)
+                    for kk, k in removed:
+                        drop[kk].append(unit.shift(k * g))
+                for (ri, k), j in dec.items():
+                    chosen[ri][j].append(unit.shift(k * g))
+            else:
+                cell = choice.Cell(self, r, base, nb, acc, new_anchor)
+                cell.unit = unit
+                res = choice.solve_infinite(cell)
+                if res is None:
+                    unsat.append(Region.tiled(unit, g, None, None))
+                    continue
+                for ri, regs in res.items():
+                    for j, reg in enumerate(regs):
+                        chosen[ri][j].append(reg)
 
         chi = {ri: ([Region.union_of(*c) for c in ch], EMPTY) for ri, ch in chosen.items()}
         if unsat:
             mask = Region.union_of(*unsat)
-            b0, _ = self.close(base, acc, None)
-            approx = self.choices(b0, nb)
+            approx = self.choices(self.close(base, acc, None)[0], nb)
             chi = {ri: ([c | (a & mask) for c, a in zip(chi[ri][0], approx[ri][0])], approx[ri][1] & mask)
                    for ri in chi}
-        return chi
+        return chi, {kk: Region.union_of(*regs) for kk, regs in drop.items()}
 
-    def _solve_cell(self, r: Fraction, ks: range, base: Claims, nb: Claims, acc: _Accepted):
-        """Backtracking search on the lattice points r + k*g, k in ks.
+    def _solve_cell(self, r, ks: range, base, nb, acc, cand, removed=frozenset()):
+        """`choice.solve_finite` on the lattice r + k*g, k in ks, without the
+        atoms `removed` of `base`."""
+        cell = choice.Cell(self, r, base, nb, acc, cand, removed)
 
-        Returns {(rule, k): operand} for every new anchor, or None if every
-        assignment has a violation.  Pruning is sound because the rules are
-        monotone: an anchor that is not decided yet derives nothing, and
-        deciding it can only add atoms, so a violation already present stays."""
+        def check(dec):
+            letters = {}
+            for (ri, k), j in dec.items():
+                letter = letters.setdefault(k, [None] * len(cell.anys))
+                letter[cell.slot[ri]] = j
+            st = cell.closure(ks.start, ks.stop - 1, {k: tuple(v) for k, v in letters.items()})
+            return not any(cell.bad_at(j, st) for j in ks)
+
+        return choice.solve_finite(cell, ks, check)
+
+    def _keep_in_order(self, r, ks: range, base, nb, acc, cand, p):
+        """The level's present claims on the lattice r + k*g, kept one after
+        the other, the closest to 0 first (the one on the left first, then in
+        topological order): each is kept if some assignment has no violation
+        with it and the ones kept before it, the later ones left out. Returns
+        the assignment for the kept ones and the atoms (kind, k) not kept."""
         g = self.g
-        pts = {k: r + k * g for k in ks}
-
-        def on(reg: Region) -> set[int]:
-            return {k for k, x in pts.items() if x in reg} if reg else set()
-
-        base_k = {kk: on(_get(base, kk)) for kk in self.order}
-        nb_k = {kk: on(_get(nb, kk)) for kk in self.order}
-        old = {ri: (on(acc.anchor.get(ri, EMPTY)), [on(c) for c in acc.choice.get(ri, [])])
-               for ri in self.any_rules}
-
-        def run(dec):
-            st = {kk: set(v) for kk, v in base_k.items()}
-            pending = None
-            for pos, kk in enumerate(self.order):
-                if st[kk] & nb_k[kk]:
-                    return None, None
-                for ri in self.trig[pos]:
-                    rule, steps = self.rules[ri], self.steps[ri]
-                    n_prem = len(rule.premises)
-                    reads = steps if isinstance(rule, Forbids) else steps[:n_prem]
-                    x = set.intersection(*({k - o for k in st[a]} for a, o in reads))
-                    if isinstance(rule, Forbids):
-                        if x:
-                            return None, None
-                    elif isinstance(rule, Implies):
-                        h, oh = steps[-1]
-                        st[h] |= {k + oh for k in x}
-                    else:
-                        old_a, old_ch = old[ri]
-                        for k in sorted(x):
-                            if k in old_a:
-                                j = next((j for j, c in enumerate(old_ch) if k in c), None)
-                            else:
-                                j = dec.get((ri, k))
-                                if j is None and pending is None:
-                                    pending = (ri, k)
-                            if j is not None:
-                                h, oh = steps[n_prem + j]
-                                st[h].add(k + oh)
-            return st, pending
-
-        dec: dict[tuple[int, int], int] = {}
-        frames: list[list] = []  # [anchor, operand] for every decision, oldest first
-        while True:
-            st, pending = run(dec)
-            if st is not None:
-                if pending is None:
-                    return dec
-                frames.append([pending, 0])
-                dec[pending] = 0
-                continue
-            while frames:
-                anchor, j = frames[-1]
-                if j + 1 < len(self.rules[anchor[0]].options):
-                    frames[-1][1] = dec[anchor] = j + 1
-                    break
-                frames.pop()
-                del dec[anchor]
-            else:
-                return None
+        atoms = sorted(((kk, k) for k in ks for kk in self.order
+                        if r + k * g in _get(p, kk) and r + k * g not in _get(acc.plus, kk)),
+                       key=lambda a: (choice._order_key(r + a[1] * g), self.idx[a[0]]))
+        kept: set = set()
+        for atom in atoms:
+            removed = frozenset(a for a in atoms if a != atom and a not in kept)
+            if self._solve_cell(r, ks, base, nb, acc, cand, removed) is not None:
+                kept.add(atom)
+        removed = frozenset(a for a in atoms if a not in kept)
+        dec = self._solve_cell(r, ks, base, nb, acc, cand, removed)
+        # With none of them, the lattice has the line of no new anchor.
+        assert dec is not None, "no assignment with the claims kept"
+        return dec, removed
 
     # ---- conflicts --------------------------------------------------------
     def violations(self, c: Claims, nb: Claims, new_anchor, chi) -> Claims:
@@ -525,24 +546,45 @@ class Solver:
 
     # ---- one level ----------------------------------------------------------
     def level(self, p: Claims, n: Claims, acc: _Accepted) -> tuple[Claims, Claims]:
-        base = _union(acc.base, p)
+        drop_p: Claims = {}
+        drop_n: Claims = {}
+
+        def adapt(seeds, c, chi, dn):
+            """Drop the level's present claims supporting these conflicts, and dn."""
+            nonlocal p, n, drop_p, drop_n
+            supp = self.support(seeds, c, acc, chi)
+            dp = _nonempty({k: r & supp[k] for k, r in p.items()})
+            drop_p, drop_n = _union(drop_p, dp), _union(drop_n, dn)
+            p = _nonempty({k: r - _get(dp, k) for k, r in p.items()})
+            n = _nonempty({k: r - _get(dn, k) for k, r in n.items()})
+
+        # 1. Conflicts no choice of operands avoids (the rules are monotone):
+        # those of the line of no new anchor.
+        b0, _ = self.close(_union(acc.base, p), acc, None)
         nb = _union(acc.neg, n)
-        chi = self.exact_choices(base, nb, acc)
+        seeds = self.violations(b0, nb, {}, None)
+        dn = _nonempty({k: r & b0[k] for k, r in n.items()})
+        if seeds or dn:
+            adapt(seeds, b0, {ri: ([EMPTY] * len(self.rules[ri].options), EMPTY) for ri in self.any_rules}, dn)
+
+        # 2. The operands; where no assignment exists, the claims kept in order.
+        base, nb = _union(acc.base, p), _union(acc.neg, n)
+        chi, unkept = self.exact_choices(base, nb, acc, p)
+        if unkept:
+            drop_p = _union(drop_p, unkept)
+            p = _nonempty({k: r - _get(unkept, k) for k, r in p.items()})
+            base = _union(acc.base, p)
         c, new_anchor = self.close(base, acc, chi)
 
+        # 3. Left only on lattices with infinitely many anchors and no assignment.
         seeds = self.violations(c, nb, new_anchor, chi)
-        drop_n = _nonempty({k: r & c[k] for k, r in n.items()})
-        drop_p: Claims = {}
-        if seeds or drop_n:
-            supp = self.support(seeds, c, acc, chi)
-            drop_p = _nonempty({k: r & supp[k] for k, r in p.items()})
-            p = _nonempty({k: r - _get(drop_p, k) for k, r in p.items()})
-            n = _nonempty({k: r - _get(drop_n, k) for k, r in n.items()})
-            base = _union(acc.base, p)
-            nb = _union(acc.neg, n)
+        if seeds:
+            adapt(seeds, c, chi, _nonempty({k: r & c[k] for k, r in n.items()}))
+            base, nb = _union(acc.base, p), _union(acc.neg, n)
             c, new_anchor = self.close(base, acc, chi)
-            # Theorem 3.2 of SEMANTICS.md: dropping the support removes every conflict.
-            assert not self.violations(c, nb, new_anchor, chi), "solver invariant broken"
+        # Theorem 3.2 of SEMANTICS.md: adaptation removes every conflict.
+        assert not self.violations(c, nb, new_anchor, chi), "solver invariant broken"
+        drop_p, drop_n = _nonempty(drop_p), _nonempty(drop_n)
 
         acc.base, acc.neg, acc.plus = base, nb, c
         for ri, new in new_anchor.items():
@@ -723,16 +765,38 @@ class LineSystem:
         sol = self._validate([e.ops for e in self._active()], self._base, ops, keep)
         return self._append(ops, sol.state)
 
-    def force(self, ops) -> int:
+    def force(self, ops, replace: bool = False) -> int:
         """Apply an edit made by the system, without the checks of `apply`.
 
         Used to pin part of the line (rules generation).  None of its claims
-        may be dropped: the caller makes them consistent with the rules."""
+        may be dropped: the caller makes them consistent with the rules.  With
+        `replace`, if the newest active edit is one made by the system, `ops`
+        takes its place (for a pin that restates a larger part of the line)."""
         self._no_pending()
         ops = list(ops)
-        sol, _ = self._solve([e.ops for e in self._active()] + [ops])
+        active = self._active()
+        last = active[-1] if replace and active and active[-1].internal else None
+        history = [e.ops for e in (active[:-1] if last else active)]
+        sol, _ = self._solve(history + [ops])
         assert not any(sol.dropped[-1]), "forced edit contradicts the rules"
-        return self._append(ops, sol.state, internal=True)
+        if last is None:
+            return self._append(ops, sol.state, internal=True)
+        last.ops = ops
+        self._set_base(sol.state)
+        return last.id
+
+    def preview(self, extra) -> Claims:
+        """The line if the system's edits `extra` were applied as the newest edits; nothing changes."""
+        return self._solve([e.ops for e in self._active()] + [list(x) for x in extra])[0].state
+
+    def trial(self, extra, ops, keep: Region | None = None) -> Claims:
+        """The line if the system's edits `extra`, then `ops`, were applied as the
+        newest edits.  `ops` is validated like `apply`, and the same errors are
+        raised; nothing changes."""
+        extra = [list(x) for x in extra]
+        history = [e.ops for e in self._active()] + extra
+        state = self._solve(history)[0].state if extra else self._base
+        return self._validate(history, state, self._check_ops(ops), keep).state
 
     def reverse(self, edit_id: int) -> None:
         """Undo an edit: the line becomes what it would be had it never been made.

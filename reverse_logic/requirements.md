@@ -64,4 +64,6 @@ There can't be a cycle between kinds of elements, whatever the distances in the 
 - if element A, then element B 1 unit on the right
 - if element B, then element A 1 unit on the right
 
-The result of every edit must be unique: there must be no ambiguity. For example, if a rule says "if element A then element B or C", the first operand in the "or" operation that can be placed is used, here element B.
+The result of every edit must be unique: there must be no ambiguity.
+- If a rule says "if element A then element B or C", the first operand in the "or" operation that can be placed is used, here element B.
+- When several positions compete for the operands of an "or" (one position taking an operand prevents another from taking its first one), positions are decided one after the other: the closest to 0 first, and the one on the left first when two are equally close. Each takes the first operand of the "or" that still lets the remaining positions be placed. This also applies when the element extends infinitely, in which case the result may repeat infinitely.

@@ -1,4 +1,5 @@
-"""An optimizer for the machine: mode scheduling with switching costs.
+"""An optimizer for the machine: where to place elements, for the modes the user
+tends to follow.
 
 Problem, proofs and the decisions of `plan`: SEMANTICS.md, "The optimizer".
 """
@@ -10,186 +11,322 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
+from itertools import combinations
 
 from chip import Mode, Number
 from machine import Deadline, Resources, View
 from region import EMPTY, INF, num
-from track import Region, Text, Track, ahead
+from reverse_logic import Add, Remove
+from track import Region, Rule, Text, Track, ahead
 
-Value = Fraction | None  # None: unreachable (minus infinity)
-# One result of `_chunk` per entry vector: (values after the chunk, back pointers)
-ChunkResult = list[tuple[list[Value], list[list[int]]]]
+Value = tuple[Fraction, Fraction]  # a*X + b, X the end of an infinite horizon (a = 0 on a finite one)
+State = tuple[int, frozenset]  # (mode index, controlled kinds present)
+ZERO: Value = (Fraction(0), Fraction(0))
 
 
-# ---- the dynamic program ----------------------------------------------------
-def _chunk(gains: Sequence[Sequence[Fraction]], cost: Sequence[Sequence[Fraction]],
-           entries: Sequence[Sequence[Value]]) -> ChunkResult:
-    """For each entry vector v (best value of each mode just before the first
-    cell), the best value of each mode after the last cell, and the back
-    pointers: back[i][b] is the mode before cell i on a best path in mode b on
-    cell i.  Ties go to the lowest mode index."""
-    k = len(cost)
-    out: ChunkResult = []
-    for v in entries:
-        back = []
-        for g in gains:
-            nv: list[Value] = [None] * k
-            nb = [0] * k
-            for b in range(k):
-                best, arg = None, 0
-                for a in range(k):
-                    if v[a] is not None and (best is None or v[a] - cost[a][b] > best):
-                        best, arg = v[a] - cost[a][b], a
-                nv[b], nb[b] = (None if best is None else best + g[b]), arg
-            back.append(nb)
-            v = nv
-        out.append((list(v), back))
+# ---- the problem --------------------------------------------------------------
+def _ends(region: Region, lo, hi) -> list[Fraction]:
+    """The finite ends of a region within [lo, hi]; an infinite hi needs a region
+    that does not repeat forever on the right (a horizon to +inf is a limit)."""
+    if math.isinf(hi):
+        if region.right is not None:
+            raise ValueError("an infinite horizon over elements that repeat forever")
+        return [e for q in (region & Region(((lo, True, INF, False),))).parts for e in (q[0], q[2])
+                if not math.isinf(e)]
+    return region.ends(lo, hi)
+
+
+@dataclass(frozen=True)
+class Problem:
+    modes: tuple[Mode, ...]
+    base: tuple[Fraction, ...]                             # per mode
+    rates: tuple[tuple[tuple[str, Fraction], ...], ...]   # per mode: (kind, rate)
+    controlled: tuple[str, ...]                            # the kinds the texts place
+    cost: tuple[Fraction, ...]                             # per controlled kind: one element
+    tendency: tuple[tuple[str, int], ...]                  # (kind, mode): the first present applies
+
+    @property
+    def watched(self) -> tuple[str, ...]:
+        """The kinds of the line that the problem reads (not the controlled ones)."""
+        kinds = {k for rs in self.rates for k, _ in rs} | {k for k, _ in self.tendency}
+        return tuple(sorted(kinds - set(self.controlled)))
+
+    @property
+    def steering(self) -> tuple[str, ...]:
+        """The watched kinds the tendency reads."""
+        return tuple(sorted({k for k, _ in self.tendency} - set(self.controlled)))
+
+    def subsets(self) -> list[frozenset]:
+        """Every set of controlled kinds, smallest first (so ties keep fewer elements)."""
+        return [frozenset(c) for n in range(len(self.controlled) + 1) for c in combinations(self.controlled, n)]
+
+    def states(self) -> list[State]:
+        return [(m, s) for m in range(len(self.modes)) for s in self.subsets()]
+
+    def tend(self, kinds: frozenset, m: int) -> int:
+        """The mode the user tends to, where `kinds` are present, coming in mode m."""
+        return next((b for k, b in self.tendency if k in kinds), m)
+
+    def rate(self, m: int, kinds: frozenset) -> Fraction:
+        return self.base[m] + sum((r for k, r in self.rates[m] if k in kinds), Fraction(0))
+
+    def price(self, kinds: frozenset) -> Fraction:
+        return sum((c for k, c in zip(self.controlled, self.cost) if k in kinds), Fraction(0))
+
+
+Part = tuple[Fraction, Fraction | float, frozenset]  # (lo, hi, watched kinds there); lo == hi: a point
+
+
+@dataclass(frozen=True)
+class Unit:
+    """Where a text decides once: the open interval (start, end), with the
+    same controlled kinds on all of it, and its end point.  `parts` are its
+    open cells and inner points, on which the watched kinds are constant."""
+    start: Fraction
+    end: Fraction | float  # INF: the last unit of an infinite horizon, without end point
+    parts: tuple[Part, ...]
+    point_kinds: frozenset
+
+
+def walk(problem: Problem, parts: Sequence[Part], t: Fraction, m: int, placed: frozenset
+         ) -> tuple[Fraction, Fraction, int]:
+    """The value (a, b) of `placed` on the parts after t, from mode m, and the
+    mode after them.  Predicted modes follow the tendency on each part."""
+    a, b = Fraction(0), Fraction(0)
+    for lo, hi, kinds in parts:
+        if hi <= t:
+            continue
+        lo = max(lo, t)
+        m = problem.tend(kinds | placed, m)
+        r = problem.rate(m, kinds | placed)
+        if math.isinf(hi):
+            a, b = a + r, b - r * lo
+        else:
+            b += (hi - lo) * r
+    return a, b, m
+
+
+def decide(problem: Problem, unit: Unit, t: Fraction, m: int, present: frozenset,
+           after: dict[State, Value] | None) -> tuple[Value, frozenset, frozenset]:
+    """The best (value, kinds on (t, end), kinds at end) from position t of
+    `unit`, in mode m, with the controlled kinds `present` at t; `after` is the
+    best value from every state at the end of the unit (None if it has none)."""
+    best: tuple[Value, frozenset, frozenset] | None = None
+    subsets = problem.subsets()
+    for s_o in subsets:
+        a, b, m_end = walk(problem, unit.parts, t, m, s_o)
+        b -= problem.price(s_o - present)
+        if after is None:
+            cands = [((a, b), frozenset())]
+        else:
+            cands = []
+            for s_p in subsets:
+                w = after[problem.tend(unit.point_kinds | s_p, m_end), s_p]
+                cands.append(((a + w[0], b - problem.price(s_p - s_o) + w[1]), s_p))
+        for value, s_p in cands:
+            if best is None or value > best[0]:
+                best = (value, s_o, s_p)
+    assert best is not None
+    return best
+
+
+# ---- the dynamic program --------------------------------------------------------
+def _step(problem: Problem, unit: Unit, after: dict[State, Value] | None) -> dict[State, Value]:
+    return {s: decide(problem, unit, unit.start, s[0], s[1], after)[0] for s in problem.states()}
+
+
+def _matrix(problem: Problem, unit: Unit) -> list[list[Value | None]]:
+    """A[s][s']: the best value of the unit from state s, ending in state s' (None: impossible)."""
+    states = problem.states()
+    index = {s: i for i, s in enumerate(states)}
+    a: list[list[Value | None]] = [[None] * len(states) for _ in states]
+    for i, (m, present) in enumerate(states):
+        for s_o in problem.subsets():
+            _, v, m_end = walk(problem, unit.parts, unit.start, m, s_o)
+            v -= problem.price(s_o - present)
+            for s_p in problem.subsets():
+                j = index[problem.tend(unit.point_kinds | s_p, m_end), s_p]
+                w = (Fraction(0), v - problem.price(s_p - s_o))
+                if a[i][j] is None or w > a[i][j]:
+                    a[i][j] = w
+    return a
+
+
+def _times(x: list[list[Value | None]], y: list[list[Value | None]]) -> list[list[Value | None]]:
+    """Max-plus product."""
+    n = len(x)
+    out: list[list[Value | None]] = [[None] * n for _ in range(n)]
+    for i in range(n):
+        for k in range(n):
+            if x[i][k] is None:
+                continue
+            for j in range(n):
+                if y[k][j] is not None:
+                    w = (x[i][k][0] + y[k][j][0], x[i][k][1] + y[k][j][1])
+                    if out[i][j] is None or w > out[i][j]:
+                        out[i][j] = w
     return out
 
 
-def _chunk_task(task):
-    return _chunk(*task)
+def _chunk_matrix(task) -> list[list[Value | None]]:
+    problem, units = task
+    m = _matrix(problem, units[-1])
+    for u in reversed(units[:-1]):
+        m = _times(_matrix(problem, u), m)
+    return m
 
 
-def _best(values: Sequence[Value]) -> int:
-    """Index of the largest value (the lowest index among equals)."""
-    return max((i for i, v in enumerate(values) if v is not None), key=lambda i: (values[i], -i))
+def _chunk_values(task) -> list[dict[State, Value]]:
+    problem, units, after = task
+    out = []
+    for u in reversed(units):
+        after = _step(problem, u, after)
+        out.append(after)
+    return out[::-1]
 
 
-Mapper = Callable[[list, float | None], list | None]  # (tasks, timeout) -> results, or None if too late
+Mapper = Callable[[Callable, list, float | None], list | None]  # (function, tasks, timeout) -> results
 
 
-def solve(gains: Sequence[Sequence[Fraction]], cost: Sequence[Sequence[Fraction]], start: int, *,
-          chunk: int = 256, workers: int = 1, mapper: Mapper | None = None,
-          time_left: Callable[[], float] | None = None) -> tuple[int, list[int], Fraction]:
-    """Best schedule over the first cells: (cells done, mode index of each, value).
+def solve(problem: Problem, units: Sequence[Unit], *, workers: int = 1, chunk: int = 64,
+          mapper: Mapper | None = None, time_left: Callable[[], float] | None = None
+          ) -> list[dict[State, Value] | None] | None:
+    """values[i]: the best value from every state at the start of unit i;
+    values[n]: after the last unit (0, or None after an infinite one).
+    None if `time_left()` (seconds) runs out first."""
+    def late() -> bool:
+        return time_left is not None and time_left() <= 0
 
-    The cells are taken in rounds.  With one worker a round is one chunk, entered
-    with the values reached so far.  With several, a round is `workers` chunks,
-    each entered from every single mode, computed by `mapper` at the same time
-    and composed afterwards (max-plus products are associative, so the values are
-    those of one pass).  Before each round, `time_left()` (seconds) must exceed the
-    time the previous round took; the result is always exact for the cells done."""
-    k, n = len(cost), len(gains)
-    v: list[Value] = [Fraction(0) if m == start else None for m in range(k)]
-    rounds: list[tuple[list[Value], bool, ChunkResult, int]] = []  # (values before, unit entries, result, first cell)
-    done, took = 0, 0.0
-    units = [[Fraction(0) if m == a else None for m in range(k)] for a in range(k)]
-    while done < n:
-        left = None if time_left is None else time_left()
-        if left is not None and left <= took:
-            break
-        began = time.perf_counter()
-        if workers <= 1 or mapper is None:
-            part = gains[done:done + chunk]
-            result = _chunk(part, cost, [v])
-            rounds.append((v, False, result, done))
-            v, done = result[0][0], done + len(part)
-        else:
-            parts = [gains[i:i + chunk] for i in range(done, min(n, done + workers * chunk), chunk)]
-            results = mapper([(p, cost, units) for p in parts], left)
-            if results is None:
-                break
-            for part, result in zip(parts, results):
-                rounds.append((v, True, result, done))
-                nv: list[Value] = [None] * k
-                for a in range(k):
-                    if v[a] is None:
-                        continue
-                    for b, x in enumerate(result[a][0]):
-                        if x is not None and (nv[b] is None or v[a] + x > nv[b]):
-                            nv[b] = v[a] + x
-                v, done = nv, done + len(part)
-        took = time.perf_counter() - began
-    modes = [0] * done
-    if done == 0:
-        return 0, [], Fraction(0)
-    value = v[_best(v)]
-    assert value is not None
-    b = _best(v)
-    for before, unit, result, first in reversed(rounds):
-        if unit:
-            a = _best([None if before[a] is None or result[a][0][b] is None else before[a] + result[a][0][b]
-                       for a in range(k)])
-            back = result[a][1]
-        else:
-            back = result[0][1]
-        for i in range(len(back) - 1, -1, -1):
-            modes[first + i] = b
-            b = back[i][b]
-    return done, modes, value
-
-
-def _presence(region: Region, xs: Sequence[Fraction]) -> list[bool]:
-    """Whether each of the increasing xs is in `region`, in one sweep."""
-    out, parts, j = [], region.parts, 0
-    for x in xs:
-        while j < len(parts) and (parts[j][2] < x or (parts[j][2] == x and not parts[j][3])):
-            j += 1
-        out.append(j < len(parts) and x in Region((parts[j],)))
-    return out
+    n = len(units)
+    infinite = bool(units) and math.isinf(units[-1].end)
+    finite = list(units[:-1]) if infinite else list(units)
+    values: list[dict[State, Value] | None] = [None] * (n + 1)
+    if infinite:
+        values[n - 1] = _step(problem, units[-1], None)
+    else:
+        values[n] = {s: ZERO for s in problem.states()}
+    end = values[len(finite)]
+    if workers <= 1 or mapper is None or len(finite) <= chunk:
+        for i in reversed(range(len(finite))):
+            if late():
+                return None
+            values[i] = _step(problem, finite[i], values[i + 1])
+        return values
+    states = problem.states()
+    starts = list(range(0, len(finite), chunk))
+    pieces = [finite[i:i + chunk] for i in starts]
+    left = None if time_left is None else time_left()
+    mats = mapper(_chunk_matrix, [(problem, p) for p in pieces], left)
+    if mats is None or late():
+        return None
+    bounds: list[dict[State, Value]] = [end] * (len(pieces) + 1)  # values at each chunk's end
+    for j in reversed(range(len(pieces))):
+        nxt = bounds[j + 1]
+        vec = {}
+        for i, s in enumerate(states):
+            best = None
+            for k, t in enumerate(states):
+                if mats[j][i][k] is not None:
+                    w = (mats[j][i][k][0] + nxt[t][0], mats[j][i][k][1] + nxt[t][1])
+                    if best is None or w > best:
+                        best = w
+            assert best is not None
+            vec[s] = best
+        bounds[j] = vec
+    left = None if time_left is None else time_left()
+    inner = mapper(_chunk_values, [(problem, p, bounds[j + 1]) for j, p in enumerate(pieces)], left)
+    if inner is None or late():
+        return None
+    for i0, vs in zip(starts, inner):
+        values[i0:i0 + len(vs)] = vs
+    return values
 
 
 def _pool_mapper(pool) -> Mapper:
-    def run(tasks, timeout):
+    def run(fn, tasks, timeout):
         try:
-            return pool.map_async(_chunk_task, tasks).get(None if timeout is None else max(0.0, timeout))
+            return pool.map_async(fn, tasks).get(None if timeout is None else max(0.0, timeout))
         except multiprocessing.TimeoutError:
             return None
     return run
 
 
-# ---- the text it generates --------------------------------------------------
+# ---- the text it generates --------------------------------------------------------
 @dataclass(frozen=True)
-class Schedule:
-    """The rules of a schedule text: its continuous edit (calling it) and `rerun`.
+class Policy:
+    """What a text decides from: the units and the best values after each one."""
+    problem: Problem
+    units: tuple[Unit, ...]
+    values: tuple[dict[State, Value] | None, ...]
 
-    It holds what the text was computed from, so that it needs nothing else."""
-    kind: str  # the served kind
-    pieces: tuple[tuple[Region, tuple[str, ...]], ...]  # where the chip is planned in a mode, the kinds it serves
-    demand: tuple[tuple[str, Region], ...]  # the kinds of the problem ahead of the chip, when generated
-    rates: tuple[tuple[tuple[str, Fraction], ...], ...]  # per mode: (kind, rate)
-    start: Fraction    # s: no transition of this text before it
-    end: Fraction      # E: the schedule is optimal over (s, E]
-    value: Fraction    # its value over (s, E]
-    final: bool        # it is optimal over (s, X] for every X >= E as well
-    tolerance: Fraction
-    lead: Fraction     # how far before E it asks for a new text
+
+@dataclass(frozen=True)
+class Act:
+    """The rule of unit i: place the best controlled kinds for the rest of the
+    unit, from the chip's position, mode and the state of the line."""
+    policy: Policy
+    i: int
 
     def __call__(self, position: Fraction, mode: Mode, state: Track):
-        """`kind` where the planned mode earns from a kind present now, unless it is there already."""
-        r = Region.union_of(*(where & Region.union_of(*(state.get(K, EMPTY) for K in kinds))
-                              for where, kinds in self.pieces))
-        r = (r & ahead(position)) - state.get(self.kind, EMPTY)
-        return [(self.kind, r)] if r else []
+        problem, unit = self.policy.problem, self.policy.units[self.i]
+        present = frozenset(k for k in problem.controlled if position in state.get(k, EMPTY))
+        _, s_o, s_p = decide(problem, unit, position, problem.modes.index(mode), present,
+                             self.policy.values[self.i + 1])
+        finite = not math.isinf(unit.end)
+        window = Region.interval(position, unit.end, False, True) if finite else ahead(position)
+        ops = []
+        for k in problem.controlled:
+            want = (Region.open(position, unit.end) if finite else ahead(position)) if k in s_o else EMPTY
+            if finite and k in s_p:
+                want |= Region.point(unit.end)
+            have = state.get(k, EMPTY) & window
+            if have - want:
+                ops.append(Remove(k, have - want))
+            if want - have:
+                ops.append(Add(k, want - have))
+        return [ops] if ops else []
 
-    def rerun(self, position: Fraction, mode: Mode, state: Track) -> bool:
-        """Near E (unless final), or once it may be more than `tolerance` below the optimum."""
-        if not self.final and position >= self.end - self.lead:
+
+@dataclass(frozen=True)
+class Watch:
+    """When a text asks for a new one: near the end of its horizon, or once the
+    line changed enough that it may be more than `tolerance` below the optimum."""
+    problem: Problem
+    demand: tuple[tuple[str, Region], ...]  # the watched kinds after `start`, when generated
+    start: Fraction
+    end: Fraction | float
+    lead: Fraction
+    tolerance: Fraction
+
+    def __call__(self, position: Fraction, mode: Mode, state: Track) -> bool:
+        if not math.isinf(self.end) and position >= self.end - self.lead:
             return True
         return 2 * self.divergence(position, state) > self.tolerance
 
     def divergence(self, position: Fraction, state: Track) -> Fraction | float:
-        """D: the integral, after the chip (up to E, unless final), of the largest
-        change of a mode's rate since the text was computed."""
-        if self.final:
-            span = ahead(position)
-        elif position < self.end:
-            span = Region.interval(position, self.end, False, True)
-        else:
+        """D: +inf if a kind the tendency reads changed after the chip (within the
+        horizon); otherwise the integral, there, of the largest change of a
+        mode's rate since the text was computed."""
+        p = max(position, self.start)
+        if not math.isinf(self.end) and p >= self.end:
             return Fraction(0)
+        span = ahead(p) if math.isinf(self.end) else Region.interval(p, self.end, False, True)
         then = dict(self.demand)
         diffs = []  # (kind, where, +1 added or -1 removed)
-        for K in sorted({K for rs in self.rates for K, _ in rs}):
-            now, was = state.get(K, EMPTY) & span, then.get(K, EMPTY) & span
-            diffs += [(K, r, sign) for r, sign in ((now - was, 1), (was - now, -1)) if r]
-        ends = sorted({e for _, r, _ in diffs for p in r.parts for e in (p[0], p[2])})
+        for k in self.problem.watched:
+            now, was = state.get(k, EMPTY) & span, then.get(k, EMPTY) & span
+            if now != was and k in self.problem.steering:
+                return INF
+            diffs += [(k, r, sign) for r, sign in ((now - was, 1), (was - now, -1)) if r]
+        if any(not r.is_finite() for _, r, _ in diffs):
+            return INF  # a change that repeats forever, after a final horizon
+        ends = sorted({e for _, r, _ in diffs for part in r.parts for e in (part[0], part[2])})
         total = Fraction(0)
         for lo, hi in zip(ends, ends[1:]):
             mid = lo + 1 if math.isinf(hi) else (lo + hi) / 2
-            here = [(K, sign) for K, r, sign in diffs if mid in r]
-            change = max(abs(sum((sign * rate for K, sign in here for J, rate in rs if J == K), Fraction(0)))
-                         for rs in self.rates)
+            here = [(k, sign) for k, r, sign in diffs if mid in r]
+            change = max(abs(sum((sign * rate for k, sign in here for j, rate in rs if j == k), Fraction(0)))
+                         for rs in self.problem.rates)
             if change:
                 if math.isinf(hi):
                     return INF
@@ -200,71 +337,65 @@ class Schedule:
 @dataclass(frozen=True)
 class Order:
     """What `plan` decided for a run."""
-    start: Fraction
-    end: Fraction
+    end: Fraction          # the horizon (the chip's position: no unit, an empty text)
+    grid: Fraction         # the spacing of the positions where texts may change their placement
     workers: int
     chunk: int
     budget: float
     lead: Fraction
+    tolerance: Fraction
 
 
-# ---- the optimizer ----------------------------------------------------------
-class ModeScheduler:
-    """Chooses the modes of the chip ahead of it.
+# ---- the optimizer ----------------------------------------------------------------
+class TendencyPlanner:
+    """Places the `controlled` kinds ahead of the chip.
 
     Per unit of length, mode m earns `base[m]`, plus `rates[m][K]` where kind K
-    is present.  Every change of mode from a to b costs `switch_cost` (one
-    number, or a mapping {(a, b): cost} for every pair of distinct modes); the
-    costs must be non-negative and satisfy the triangle inequality.  A text
-    puts `served` wherever its mode earns from a kind present there, and asks
-    for a new one near the end of its horizon, or once the line has changed
-    enough that it may be more than `tolerance` below the optimum: a larger
-    tolerance means fewer runs, a smaller one a better schedule."""
+    is present (rates may be negative: a cost); each element of a controlled
+    kind K costs `cost[K]`.  The modes are not decided here: the user decides
+    them, but tends to follow `tendency`, a list of (kind, mode): where kind is
+    present, placed by a text or not, the user tends to switch to that mode
+    (the first present kind of the list applies); elsewhere to stay in the mode.
+    Texts are optimal for that tendency from every position and actual mode,
+    among placements that change only at multiples of the grid or at ends of
+    the kinds the tendency reads (SEMANTICS.md, Theorem 3).
 
-    def __init__(self, rates: Mapping[Mode, Mapping[str, Number]],
-                 switch_cost: Number | Mapping[tuple[Mode, Mode], Number], *,
-                 base: Mapping[Mode, Number] | None = None, served: str = "S",
-                 lookahead: Number = 20, max_budget: float = 30.0, min_lead: Number = Fraction(1, 10),
-                 tolerance: Number = 0, speed: float | None = None, startup: float = 1.0,
-                 pool_startup: float = 1.0, name: str = "schedule"):
+    The machine's performance h in (0, 1) sets, with f = (1 - h)/h (1 at h = 1/2):
+    the horizon `lookahead`*f, the grid `resolution`/f, the time `time_scale`*f
+    and the tolerance `scale`*f.  Towards 0 they tend to an infinite horizon,
+    an infinitely fine grid (whose optimum tends to the best value of all
+    placements, Theorem 5), unlimited time and no new run; towards 1 to no
+    unit at all (an empty text), no time, and a new run at every change."""
+
+    def __init__(self, rates: Mapping[Mode, Mapping[str, Number]], *,
+                 base: Mapping[Mode, Number] | None = None, controlled: Sequence[str] = (),
+                 cost: Number | Mapping[str, Number] = 0,
+                 tendency: Sequence[tuple[str, Mode]] | Mapping[str, Mode] = (),
+                 lookahead: Number = 20, resolution: Number = 1, time_scale: float = 10.0,
+                 scale: Number = 1, min_lead: Number = Fraction(1, 10), speed: float | None = None,
+                 startup: float = 1.0, pool_startup: float = 1.0, name: str = "plan"):
         base = dict(base or {})
-        self.modes: tuple[Mode, ...] = tuple(dict.fromkeys([*rates, *base]))
-        if not self.modes:
+        tendency = list(tendency.items()) if isinstance(tendency, Mapping) else list(tendency)
+        modes = tuple(dict.fromkeys([*rates, *base, *(m for _, m in tendency)]))
+        if not modes:
             raise ValueError("there must be at least one mode")
-        self.base = tuple(num(base.get(m, 0)) for m in self.modes)
-        self.rates = tuple(tuple(sorted((K, num(r)) for K, r in rates.get(m, {}).items() if num(r) != 0))
-                           for m in self.modes)
-        self.kinds = tuple(sorted({K for rs in self.rates for K, _ in rs}))
-        if served in self.kinds:
-            raise ValueError(f"the served kind {served!r} cannot earn: it is placed by the texts")
-        k = len(self.modes)
-        if isinstance(switch_cost, Mapping):
-            missing = [(a, b) for a in self.modes for b in self.modes if a != b and (a, b) not in switch_cost]
-            if missing:
-                raise ValueError(f"no switching cost for {missing}")
-            cost = [[num(switch_cost[a, b]) if a != b else Fraction(0) for b in self.modes] for a in self.modes]
-        else:
-            cost = [[num(switch_cost) if a != b else Fraction(0) for b in range(k)] for a in range(k)]
-        for a in range(k):
-            for b in range(k):
-                if cost[a][b] < 0:
-                    raise ValueError("switching costs must be non-negative")
-                for c in range(k):
-                    if cost[a][c] > cost[a][b] + cost[b][c]:
-                        raise ValueError(f"switching costs must satisfy the triangle inequality: "
-                                         f"{self.modes[a]!r}->{self.modes[c]!r} costs more than through "
-                                         f"{self.modes[b]!r}")
-        self.cost = tuple(tuple(r) for r in cost)
-        self.served = served
-        self.lookahead = num(lookahead)
-        self.min_lead = num(min_lead)
-        if self.lookahead <= 0 or self.min_lead <= 0 or not max_budget > 0:
-            raise ValueError("lookahead, min_lead and max_budget must be positive")
-        self.max_budget = float(max_budget)
-        self.tolerance = num(tolerance)
-        if self.tolerance < 0:
-            raise ValueError("the tolerance must be non-negative")
-        self.speed = speed            # max-plus operations per second, measured if None
+        controlled = tuple(dict.fromkeys(controlled))
+        for k in controlled:
+            if not isinstance(k, str):
+                raise TypeError(f"element kind must be a str, got {k!r}")
+        costs = tuple(num(cost[k] if isinstance(cost, Mapping) else cost) for k in controlled)
+        if any(c < 0 for c in costs):
+            raise ValueError("element costs must be non-negative")
+        self.problem = Problem(
+            modes, tuple(num(base.get(m, 0)) for m in modes),
+            tuple(tuple(sorted((k, num(r)) for k, r in rates.get(m, {}).items() if num(r) != 0)) for m in modes),
+            controlled, costs, tuple((k, modes.index(m)) for k, m in tendency))
+        self.lookahead, self.resolution = num(lookahead), num(resolution)
+        self.min_lead, self.scale = num(min_lead), num(scale)
+        if min(self.lookahead, self.resolution, self.min_lead, self.scale) <= 0 or not time_scale > 0:
+            raise ValueError("lookahead, resolution, time_scale, scale and min_lead must be positive")
+        self.time_scale = float(time_scale)
+        self.speed = speed            # part decisions per second, measured if None
         self.startup = float(startup)  # seconds before a run's process starts working
         self.pool_startup = float(pool_startup)  # seconds to start its worker processes
         self.name = name
@@ -277,25 +408,36 @@ class ModeScheduler:
         self._seen: tuple[Fraction, float] | None = None
         self._chip_speed = 0.0  # units of length per second, a decaying maximum
 
-    # ---- the problem --------------------------------------------------
-    def cuts(self, track: Track, s: Fraction, end: Fraction) -> list[Fraction]:
-        """s, the ends of the problem's kinds strictly between s and `end`, and `end`."""
-        inner = {e for K in self.kinds for p in track.get(K, EMPTY).parts for e in (p[0], p[2])
-                 if not math.isinf(e) and s < e < end}
-        return [s, *sorted(inner), end]
+    # ---- the problem ---------------------------------------------------
+    def bounds(self, track: Track, p: Fraction, end: Fraction | float, grid: Fraction | None) -> list:
+        """p, the multiples of `grid` and the ends of the kinds the tendency reads
+        strictly between p and `end`, and `end`.  With grid None: the ends of every
+        watched kind instead (the cells)."""
+        kinds = self.problem.watched if grid is None else self.problem.steering
+        inner = {e for k in kinds for e in _ends(track.get(k, EMPTY), p, end) if p < e < end}
+        if grid is not None:
+            top = end if not math.isinf(end) else p + 1  # an infinite horizon has no grid
+            inner |= {k * grid for k in range(math.floor(p / grid) + 1, math.ceil(top / grid))
+                      if p < k * grid < end}
+        return [p, *sorted(inner), end]
 
-    def rate(self, m: int, present: Callable[[str], bool]) -> Fraction:
-        return self.base[m] + sum((r for K, r in self.rates[m] if present(K)), Fraction(0))
+    def units(self, track: Track, bounds: Sequence) -> list[Unit]:
+        watched = self.problem.watched
 
-    def gains(self, track: Track, cuts: Sequence[Fraction]) -> list[list[Fraction]]:
-        """gains[i][m]: what mode m earns over the open cell (cuts[i], cuts[i+1])."""
-        mids = [(lo + hi) / 2 for lo, hi in zip(cuts, cuts[1:])]
-        present = {K: _presence(track.get(K, EMPTY), mids) for K in self.kinds}
-        return [[(hi - lo) * self.rate(m, lambda K: present[K][i]) for m in range(len(self.modes))]
-                for i, (lo, hi) in enumerate(zip(cuts, cuts[1:]))]
+        def kinds_at(x) -> frozenset:
+            return frozenset(k for k in watched if x in track.get(k, EMPTY))
 
-    def _serves(self, m: int) -> tuple[str, ...]:
-        return tuple(K for K, r in self.rates[m] if r > 0)
+        ends = {e for k in watched for e in _ends(track.get(k, EMPTY), bounds[0], bounds[-1])}
+        out = []
+        for lo, hi in zip(bounds, bounds[1:]):
+            cuts = [lo, *sorted(e for e in ends if lo < e < hi), hi]
+            parts: list[Part] = []
+            for i, (a, b) in enumerate(zip(cuts, cuts[1:])):
+                if i:
+                    parts.append((a, a, kinds_at(a)))
+                parts.append((a, b, kinds_at(a + 1 if math.isinf(b) else (a + b) / 2)))
+            out.append(Unit(lo, hi, tuple(parts), frozenset() if math.isinf(hi) else kinds_at(hi)))
+        return out
 
     # ---- Optimizer.plan -------------------------------------------------
     def plan(self, view: View, resources: Resources) -> float | None:
@@ -308,7 +450,7 @@ class ModeScheduler:
                 self._retry_at = view.time + min(30.0, 0.5 * 2 ** (self._failures - 1))
                 self.startup, self.pool_startup = min(60.0, self.startup * 2), min(60.0, self.pool_startup * 2)
             self._expect = None
-        if self._ours(view) is not None and not view.rerun or view.time < self._retry_at:
+        if self._ours(view) and not view.rerun or view.time < self._retry_at:
             return None
         self.order = self.order_for(view, resources)
         self._serial += 1
@@ -318,66 +460,60 @@ class ModeScheduler:
     def text_id(self, serial: int) -> str:
         return f"{self.name} {serial}"
 
-    def _ours(self, view: View) -> Schedule | None:
-        """The rules of the installed text, if it is a schedule of this optimizer's kind."""
-        follow = view.text.follow if view.text is not None else None
-        return follow if isinstance(follow, Schedule) and follow.kind == self.served else None
+    def _ours(self, view: View) -> bool:
+        rerun = view.text.rerun if view.text is not None else None
+        return isinstance(rerun, Watch) and rerun.problem == self.problem
 
     def order_for(self, view: View, resources: Resources) -> Order:
-        """Where the next schedule starts and ends, and the time and CPUs it gets."""
-        p, cpus = view.position, resources.cpus
-        nxt = next((q for q, _ in view.transitions if q > p), INF)
-        budget = self._estimate(view, cpus)
-        for _ in range(2):  # the lead depends on the budget, the budget on the cells
-            lead = self._lead(budget)
-            s = min(p + lead, nxt)
-            cuts = self.cuts(view.track, s, s + self.lookahead)
-            workers, chunk, budget, n = self._fit(len(cuts) - 1, cpus)
-        return Order(s, cuts[n], workers, chunk, budget, lead)
+        """The horizon and grid of the next text, and the time and CPUs its run gets."""
+        h, p, cpus = view.performance, view.position, resources.cpus
+        f = (1 - h) / h
+        grid, allowed = self.resolution / f, self.time_scale * float(f)
+        units = self.units(view.track, self.bounds(view.track, p, p + self.lookahead * f, grid))
+        workers, chunk, budget, n = 1, 1, allowed, 0
+        lo, hi = 0, len(units)  # the most units whose run fits in the time allowed
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if self._fit(units[:mid], cpus)[2] <= allowed:
+                lo = mid
+            else:
+                hi = mid - 1
+        if lo:
+            n = lo
+            workers, chunk, budget = self._fit(units[:n], cpus)
+        end = units[n - 1].end if n else p
+        lead = Fraction(2 * self._chip_speed * budget).limit_denominator(10 ** 6) + self.min_lead
+        return Order(end, grid, workers, chunk, budget, lead, self.scale * f)
 
-    def _estimate(self, view: View, cpus: int) -> float:
-        p = view.position
-        cuts = self.cuts(view.track, p, p + self.lookahead)
-        return self._fit(len(cuts) - 1, cpus)[2]
+    def _fit(self, units: Sequence[Unit], cpus: int) -> tuple[int, int, float]:
+        """(workers, chunk, budget) for `units`: one process, or `cpus` if faster."""
+        s, u = len(self.problem.states()), len(self.problem.subsets())
+        parts = sum(len(x.parts) for x in units)
+        n, speed = len(units), self._speed()
 
-    def _fit(self, n: int, cpus: int) -> tuple[int, int, float, int]:
-        """(workers, chunk, budget, cells) for at most n cells, within max_budget."""
-        k = len(self.modes)
-        speed = self._speed()
-
-        def cost(cells: int, workers: int) -> float:
-            work = cells * k * k / speed if workers == 1 else \
-                self.pool_startup + cells * k ** 3 / (speed * workers) + cells * k / speed
+        def cost(workers: int) -> float:
+            if workers == 1:
+                work = parts * s * u * u / speed
+            else:
+                work = self.pool_startup + (parts * (s * u * u + s * u * u) + n * s ** 3) / (speed * workers)
             return 1.25 * (self.startup + work) + 0.1
 
-        for cells in self._shrinking(n):
-            options = [(cost(cells, w), w) for w in sorted({1, cpus})]
-            budget, workers = min(options)
-            if budget <= self.max_budget or cells == 1:
-                chunk = 256 if workers == 1 else max(256, -(-cells // (4 * workers)))
-                return workers, chunk, min(budget, self.max_budget), cells
-        raise AssertionError("unreachable")
-
-    @staticmethod
-    def _shrinking(n: int):
-        while n > 1:
-            yield n
-            n = n * 3 // 4
-        yield 1
+        budget, workers = min((cost(w), w) for w in sorted({1, cpus}))
+        chunk = max(1, -(-n // (4 * workers))) if workers > 1 else max(1, n)
+        return workers, chunk, budget
 
     def _speed(self) -> float:
         if self.speed is None:
-            k = len(self.modes)
-            g = [[Fraction(i % 7, 3)] * k for i in range(200)]
-            began = time.perf_counter()
-            _chunk(g, self.cost, [[Fraction(0)] * k])
-            self.speed = 200 * k * k / max(time.perf_counter() - began, 1e-6)
+            pr = self.problem
+            unit = Unit(Fraction(0), Fraction(1), ((Fraction(0), Fraction(1), frozenset()),), frozenset())
+            after = {s: ZERO for s in pr.states()}
+            began, rounds = time.perf_counter(), 0
+            while rounds < 3 or time.perf_counter() - began < 0.01:
+                _step(pr, unit, after)
+                rounds += 1
+            ops = rounds * len(pr.states()) * len(pr.subsets()) ** 2
+            self.speed = ops / max(time.perf_counter() - began, 1e-6)
         return self.speed
-
-    def _lead(self, budget: float) -> Fraction:
-        """How far ahead of the chip a schedule starts: the chip's travel during a run, twice over."""
-        travel = Fraction(2 * self._chip_speed * budget).limit_denominator(10 ** 6)
-        return max(self.min_lead, travel + self.min_lead)
 
     def _watch_chip(self, view: View) -> None:
         if self._seen is not None:
@@ -390,50 +526,35 @@ class ModeScheduler:
     # ---- Optimizer.generate --------------------------------------------
     def generate(self, view: View, deadline: Deadline, resources: Resources) -> Text | None:
         order = self.order or self.order_for(view, resources)
-        p, track = view.position, view.track
-        y = self.modes.index(view.mode)
-        cuts = self.cuts(track, order.start, order.end)
-        gains = self.gains(track, cuts)
+        if order.end == view.position:
+            return self.text(view, order, [], [None], self._serial)
+        units = self.units(view.track, self.bounds(view.track, view.position, order.end, order.grid))
         margin = 0.05 + 0.05 * deadline.budget  # to send the text back
         pool = None
         try:
-            if order.workers > 1:
+            if order.workers > 1 and len(units) > order.chunk:
                 pool = multiprocessing.get_context("spawn").Pool(order.workers)
-            done, modes, value = solve(gains, self.cost, y, chunk=order.chunk, workers=order.workers,
-                                       mapper=_pool_mapper(pool) if pool else None,
-                                       time_left=lambda: deadline.remaining() - margin)
+            values = solve(self.problem, units, workers=order.workers, chunk=order.chunk,
+                           mapper=_pool_mapper(pool) if pool else None,
+                           time_left=lambda: deadline.remaining() - margin)
         finally:
             if pool is not None:
                 pool.terminate()
-        if done == 0:
+        if values is None:
             return None
-        return self.text(view, order, cuts[:done + 1], modes, value, self._serial)
+        return self.text(view, order, units, values, self._serial)
 
-    def text(self, view: View, order: Order, cuts: Sequence[Fraction], modes: Sequence[int],
-             value: Fraction, serial: int) -> Text:
-        """The text of a schedule: mode modes[i] from cuts[i] on, the mode of the view before s."""
-        p, track = view.position, view.track
-        y = self.modes.index(view.mode)
-        s, end = order.start, cuts[-1]
-        starts = [(cuts[i], m) for i, m in enumerate(modes) if i == 0 or m != modes[i - 1]]
-        parts: dict[int, list] = {}  # mode -> where the schedule is in it: [q, next q[, and [q, end] last
-        for j, (q, m) in enumerate(starts):
-            last = j == len(starts) - 1
-            parts.setdefault(m, []).append((q, True, end if last else starts[j + 1][0], last))
-        pieces = [(Region.interval(p, s, False, False), self._serves(y)),
-                  *((Region(tuple(ps)), self._serves(m)) for m, ps in parts.items())]
-        here = ahead(p)
-        demand = tuple((K, track[K] & here) for K in self.kinds if K in track and track[K] & here)
-        schedule = Schedule(self.served, tuple((w, ks) for w, ks in pieces if ks), demand, self.rates, s, end,
-                            value, self._final(track, end, modes[-1]), self.tolerance, order.lead)
-        # The first transition is at s, even to the mode of the view: whatever the chip
-        # went through before s, the schedule holds from s on, or the install is refused.
-        return Text(self.text_id(serial), follow=schedule, rerun=schedule.rerun,
-                    transitions=tuple((q, self.modes[m]) for q, m in starts))
-
-    def _final(self, track: Track, end: Fraction, last: int) -> bool:
-        """Nothing changes after `end`, and `last` earns the most there."""
-        if self.cuts(track, end, INF)[1:-1]:
-            return False
-        rates = [self.rate(m, lambda K: (end + 1) in track.get(K, EMPTY)) for m in range(len(self.modes))]
-        return rates[last] == max(rates)
+    def text(self, view: View, order: Order, units: Sequence[Unit], values, serial: int) -> Text:
+        """The text of a policy; without units, an empty text that asks for a new
+        one at every change of the problem."""
+        policy = Policy(self.problem, tuple(units), tuple(values))
+        rules = []
+        for i, u in enumerate(units):
+            where = Region(((u.start, True, u.end, False),))
+            rules += [Rule(Act(policy, i), where, frozenset({m})) for m in self.problem.modes]
+        here = ahead(view.position)
+        demand = tuple((k, view.track[k] & here) for k in self.problem.watched
+                       if k in view.track and view.track[k] & here)
+        end = order.end if units else INF
+        watch = Watch(self.problem, demand, view.position, end, order.lead, order.tolerance)
+        return Text(self.text_id(serial), rules=tuple(rules), rerun=watch)

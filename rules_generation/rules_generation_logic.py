@@ -17,7 +17,6 @@ from machine import (
     View,
     usable_cpus,
 )
-from scheduler import ModeScheduler
 from reverse_logic import (
     Add,
     Extend,
@@ -27,10 +26,14 @@ from reverse_logic import (
     forbids,
     implies,
 )
+from scheduler import TendencyPlanner
 from track import (
-    FollowText,
+    Follow,
+    Ratio,
     Refused,
     Region,
+    Rel,
+    Rule,
     RulesText,
     Text,
     Track,
@@ -45,20 +48,23 @@ __all__ = [
     "Chip",
     "Deadline",
     "Extend",
-    "FollowText",
+    "Follow",
     "Machine",
     "Mode",
-    "ModeScheduler",
     "Move",
     "Optimizer",
     "ProcessRunner",
+    "Ratio",
     "Refused",
     "Region",
+    "Rel",
     "Remove",
     "Resources",
     "Retract",
+    "Rule",
     "RulesText",
     "Run",
+    "TendencyPlanner",
     "Text",
     "Track",
     "TrackManager",
@@ -81,10 +87,10 @@ def alpha_rules(position: Fraction, mode: Mode, state: Track):
     yield Add("A", Region.point(position + 2))
 
 
-def beta_follow(position: Fraction, mode: Mode, state: Track):
-    # In mode 2, an X interval of length 1 that follows the chip, 1 ahead.
-    if mode == 2:
-        yield "X", Region.closed(position + 1, position + 2)
+def _wait(machine: Machine) -> None:
+    while machine.running:
+        machine.poll()
+        time.sleep(0.01)
 
 
 if __name__ == "__main__":
@@ -93,42 +99,38 @@ if __name__ == "__main__":
 
     manager = TrackManager(modes=(1, 2), initial_mode=1, rules=[implies("A", ("B", 1))])
 
-    print("--- 1. First text (Alpha) ---")
-    manager.switch_rules_text(Text("Text_Alpha", rules=alpha_rules))
+    print("--- 1. First text (Alpha): an A 2 ahead of the chip, once, at the install ---")
+    manager.switch_rules_text(Text("Text_Alpha", rules=[Rule(alpha_rules)]))
     manager.print_track()
 
-    print("\n--- 2. Chip advances to 2.5: the A at 2 is reached, its B at 3 is not ---")
-    manager.update_chip(2.5)
+    print("\n--- 2. Chip advances to 2.5, the user switching to mode 2 at 2.2: the A at 2 is reached ---")
+    manager.update_chip(2.5, transitions=[(2.2, 2)])
     manager.print_track()
 
-    print("\n--- 3. New text (Beta), mode 2 from 3: Alpha's edits are reversed on the right only ---")
-    manager.switch_rules_text(Text("Text_Beta", follow=beta_follow, transitions=((3, 2),)))
+    print("\n--- 3. New text (Beta): in mode 2, X on [chip + 1, chip + 2]; Alpha's edits are reversed on the right ---")
+    manager.switch_rules_text(Text("Text_Beta", follow=[Follow("X", Rel(1), Rel(2), modes={2})]))
     manager.print_track()
 
-    print("\n--- 4. Chip advances to 3.5, then 5: X follows the chip, and the part of it the chip reached stays ---")
-    manager.update_chip(3.5)
-    manager.print_track()
-    manager.update_chip(5)
+    print("\n--- 4. Chip advances to 5, back to mode 1 at 4: X follows the chip, and nothing is left behind ---")
+    manager.update_chip(5, transitions=[(4, 1)])
     manager.print_track()
 
-    print("\n--- 5. The machine and its optimizer: it decides the modes, in a process of its own ---")
-    optimizer = ModeScheduler({"on": {"D": 1}}, Fraction(1, 2), base={"off": 0, "on": Fraction(-1, 2)})
-    manager = TrackManager(modes=("off", "on"), initial_mode="off",
-                           initial_elements=[("D", Region.closed(2, 6)), ("D", Region.closed(7, 8)),
-                                             ("D", Region.closed(12, Fraction(25, 2)))])
-    machine = Machine(manager, optimizer)
-    while machine.running:
-        machine.poll()
-        time.sleep(0.01)
-    print(f"run: {machine.runs[-1].outcome}, transitions: {manager.chip.transitions}")
+    print("\n--- 5. The machine: S placed where the modes the user tends to follow earn from it ---")
+    # In mode "busy", S earns 1 per unit of length; in "idle" it costs 1. D tends to make the user busy.
+    optimizer = TendencyPlanner({"busy": {"S": 1}, "idle": {"S": -1}}, controlled=["S"], cost=Fraction(1, 2),
+                                tendency=[("D", "busy"), ("Q", "idle")])
+    manager = TrackManager(modes=("idle", "busy"), initial_mode="idle",
+                           initial_elements=[("D", Region.closed(2, 6)), ("Q", Region.closed(6, 7)),
+                                             ("D", Region.closed(Fraction(15, 2), 8))])
+    machine = Machine(manager, optimizer, performance=Fraction(1, 10))  # a long horizon, a fine grid
+    _wait(machine)
+    print(f"run: {machine.runs[-1].outcome}")
     manager.print_track()
-    for x in (1, 2, 3, 4):
-        machine.update_chip(x)
-    print(f"chip moved 4 times, nothing else changed: still {len(machine.runs)} run")
-    machine.user_edit([Add("D", Region.closed(15, 19))])
-    while machine.running:
-        machine.poll()
-        time.sleep(0.01)
-    print(f"demand added: run {machine.runs[-1].outcome}, transitions: {manager.chip.transitions}")
+    for x, mode in ((1, "idle"), (3, "busy"), (5, "busy"), (Fraction(13, 2), "idle")):
+        machine.update_chip(x, [(x, mode)] if mode != manager.chip.mode else [])
+    print("chip moved through 3 (busy) and 13/2 (idle), as the tendency said: still", len(machine.runs), "run")
+    manager.print_track()
+    machine.update_chip(10, [(9, "busy")])
+    print("the user became busy at 9, where nothing incites it: the text reacts by itself")
     manager.print_track()
     machine.close()

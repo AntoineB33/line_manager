@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 import os
 import random
 import unittest
@@ -9,6 +10,7 @@ from fractions import Fraction
 
 from reverse_logic import (
     EMPTY,
+    FULL,
     Add,
     ContradictionError,
     DependencyError,
@@ -25,7 +27,7 @@ from reverse_logic import (
     implies_any,
     inverse,
 )
-from rules import Forbids, Implies
+from rules import Forbids, Implies, ImpliesAny, RuleSet
 
 SEEDS = int(os.environ.get("REVLOGIC_SEEDS", "60"))
 F = Fraction
@@ -65,6 +67,44 @@ class RegionTests(unittest.TestCase):
                 self.assertEqual(x in (a - b), x in a and x not in b)
                 self.assertEqual(x in a.shift(d), (x - d) in a)
             self.assertEqual(a.shift(d).shift(-d), a)
+
+    def test_periodic_algebra_matches_pointwise_semantics(self):
+        """Regions that repeat forever: every operation is right at every point
+        (tested on a dense set of points), and equal sets are equal regions."""
+        rng = random.Random(2)
+
+        def rand_periodic():
+            out = rand_region(rng, -4, 4)
+            for _ in range(rng.randint(1, 2)):
+                step = F(rng.randint(1, 4), rng.randint(1, 2))
+                cell = rand_region(rng, 0, 2) & Region.interval(0, step * rng.randint(1, 2), True, False)
+                k = rng.randint(-3, 3)
+                out |= Region.tiled(cell, step, *rng.choice([(k, None), (None, k), (None, None)]))
+            return out
+
+        def points(*regions):
+            pts = set(range(-30, 31))
+            for r in regions:
+                for e in r.ends(-30, 30):
+                    pts |= {e, e + F(1, 97), e - F(1, 97)}
+            return sorted(pts) + [F(x, 7) for x in range(-200, 200)]
+
+        for _ in range(60):
+            a, b = rand_periodic(), rand_periodic()
+            d = F(rng.randint(-6, 6), 2)
+            union, inter, diff, moved = a | b, a & b, a - b, a.shift(d)
+            for x in points(a, b, moved):
+                self.assertEqual(x in union, x in a or x in b)
+                self.assertEqual(x in inter, x in a and x in b)
+                self.assertEqual(x in diff, x in a and x not in b)
+                self.assertEqual(x in moved, (x - d) in a)
+            self.assertEqual(moved.shift(-d), a)
+            self.assertEqual((a - b) | (a & b), a)  # the same set, built differently
+            self.assertEqual((a | b) - b, a - b)
+            self.assertEqual(a & a, a)
+        c = Region.interval(0, 1, True, False)
+        self.assertEqual(Region.tiled(c, 2, 0, None), Region.tiled(c, 4, 0, None) | Region.tiled(c, 4, 0, None).shift(2))
+        self.assertEqual(Region.tiled(c, 1, 0, None), Region(((F(0), True, math.inf, False),)))  # constant: a ray
 
     def test_open_endpoints_after_removal(self):
         r = Region.closed(0, 2) - Region.closed(0, 1)
@@ -257,6 +297,30 @@ class RuleTests(unittest.TestCase):
         line = LineSystem(rules)
         line.apply([Add("A", Region.closed(0, 3))])
         self.assertEqual(line.state()["B"], Region.interval(0, 1, True, False) | Region.interval(2, 3, True, False))
+
+    def test_older_positions_that_cannot_be_placed_adapt_alone(self):
+        rules = [implies_any("A", ["B", "C"]), forbids("B", ("B", 1)), forbids("X", "B"), forbids("X", "C")]
+        line = LineSystem(rules)
+        line.apply([Add("A", Region.points(0, 1, 10))])
+        before = {"A": Region.points(0, 1, 10), "B": Region.points(0, 10), "C": Region.point(1)}
+        self.assertEqual(line.state(), before)
+        x = line.apply([Add("X", Region.point(10))])
+        self.assertEqual(line.state(), {"A": Region.points(0, 1), "B": Region.point(0), "C": Region.point(1),
+                                        "X": Region.point(10)})
+        line.reverse(x)
+        self.assertEqual(line.state(), before)
+        # Positions that cannot all stay are kept closest to 0 first.
+        line = LineSystem([implies_any("A", ["B", "C"]), forbids("B", ("B", 1)), forbids("X", "C")])
+        line.apply([Add("A", Region.points(1, 2))])
+        line.apply([Add("X", Region.points(1, 2))])
+        self.assertEqual(line.state(), {"A": Region.point(1), "B": Region.point(1), "X": Region.points(1, 2)})
+        # A position that is not hit still takes the first operand that can be placed.
+        line = LineSystem([implies_any("A", ["B", "C"]), forbids("B", ("B", 1)), forbids("X", "B")])
+        line.apply([Add("A", Region.points(1, 2))])
+        self.assertEqual(line.state(), {"A": Region.points(1, 2), "B": Region.point(1), "C": Region.point(2)})
+        line.apply([Add("X", Region.point(1))])
+        self.assertEqual(line.state(), {"A": Region.points(1, 2), "B": Region.point(2), "C": Region.point(1),
+                                        "X": Region.point(1)})
 
     def test_requires(self):
         line = LineSystem([forbids("F", "E")])
@@ -475,6 +539,133 @@ class PropertyTests(unittest.TestCase):
                 line = LineSystem(rules)
                 accepted = try_apply(line, [Add(k, Region.points(*xs)) for k, xs in adds.items()]) is not None
                 self.assertEqual(accepted, brute_force_consistent(line.ruleset, adds))
+
+    def test_older_claims_are_kept_closest_to_0_first(self):
+        # A newer edit leaves some positions of an older one no operand: the
+        # older claims are kept one after the other, closest to 0 first, each
+        # if some choice of operands satisfies the rules with the ones before.
+        tried = 0
+        for seed in range(SEEDS * 3):
+            rng = random.Random(8000 + seed)
+            rules = rand_rules(rng)
+            o = rng.choice([-1, 1])
+            rules.append(implies_any(KINDS[0], [KINDS[1], (KINDS[2], o)]))
+            # X often leaves an A no operand.
+            rules += [forbids("X", KINDS[1]), forbids("X", (KINDS[2], rng.choice([o, o, 0]))),
+                      forbids("X", (rng.choice(KINDS[1:]), rng.choice([-1, 0, 1])))]
+            old = {KINDS[0]: set(rng.sample(range(-3, 4), rng.randint(2, 5))),
+                   rng.choice(KINDS[1:]): set(rng.sample(range(-3, 4), rng.randint(1, 3)))}
+            new = {"X": set(rng.sample(range(-3, 4), rng.randint(1, 3)))}
+            line = LineSystem(rules)
+            if try_apply(line, [Add(k, Region.points(*xs)) for k, xs in old.items()]) is None:
+                continue
+            definite = RuleSet([r for r in rules if not isinstance(r, ImpliesAny)])
+            if not brute_force_consistent(definite, {**old, **new}):
+                continue  # a conflict no operand avoids: the older claims adapt by their support
+            tried += 1
+            with self.subTest(seed=seed):
+                line.apply([Add("X", Region.points(*new["X"]))])
+                order = {k: i for i, k in enumerate(line.ruleset.order(KINDS + ["X"]))}
+                kept: dict[str, set[int]] = {}
+                for x, k in sorted(((x, k) for k, xs in old.items() for x in xs),
+                                   key=lambda a: (abs(a[0]), a[0], order[a[1]])):
+                    trial = {kk: set(v) for kk, v in kept.items()}
+                    trial.setdefault(k, set()).add(x)
+                    if brute_force_consistent(line.ruleset, {**trial, **new}):
+                        kept = trial
+                dropped = line._solve([e.ops for e in line._active()])[0].dropped[0][0]
+                for k, xs in old.items():
+                    self.assertEqual(Region.points(*xs) - dropped.get(k, EMPTY),
+                                     Region.points(*kept.get(k, ())) if kept.get(k) else EMPTY)
+        self.assertGreater(tried, SEEDS)
+
+
+class UnboundedTests(unittest.TestCase):
+    """Elements may be rays or the whole line."""
+    ray = Region(((F(0), True, math.inf, False),))
+
+    def test_definite_rules_on_rays(self):
+        line = LineSystem([implies("A", ("B", -1)), forbids("B", "C")])
+        line.apply([Add("C", Region.closed(-5, 5))])
+        a = line.apply([Add("A", self.ray)])
+        self.assertEqual(line.state()["B"], Region(((F(-1), True, math.inf, False),)))
+        self.assertEqual(line.state()["C"], Region.interval(-5, -1, True, False))
+        line.reverse(a)
+        self.assertEqual(line.state(), {"C": Region.closed(-5, 5)})
+
+    def test_every_anchor_takes_its_first_possible_operand(self):
+        line = LineSystem([implies_any("A", ["B", "C"]), forbids(("B", 0), ("D", 0))])
+        line.apply([Add("A", FULL)])
+        self.assertEqual(line.state(), {"A": FULL, "B": FULL})
+        line = LineSystem([implies_any("A", ["B", "C"]), forbids("B", "D")])
+        line.apply([Add("A", self.ray), Add("D", Region.closed(2, 3))])
+        self.assertEqual(line.state()["C"], Region.closed(2, 3))
+        self.assertEqual(line.state()["B"], self.ray - Region.closed(2, 3))
+
+    def test_competing_anchors_closest_to_0_first(self):
+        """B at x forbids B at x + 1, so neighbours compete for B.  Positions are
+        decided closest to 0 first (the left one first on a tie), each taking the
+        first operand that still lets the others be placed; on infinitely many
+        positions the result repeats forever."""
+        rules = [implies_any("A", ["B", "C"]), forbids("B", ("B", 1))]
+        unit = Region.interval(0, 1, True, False)
+
+        def state(a):
+            line = LineSystem(rules)
+            line.apply([Add("A", a)])
+            return line.state()
+
+        got = state(self.ray)  # every lattice x + Z starts at its point in [0, 1)
+        self.assertEqual(got["B"], Region.tiled(unit, 2, 0, None))
+        self.assertEqual(got["C"], Region.tiled(unit, 2, 0, None).shift(1))
+        self.assertEqual(state(Region.points(-2, -1))["B"], Region.point(-1))  # -1 is closer to 0
+        self.assertEqual(state(Region.points(-1, 1))["B"], Region.points(-1, 1))  # not neighbours
+        self.assertEqual(state(Region.points(-1, 0, 1))["B"], Region.points(-1, 1) - Region.points(-1, 1)
+                         | Region.point(0))
+        for a in (FULL, Region(((-math.inf, False, F(5), True),))):
+            b = state(a)["B"]
+            for n in range(-160, 41):
+                x = F(n, 8)
+                r = x - math.floor(x)
+                first = r if r < F(1, 2) else r - 1  # the lattice's position closest to 0 (left on a tie)
+                self.assertEqual(x in b, (x - first) % 2 == 0, (a, x))
+
+    def test_infinite_positions_agree_with_long_finite_ones(self):
+        """When the last operand can always be placed, the decisions near 0 only
+        depend on the positions closer to 0, so an element on a ray or on the whole
+        line gives, near 0, what the same element cut far away gives."""
+        rng = random.Random(7)
+        for _ in range(SEEDS // 2):
+            off = rng.choice([F(1), F(2), F(1, 2), F(3, 2)])
+            rules = [implies_any("A", ["B", "C", "D"]), forbids("B", ("B", off)),
+                     forbids("B", ("C", rng.choice([F(-1), F(1, 2), F(1)]))), forbids("C", ("C", off * 2))]
+            if rng.random() < 0.5:
+                rules.append(implies("B", ("E", rng.choice([F(1), F(-1, 2)]))))
+                rules.append(forbids("E", ("C", 0)))
+            lo = rng.choice([-math.inf, F(rng.randint(-6, 0))])
+            hi = rng.choice([math.inf, F(rng.randint(1, 6))]) if not math.isinf(lo) else math.inf
+            a = Region(((lo, True, hi, True),)) if not math.isinf(lo) else Region(((lo, False, hi, not math.isinf(hi)),))
+            if math.isinf(hi):
+                a = Region(((lo, not math.isinf(lo), hi, False),))
+            near = Region.closed(-4, 4)
+            full = LineSystem(rules)
+            full.apply([Add("A", a)])
+            cut = LineSystem(rules)
+            cut.apply([Add("A", a & Region.closed(-20, 20))])
+            for kind in "BCD":
+                self.assertEqual(full.state().get(kind, EMPTY) & near, cut.state().get(kind, EMPTY) & near,
+                                 (rules, a, kind))
+
+    def test_bounded_anchors_among_unbounded_elements(self):
+        for rules in ([implies_any("A", ["B", "C"]), forbids("B", ("B", 1))],
+                      [implies_any("A", ["B", "C"]), forbids("B", ("Z", 1))]):
+            plain, with_ray = LineSystem(rules), LineSystem(rules)
+            with_ray.apply([Add("Z", Region(((F(5), True, math.inf, False),)))])
+            plain.apply([Add("Z", Region.closed(5, 100))])
+            for line in (plain, with_ray):
+                line.apply([Add("A", Region.points(0, 1, 2, 4, Fraction(9, 2)))])
+            self.assertEqual(plain.state()["B"], with_ray.state()["B"])
+            self.assertEqual(plain.state().get("C"), with_ray.state().get("C"))
 
 
 if __name__ == "__main__":

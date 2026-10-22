@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 import multiprocessing
 import os
 import random
@@ -13,415 +14,421 @@ from rules_generation_logic import (
     Add,
     Deadline,
     Machine,
-    ModeScheduler,
     Region,
-    Remove,
     Resources,
+    TendencyPlanner,
     TrackManager,
     View,
-    ahead,
     at_or_behind,
     restrict,
     usable_cpus,
 )
-from scheduler import Order, Schedule, _pool_mapper, solve
+from region import EMPTY, INF
+from scheduler import Act, Problem, Watch, _pool_mapper, decide, solve
 from test_rules_generation import FakeClock, ManualRunner
 
-SEEDS = int(os.environ.get("RULESGEN_SEEDS", "40"))
+SEEDS = int(os.environ.get("RULESGEN_SEEDS", "20"))
 F = Fraction
 
 
-def value_of(gains, cost, start, modes) -> Fraction:
-    total, prev = F(0), start
-    for g, m in zip(gains, modes):
-        total += g[m] - cost[prev][m]
-        prev = m
-    return total
+# ---- a direct evaluation of placements ---------------------------------------------
+def value_of(problem: Problem, pieces, m: int, present: frozenset) -> tuple[Fraction, Fraction]:
+    """The value of placing kinds on consecutive pieces (lo, hi, watched kinds,
+    placed kinds), lo == hi being a point, with the modes the tendency predicts."""
+    a, b = F(0), F(0)
+    for lo, hi, kinds, placed in pieces:
+        m = problem.tend(kinds | placed, m)
+        r = problem.rate(m, kinds | placed)
+        if math.isinf(hi):
+            a, b = a + r, b - r * lo
+        else:
+            b += (hi - lo) * r
+        b -= problem.price(placed - present)
+        present = placed
+    return a, b
 
 
-def brute(gains, cost, start) -> Fraction:
-    k = len(cost)
-    return max(value_of(gains, cost, start, ms) for ms in itertools.product(range(k), repeat=len(gains)))
+def pieces_of(units, pick):
+    """The pieces of a placement constant on every unit: pick[i] = (open set, end point set)."""
+    out = []
+    for u, (s_o, s_p) in zip(units, pick):
+        out += [(lo, hi, kinds, s_o) for lo, hi, kinds in u.parts]
+        if not math.isinf(u.end):
+            out.append((u.end, u.end, u.point_kinds, s_p))
+    return out
 
 
-def random_problem(rng: random.Random, n: int, k: int):
-    gains = [[F(rng.randint(-6, 6), rng.randint(1, 3)) for _ in range(k)] for _ in range(n)]
-    xs = [F(rng.randint(0, 8), 2) for _ in range(k)]
-    jump = F(rng.randint(0, 4), 2)
-    cost = [[abs(xs[a] - xs[b]) + jump if a != b else F(0) for b in range(k)] for a in range(k)]  # a metric
-    return gains, cost, rng.randrange(k)
+def brute(problem: Problem, units, m: int, present: frozenset) -> tuple[Fraction, Fraction]:
+    """The best value over every placement constant on each unit and each end point."""
+    subsets = problem.subsets()
+    choices = [[(s, frozenset()) for s in subsets] if math.isinf(u.end) else list(itertools.product(subsets, subsets))
+               for u in units]
+    return max(value_of(problem, pieces_of(units, pick), m, present) for pick in itertools.product(*choices))
 
 
-def inline_mapper(tasks, timeout):
-    from scheduler import _chunk_task
-    return [_chunk_task(t) for t in tasks]
+def random_planner(rng: random.Random, steer: bool = True, **kw) -> TendencyPlanner:
+    modes = ["a", "b", "c"][:rng.randint(1, 3)]
+    controlled = ["S", "T"][:rng.randint(1, 2)]
+    rates = {m: {k: F(rng.randint(-4, 4), rng.randint(1, 2)) for k in rng.sample(controlled + ["D", "E"], 2)}
+             for m in modes}
+    kinds = ["D", "E", "Q"] + (controlled if steer else [])
+    tendency = [(k, rng.choice(modes)) for k in rng.sample(kinds, rng.randint(0, 2))]
+    return TendencyPlanner(rates, base={m: F(rng.randint(-2, 2), 2) for m in modes}, controlled=controlled,
+                           cost={k: F(rng.randint(0, 3), 2) for k in controlled}, tendency=tendency,
+                           speed=1e6, startup=0.5, **kw)
 
 
-def scheduler(**kw) -> ModeScheduler:
-    """Off earns nothing; on costs 1/2 per unit and earns 1 where D is; a change costs 1/2."""
-    kw = {"base": {"off": 0, "on": F(-1, 2)}, "speed": 1e6, "startup": 0.5, **kw}
-    return ModeScheduler({"on": {"D": 1}}, F(1, 2), **kw)
+def random_track(rng: random.Random, lo=0, hi=12) -> dict[str, Region]:
+    out = {}
+    for k in "DEQ":
+        parts = []
+        for _ in range(rng.randint(0, 2)):
+            a = F(rng.randint(lo * 2, hi * 2), 2)
+            parts.append(Region.point(a) if rng.random() < 0.2 else Region.closed(a, a + F(rng.randint(1, 6), 2)))
+        if parts:
+            out[k] = Region.union_of(*parts)
+    return out
 
 
-def manager(*demand, **kw) -> TrackManager:
-    return TrackManager(modes=("off", "on"), initial_mode="off",
-                        initial_elements=[("D", r) for r in demand], **kw)
+def view_of(track, position=F(0), mode="a", performance=F(1, 2), time_=0.0) -> View:
+    return View(position, mode, track, None, (), time_, (), None, False, F(performance))
 
 
-def start(opt, mgr, cpus=1):
-    clock = FakeClock()
-    runner = ManualRunner(clock)
-    return Machine(mgr, opt, Resources(cpus), clock=clock, runner=runner), clock, runner
-
-
-def asks(opt: ModeScheduler, view) -> bool:
-    """Whether plan would want a run: no text of its own, or its text asks for one."""
-    return opt._ours(view) is None or view.rerun
-
-
-def realized(test: unittest.TestCase, opt: ModeScheduler, m: Machine, run) -> None:
-    """The theorem of the install: from the install to s, the mode of the view; from s on, the schedule."""
-    follow = m.manager.text.follow
-    assert isinstance(follow, Schedule)
-    chip, view = m.manager.chip, run.view
-    s, end = follow.start, follow.end
-    test.assertGreater(s, run.installed_at)
-    test.assertEqual(chip.mode_at(run.installed_at), view.mode)
-    test.assertEqual(chip.mode_at((run.installed_at + s) / 2), view.mode)
-    cuts = opt.cuts(view.track, s, end)
-    gains = opt.gains(view.track, cuts)
-    y = opt.modes.index(view.mode)
-    modes = [opt.modes.index(chip.mode_at(q)) for q in cuts[:-1]]
-    for i, q in enumerate(cuts[:-1]):
-        test.assertEqual(chip.mode_at((q + cuts[i + 1]) / 2), opt.modes[modes[i]])
-    test.assertEqual(value_of(gains, opt.cost, y, modes), follow.value)
-    best = brute(gains, opt.cost, y) if len(gains) <= 8 else solve(gains, opt.cost, y, chunk=1)[2]
-    test.assertEqual(follow.value, best)
-
-
-class SolveTests(unittest.TestCase):
-    def test_exact_against_every_schedule(self):
-        rng = random.Random(1)
-        for _ in range(SEEDS * 5):
-            gains, cost, y = random_problem(rng, rng.randint(1, 6), rng.randint(1, 3))
-            best = brute(gains, cost, y)
-            for kw in ({"chunk": 1}, {"chunk": 2}, {"chunk": 256},
-                       {"chunk": 1, "workers": 2, "mapper": inline_mapper},
-                       {"chunk": 2, "workers": 3, "mapper": inline_mapper}):
-                done, modes, value = solve(gains, cost, y, **kw)
-                self.assertEqual((done, value), (len(gains), best), kw)
-                self.assertEqual(value_of(gains, cost, y, modes), value)
-
-    def test_anytime_result_is_exact_for_the_cells_done(self):
-        rng = random.Random(2)
-        for _ in range(SEEDS):
-            gains, cost, y = random_problem(rng, 7, 2)
-            for rounds, workers in ((0, 1), (1, 1), (3, 1), (1, 2), (2, 2)):
-                left = iter([1.0] * rounds + [-1.0] * 99)
-                done, modes, value = solve(gains, cost, y, chunk=2, workers=workers,
-                                           mapper=inline_mapper, time_left=lambda: next(left))
-                self.assertEqual(done, min(len(gains), 2 * rounds * workers))
-                self.assertEqual(value, brute(gains[:done], cost, y) if done else 0)
-                self.assertEqual(value_of(gains[:done], cost, y, modes), value)
-
-    def test_a_round_too_late_is_left_out(self):
-        gains, cost, y = random_problem(random.Random(3), 6, 2)
-        calls = []
-
-        def mapper(tasks, timeout):
-            calls.append(len(tasks))
-            return inline_mapper(tasks, timeout) if len(calls) == 1 else None
-        done, modes, value = solve(gains, cost, y, chunk=1, workers=2, mapper=mapper)
-        self.assertEqual((done, value), (2, brute(gains[:2], cost, y)))
-
-    def test_parallel_in_real_processes(self):
-        rng = random.Random(4)
-        gains, cost, y = random_problem(rng, 300, 3)
-        sequential = solve(gains, cost, y)
-        with multiprocessing.get_context("spawn").Pool(2) as pool:
-            parallel = solve(gains, cost, y, chunk=40, workers=2, mapper=_pool_mapper(pool))
-        self.assertEqual(parallel[:1] + parallel[2:], sequential[:1] + sequential[2:])
-        self.assertEqual(value_of(gains, cost, y, parallel[1]), sequential[2])
+def inline_mapper(fn, tasks, timeout):
+    return [fn(t) for t in tasks]
 
 
 class ProblemTests(unittest.TestCase):
-    def test_no_schedule_beats_the_best_switching_at_ends(self):
-        """Lemma: transitions anywhere, even inside cells, never do better."""
-        rng = random.Random(5)
-        for _ in range(SEEDS * 3):
-            opt = ModeScheduler({"a": {"D": rng.randint(-2, 3)}, "b": {"E": rng.randint(-2, 3), "D": 1}},
-                                {("a", "b"): F(rng.randint(0, 4), 2), ("b", "a"): F(rng.randint(0, 4), 2),
-                                 ("a", "c"): 1, ("c", "a"): 1, ("b", "c"): 1, ("c", "b"): 1},
-                                base={"a": 0, "b": F(-1, 2), "c": F(rng.randint(-1, 1), 2)})
-            track = {K: Region.union_of(*(Region.closed(x, x + F(rng.randint(0, 4), 2))
-                                          for x in (F(rng.randint(0, 16), 2) for _ in range(3))))
-                     for K in "DE"}
-            s, end = F(rng.randint(0, 3), 2), F(9)
-            cuts = opt.cuts(track, s, end)
-            gains = opt.gains(track, cuts)
-            y = rng.randrange(3)
-            best = solve(gains, opt.cost, y)[2]
-            for _ in range(10):
-                qs = sorted({s + F(rng.randint(0, 36), 4) for _ in range(rng.randint(0, 5))} - {end})
-                qs = [q for q in qs if q < end]
-                schedule = [(q, rng.randrange(3)) for q in qs]
-                self.assertLessEqual(self.integrate(opt, track, s, end, y, schedule), best)
+    def test_exact_against_every_placement(self):
+        for seed in range(SEEDS * 3):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                opt = random_planner(rng)
+                pr = opt.problem
+                track = random_track(rng, 0, 4)
+                end = rng.choice([F(rng.randint(1, 6)), INF])
+                grid = rng.choice([None, F(1), F(3, 2)])
+                units = opt.units(track, opt.bounds(track, F(0), end, grid))[:3]
+                values = solve(pr, units)
+                for m, present in pr.states():
+                    self.assertEqual(values[0][m, present], brute(pr, units, m, present))
 
-    @staticmethod
-    def integrate(opt, track, s, end, y, schedule) -> Fraction:
-        """Exact value of a schedule given by its transitions, wherever they are."""
-        ends = sorted({e for K in opt.kinds for p in track.get(K, Region()).parts for e in (p[0], p[2])
-                       if s < e < end} | {q for q, _ in schedule} | {s, end})
-        mode_at = lambda x: ([y] + [m for q, m in schedule if q <= x])[-1]  # noqa: E731
-        total, prev = F(0), y
-        for _, m in schedule:
-            total -= opt.cost[prev][m]
-            prev = m
-        for lo, hi in zip(ends, ends[1:]):
-            mid = (lo + hi) / 2
-            total += (hi - lo) * opt.rate(mode_at(mid), lambda K: mid in track.get(K, Region()))
-        return total
+    def test_without_steering_finer_placements_do_not_help(self):
+        """When the tendency reads no placed kind, a placement constant on the
+        cells is the best of all (SEMANTICS.md, Lemma 1)."""
+        for seed in range(SEEDS * 3):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                opt = random_planner(rng, steer=False)
+                pr = opt.problem
+                track = random_track(rng, 0, 4)
+                units = opt.units(track, opt.bounds(track, F(0), F(5), None))
+                values = solve(pr, units)
+                m, present = rng.choice(pr.states())
+                for _ in range(20):
+                    pieces = []
+                    for u in units:
+                        for lo, hi, kinds in u.parts:
+                            cuts = sorted({lo, hi} | ({lo + (hi - lo) * F(rng.randint(1, 9), 10)
+                                                       for _ in range(rng.randint(0, 2))} if lo != hi else set()))
+                            for i, (a, b) in enumerate(zip(cuts, cuts[1:])):
+                                if i:
+                                    pieces.append((a, a, kinds, rng.choice(pr.subsets())))
+                                pieces.append((a, b, kinds, rng.choice(pr.subsets())))
+                            if lo == hi:
+                                pieces.append((lo, lo, kinds, rng.choice(pr.subsets())))
+                        pieces.append((u.end, u.end, u.point_kinds, rng.choice(pr.subsets())))
+                    self.assertLessEqual(value_of(pr, pieces, m, present), values[0][m, present])
+
+    def test_steering_tends_to_the_best_value_as_the_grid_gets_finer(self):
+        """"Element A incites the user to switch to mode busy": an A, however short,
+        makes the user busy, where they earn 1; A itself costs 3 per unit of
+        length.  The best value over (0, 4] is 4, reached by no placement (the
+        chip's own point cannot be changed); on a grid of g, the best is 4 - g
+        (SEMANTICS.md, Theorem 5)."""
+        opt = TendencyPlanner({"busy": {"A": -3}}, base={"idle": 0, "busy": 1}, controlled=["A"],
+                              tendency=[("A", "busy")])
+        idle = opt.problem.modes.index("idle")
+        for g in (F(1), F(1, 2), F(1, 8), F(1, 64)):
+            units = opt.units({}, opt.bounds({}, F(0), F(4), g))
+            self.assertEqual(solve(opt.problem, units)[0][idle, frozenset()], (0, 4 - g))
+        for x in (F(1, 10), F(1, 1000)):  # an A of length x from the chip: 4 - x - 3x
+            pieces = [(F(0), x, frozenset(), frozenset({"A"})), (x, F(4), frozenset(), frozenset())]
+            self.assertLess(value_of(opt.problem, pieces, idle, frozenset())[1], 4)
+
+    def test_parallel_is_the_same(self):
+        for seed in range(SEEDS):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                opt = random_planner(rng)
+                track = random_track(rng, 0, 30)
+                units = opt.units(track, opt.bounds(track, F(0), rng.choice([F(31), INF]), rng.choice([None, F(1)])))
+                one = solve(opt.problem, units)
+                many = solve(opt.problem, units, workers=3, chunk=rng.randint(1, 4), mapper=inline_mapper)
+                self.assertEqual(one, many)
+
+    def test_an_infinite_horizon_is_best_for_every_long_enough_one(self):
+        for seed in range(SEEDS):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                opt = random_planner(rng)
+                track = random_track(rng, 0, 4)
+                (a, b) = solve(opt.problem, opt.units(track, opt.bounds(track, F(0), INF, None)))[0][0, frozenset()]
+                for x in (F(20), F(100)):
+                    finite = solve(opt.problem, opt.units(track, opt.bounds(track, F(0), x, None)))[0][0, frozenset()]
+                    # With a horizon x, the best is a*x + b, up to a final element's cost.
+                    self.assertLessEqual(abs(finite[1] - (a * x + b)), sum(opt.problem.cost))
+
+    def test_late_runs_give_nothing(self):
+        opt = random_planner(random.Random(1))
+        track = random_track(random.Random(2), 0, 30)
+        units = opt.units(track, opt.bounds(track, F(0), F(31), F(1)))
+        self.assertIsNone(solve(opt.problem, units, time_left=lambda: 0.0))
 
     def test_invalid_problems_are_refused(self):
         with self.assertRaises(ValueError):
-            ModeScheduler({"a": {"D": 1}, "b": {}, "c": {}},
-                          {("a", "b"): 1, ("b", "a"): 1, ("b", "c"): 1, ("c", "b"): 1, ("a", "c"): 3, ("c", "a"): 1})
+            TendencyPlanner({"a": {"S": 1}}, controlled=["S"], cost=-1)
         with self.assertRaises(ValueError):
-            ModeScheduler({"a": {"D": 1}, "b": {}}, -1)
+            TendencyPlanner({})
         with self.assertRaises(ValueError):
-            ModeScheduler({"a": {"D": 1}, "b": {}}, {("a", "b"): 1})
-        with self.assertRaises(ValueError):
-            ModeScheduler({"a": {"S": 1}}, 0)
-        with self.assertRaises(ValueError):
-            ModeScheduler({}, 0)
-        with self.assertRaises(ValueError):
-            ModeScheduler({"a": {"D": 1}}, 0, tolerance=-1)
+            TendencyPlanner({"a": {"S": 1}}, resolution=0)
 
 
-class MachineTests(unittest.TestCase):
-    def test_installs_the_best_schedule_and_its_edit(self):
-        opt = scheduler()
-        m, clock, runner = start(opt, manager(Region.closed(2, 6), Region.closed(7, 8), Region.closed(12, F(25, 2))))
-        self.assertEqual(len(m.runs), 1)
-        runner.finish()
-        m.poll()
-        run = m.runs[0]
-        self.assertEqual(run.outcome, "installed", run.reason)
-        realized(self, opt, m, run)
-        # On from 2 to 8, across the gap: 6 units on (-3), 5 of demand (+5), two changes (-1).
-        self.assertEqual(m.manager.chip.transitions, [(F(1, 10), "off"), (2, "on"), (8, "off")])
-        self.assertEqual(m.manager.track()["S"], Region.union_of(Region.closed(2, 6), Region.interval(7, 8, True, False)))
-        self.assertEqual(m.manager.text.follow.value, 1)
+def planner(**kw) -> TendencyPlanner:
+    """S earns 1 per unit in "busy" and costs 1 in "idle"; each S costs 1/2.
+    Where D is, the user tends to be busy; where Q is, idle."""
+    kw = {"speed": 1e6, "startup": 0.5, **kw}
+    return TendencyPlanner({"busy": {"S": 1}, "idle": {"S": -1}}, controlled=["S"], cost=F(1, 2),
+                           tendency=[("D", "busy"), ("Q", "idle")], **kw)
 
-    def test_no_new_run_while_nothing_changes(self):
-        opt = scheduler()
-        m, clock, runner = start(opt, manager(Region.closed(2, 6)))
-        runner.finish()
-        m.poll()
-        self.assertTrue(opt._ours(m._view()).final)
-        for i in range(1, 60):
-            clock.now += 0.1
-            m.update_chip(F(i, 2))
-        self.assertEqual(len(m.runs), 1)
-        self.assertEqual(m.manager.track()["S"], Region.interval(2, 6, True, False))  # what the chip went through stays
 
-    def test_a_change_of_the_problem_starts_a_run(self):
-        opt = scheduler()
-        m, clock, runner = start(opt, manager(Region.closed(2, 6)))
-        runner.finish()
-        m.poll()
-        m.update_chip(3)
-        self.assertEqual(len(m.runs), 1)
-        m.user_edit([Add("D", Region.closed(9, 12))])
-        self.assertEqual(len(m.runs), 2)
-        runner.finish()
-        m.poll()
-        realized(self, opt, m, m.runs[1])
-        self.assertEqual(m.manager.track()["S"], Region.union_of(Region.interval(2, 6, True, False),
-                                                                 Region.interval(9, 12, True, False)))
-        m.user_edit([Remove("D", Region.closed(9, 12))])
-        runner.finish()
-        m.poll()
-        self.assertEqual(m.manager.track()["S"], Region.interval(2, 6, True, False))
-        self.assertEqual(len(m.runs), 3)
+def manager(**kw) -> TrackManager:
+    return TrackManager(modes=("idle", "busy"), initial_mode="idle",
+                        initial_elements=[("D", Region.closed(2, 6)), ("Q", Region.closed(6, 7)),
+                                          ("D", Region.closed(F(15, 2), 8))], **kw)
 
-    def test_the_served_kind_placed_by_someone_else(self):
-        opt = scheduler()
-        m, clock, runner = start(opt, manager(Region.closed(2, 6)))
+
+def start(opt, mgr, cpus=1, performance=F(1, 2)):
+    clock = FakeClock()
+    runner = ManualRunner(clock)
+    return Machine(mgr, opt, Resources(cpus), clock=clock, runner=runner, performance=performance), clock, runner
+
+
+class TextTests(unittest.TestCase):
+    def test_installs_the_best_placement(self):
+        opt = planner()
+        m, clock, runner = start(opt, manager(), performance=F(1, 10))
         runner.finish()
         m.poll()
-        m.user_edit([Add("S", Region.closed(3, 4))])  # the text's edit leaves it out: no new text
-        self.assertEqual(len(m.runs), 1)
-        self.assertEqual(m.manager.track()["S"], Region.interval(2, 6, True, False))
-        m.user_edit([Remove("S", Region.closed(3, 4))])
-        self.assertEqual(m.manager.track()["S"], Region.interval(2, 6, True, False))
+        self.assertEqual(m.runs[0].outcome, "installed")
+        # As the tendency says: busy on D, idle on Q, busy again at 15/2, and it stays busy after 8.
+        moves = [(2, "busy"), (6, "idle"), (F(15, 2), "busy")]
+        m.update_chip(20, moves)
+        self.assertEqual(m.manager.track()["S"] & at_or_behind(20),
+                         Region.open(2, 6) | Region.interval(F(15, 2), 20, False, True))
+        self.assertEqual(len(m.runs), 1)  # nothing changed: no new run
+
+    def test_a_placed_element_that_incites_a_mode(self):
+        """The text places A, which makes the user busy, then stops paying for it."""
+        opt = TendencyPlanner({"busy": {"A": -3}}, base={"idle": 0, "busy": 1}, controlled=["A"],
+                              tendency=[("A", "busy")], resolution=F(1, 2), speed=1e6, startup=0.5)
+        m, clock, runner = start(opt, TrackManager(modes=("idle", "busy"), initial_mode="idle"))
+        runner.finish()
+        m.poll()
+        self.assertEqual(m.manager.track()["A"], Region.point(F(1, 2)))  # the first grid point
+        m.update_chip(F(1, 2), [(F(1, 2), "busy")])  # the user follows the tendency
+        m.update_chip(5)
+        self.assertEqual(m.manager.track()["A"], Region.point(F(1, 2)))
         self.assertEqual(len(m.runs), 1)
 
-    def test_a_tolerance_saves_runs_within_its_bound(self):
-        opt = scheduler(tolerance=3)
-        m, clock, runner = start(opt, manager(Region.closed(2, 10)))
-        runner.finish()
-        m.poll()
-        m.update_chip(3)
-        m.user_edit([Remove("D", Region.open(5, 6))])  # D = 1: at most 2 below the optimum
-        self.assertEqual((len(m.runs), m.manager.text.follow.divergence(F(3), m.manager.track())), (1, 1))
-        self.assertEqual(m.manager.track()["S"], Region.union_of(Region.interval(2, 5, True, True),
-                                                                 Region.interval(6, 10, True, False)))
-        m.user_edit([Add("D", Region.closed(12, 13))])  # D = 2 in all: 4 > 3
-        self.assertEqual(len(m.runs), 2)
-        runner.finish()
-        m.poll()
-        realized(self, opt, m, m.runs[1])
-
-    def test_the_score_is_within_twice_the_divergence(self):
-        """Theorem 5, on random edits after the install."""
-        for seed in range(SEEDS):
-            rng = random.Random(seed)
-            opt = scheduler(tolerance=10 ** 6, lookahead=30)
-            demand = [Region.closed(x, x + F(rng.randint(1, 6), 2)) for x in range(2, 26, 4)]
-            m, clock, runner = start(opt, manager(*demand))
-            runner.finish()
-            m.poll()
-            for _ in range(4):
-                x = F(rng.randint(2, 56), 2)
-                part = Region.closed(x, x + F(rng.randint(1, 4), 2))
-                track = m.manager.track()
-                op = Remove("D", part & track["D"]) if part & track.get("D", Region()) and rng.random() < 0.5 \
-                    else Add("D", part - track.get("D", Region()))
-                if op.region:
-                    m.user_edit([op])
-            sched, chip = m.manager.text.follow, m.manager.chip
-            p = max(chip.position, sched.start)
-            track = m.manager.track()
-            y = opt.modes.index(chip.mode_at(p))
-            best = solve(opt.gains(track, opt.cuts(track, p, sched.end)), opt.cost, y)[2]
-            here = [(q, opt.modes.index(mode)) for q, mode in chip.transitions if p < q <= sched.end]
-            score = ProblemTests.integrate(opt, track, p, sched.end, y, here)
-            self.assertLessEqual(score, best)
-            self.assertLessEqual(best - score, 2 * sched.divergence(chip.position, track))
-
-    def test_the_end_of_the_horizon_starts_a_run(self):
-        opt = scheduler(lookahead=10)
-        demand = Region.union_of(*(Region.closed(4 * i + 1, 4 * i + 3) for i in range(10)))
-        m, clock, runner = start(opt, manager(demand))
-        runner.finish()
-        m.poll()
-        end = m.manager.text.follow.end
-        self.assertFalse(m.manager.text.follow.final)
-        m.update_chip(end - 2)
-        self.assertEqual(len(m.runs), 1)
-        m.update_chip(end - F(1, 20))
-        self.assertEqual(len(m.runs), 2)
-        runner.finish()
-        m.poll()
-        realized(self, opt, m, m.runs[1])
-        self.assertGreater(m.manager.text.follow.end, end)
-
-    def test_a_refused_install_is_tried_again_later(self):
-        opt = scheduler()
-        m, clock, runner = start(opt, manager(Region.closed(2, 6)))
-        m.update_chip(1)  # past where the text starts
-        runner.finish()
-        m.poll()
-        self.assertEqual(m.runs[0].outcome, "refused")
-        self.assertEqual(len(m.runs), 1)  # it waits
-        clock.now += 1
-        m.poll()
-        self.assertEqual(len(m.runs), 2)
-        runner.finish()
-        m.poll()
-        self.assertEqual(m.runs[1].outcome, "installed")
-        realized(self, opt, m, m.runs[1])
-
-    def test_a_schedule_starts_ahead_of_where_the_chip_will_be(self):
-        opt = scheduler(lookahead=40)
-        m, clock, runner = start(opt, manager(Region.closed(30, 35)))
-        runner.finish()
-        for i in range(1, 6):
-            clock.now += 1
-            m.update_chip(2 * i)  # 2 units per second
-        m.user_edit([Add("D", Region.closed(40, 45))])
-        lead = opt.order.start - m.manager.chip.position
-        self.assertGreaterEqual(lead, F(2) * 2 * F(opt.order.budget) * F(9, 10))
-
-    def test_the_time_of_a_run_depends_on_the_cpus(self):
-        demand = Region(tuple((F(i, 4), True, F(i, 4) + F(1, 8), True) for i in range(4000)))
-        view = View(F(0), "a", {"D": demand}, None, (), 0.0)
-        opt = ModeScheduler({"a": {"D": 1}, "b": {}, "c": {"D": F(1, 2)}, "d": {}}, 1, lookahead=1000,
-                            speed=2e4, startup=0.5, pool_startup=0.5, max_budget=1000)
-        one, many = opt.order_for(view, Resources(1)), opt.order_for(view, Resources(min(8, usable_cpus())))
-        self.assertEqual(one.workers, 1)
-        if usable_cpus() >= 8:
-            self.assertEqual(many.workers, 8)
-            self.assertLess(many.budget, one.budget)
-        small = start(scheduler(), manager(Region.closed(2, 6)))[0]._view()
-        self.assertEqual(opt.order_for(small, Resources(usable_cpus())).workers, 1)  # not worth the processes
-
-    def test_generate_with_worker_processes(self):
-        demand = Region.union_of(*(Region.closed(F(i, 2), F(i, 2) + F(1, 4)) for i in range(0, 80, 3)))
-        opt = scheduler(lookahead=40)
-        m = start(opt, manager(demand))[0]
-        view = m.runs[0].view
-        texts = []
-        for workers, chunk in ((1, 256), (2, 5)):
-            opt.order = Order(opt.order.start, opt.order.end, workers, chunk, 60.0, opt.order.lead)
-            texts.append(opt.generate(view, Deadline(time.monotonic(), 60.0, time.monotonic), Resources(workers)))
-        self.assertEqual(texts[0].follow.value, texts[1].follow.value)
-        self.assertEqual(texts[0].follow.end, texts[1].follow.end)
-
-    def test_random_runs(self):
+    def test_texts_react_to_the_actual_modes(self):
+        """From every position and mode, the text does what is best for the
+        tendency from there (SEMANTICS.md, Theorem 3)."""
         for seed in range(SEEDS):
             with self.subTest(seed=seed):
-                self._random_run(random.Random(seed))
+                rng = random.Random(seed)
+                opt = random_planner(rng)
+                pr = opt.problem
+                track = random_track(rng, 0, 8)
+                mgr = TrackManager(modes=pr.modes, initial_mode=pr.modes[0],
+                                   initial_elements=list(track.items()))
+                view = view_of(dict(mgr.track()), mode=pr.modes[0], performance=F(1, 3))
+                text = opt.generate(view, Deadline(0.0, 1e9, time.monotonic), Resources(1))
+                mgr.switch_rules_text(text)
+                act = text.rules[0].action
+                assert isinstance(act, Act)
+                values, units = act.policy.values, act.policy.units
+                p = F(0)
+                for _ in range(6):
+                    q = p + F(rng.randint(1, 8), 4)
+                    tr = sorted({p + F(rng.randint(1, int((q - p) * 4)), 4) for _ in range(rng.randint(0, 2))})
+                    mgr.update_chip(q, [(x, rng.choice(pr.modes)) for x in tr])
+                    # At every rule start on the way, the placement is the best decision there.
+                    starts = sorted({u.start for u in units if p < u.start <= q} | set(tr))
+                    for x, x2 in zip(starts, [*starts[1:], q]):
+                        i = max(j for j, u in enumerate(units) if u.start <= x)
+                        u = units[i]
+                        mode = pr.modes.index(mgr.chip.mode_at(x))
+                        present = frozenset(k for k in pr.controlled if x in mgr.track().get(k, EMPTY))
+                        _, s_o, s_p = decide(pr, u, x, mode, present, values[i + 1])
+                        y = (x + min(u.end, x2)) / 2
+                        if x < y:
+                            self.assertEqual({k for k in pr.controlled if y in mgr.track().get(k, EMPTY)}, set(s_o))
+                    p = q
 
-    def _random_run(self, rng: random.Random):
-        opt = ModeScheduler({"a": {"D": 1, "E": -1}, "b": {"E": 2}, "c": {}},
-                            {("a", "b"): 1, ("b", "a"): 1, ("a", "c"): F(1, 2), ("c", "a"): F(1, 2),
-                             ("b", "c"): F(1, 2), ("c", "b"): F(1, 2)},
-                            base={"a": F(-1, 4), "b": F(-1, 2)}, lookahead=rng.choice((5, 12)), speed=1e6,
-                            startup=0.5, min_lead=F(1, 4))
-        mgr = TrackManager(modes=("a", "b", "c"), initial_mode="c",
-                           initial_elements=[(rng.choice("DE"), Region.closed(x, x + F(rng.randint(1, 6), 2)))
-                                             for x in range(1, 20, 4)])
-        m, clock, runner = start(opt, mgr)
-        frozen = []
-        for _ in range(30):
-            t = rng.random()
-            clock.now += rng.choice((0, 0.5, 1))
-            before = len(m.runs)
-            if t < 0.35 and runner.jobs:
-                runner.finish()
-                m.poll()
-                if m.runs[before - 1].outcome == "installed":
-                    realized(self, opt, m, m.runs[before - 1])
-            elif t < 0.5:
-                x = m.manager.chip.position + rng.randint(1, 12)
-                track = m.manager.track()
-                free = Region.closed(x, x + F(rng.randint(1, 4), 2)) - track.get("D", Region()) - track.get("E", Region())
-                m.user_edit([Add(rng.choice("DE"), free)] if free and rng.random() < 0.8 else [])
-            else:
-                wanted = not m.running and asks(opt, m._view())
-                m.update_chip(m.manager.chip.position + F(rng.randint(0, 3), 4))
-                if not wanted and not asks(opt, m._view()) and not opt._failures:
-                    self.assertEqual(len(m.runs), before)  # nothing changed: no new run
-            p = m.manager.chip.position
-            frozen.append((p, restrict(m.manager.track(), at_or_behind(p))))
-            for q, past in frozen:
-                self.assertEqual(restrict(m.manager.track(), at_or_behind(q)), past)
+    def test_performance_sets_horizon_grid_time_and_tolerance(self):
+        opt = planner()
+        track = {"D": Region.union_of(*(Region.closed(2 * i, 2 * i + 1) for i in range(400)))}
+        hs = [F(1, 20), F(1, 10), F(1, 4), F(1, 2), F(3, 4), F(9, 10)]
+        orders = [opt.order_for(view_of(track, performance=h), Resources(1)) for h in hs]
+        for (h1, o1), o2 in zip(zip(hs, orders), orders[1:]):
+            self.assertGreaterEqual(o1.end, o2.end, h1)
+            self.assertLessEqual(o1.grid, o2.grid)
+            self.assertGreaterEqual(o1.budget, o2.budget)
+            self.assertGreater(o1.tolerance, o2.tolerance)
+        self.assertEqual(orders[3].grid, 1)
+        # Close to 1: no time for a single unit; the text is empty, and asks for a new one at any change.
+        near = opt.order_for(view_of(track, performance=F(999, 1000)), Resources(1))
+        self.assertEqual(near.end, 0)
+        text = opt.generate(view_of(track, performance=F(999, 1000)), Deadline(0.0, near.budget, time.monotonic),
+                            Resources(1))
+        self.assertEqual(text.rules, ())
+        self.assertTrue(text.rerun(F(0), "idle", {**track, "D": track["D"] | Region.closed(1, F(3, 2))}))
+
+    def test_the_time_of_a_run_depends_on_the_cpus(self):
+        opt = TendencyPlanner({"a": {"S": 1, "T": 1, "U": 1}, "b": {"D": 1}, "c": {}}, controlled=["S", "T", "U"],
+                              speed=1e4, startup=0.1, pool_startup=0.1, time_scale=1e9)
+        track = {"D": Region.union_of(*(Region.closed(2 * i, 2 * i + 1) for i in range(500)))}
+        view = view_of(track, performance=F(1, 2))
+        one, many = opt.order_for(view, Resources(1)), opt.order_for(view, Resources(usable_cpus()))
+        self.assertEqual(one.workers, 1)
+        if usable_cpus() >= 64:
+            self.assertGreater(many.workers, 1)
+            self.assertLess(many.budget, one.budget)
+        else:
+            self.assertLessEqual(many.budget, one.budget)
+
+    def test_changes_start_a_run_by_their_effect(self):
+        opt = planner()
+        m, clock, runner = start(opt, manager(), performance=F(1, 3))  # tolerance 2
+        runner.finish()
+        m.poll()
+        self.assertEqual(m.runs[0].outcome, "installed")
+        watch = m.manager.text.rerun
+        assert isinstance(watch, Watch)
+        self.assertEqual(watch.tolerance, 2)
+        m.update_chip(1)
+        self.assertEqual(len(m.runs), 1)
+        m.user_edit([Add("Z", Region.closed(10, 11))])  # not in the problem
+        self.assertEqual(len(m.runs), 1)
+        m.user_edit([Add("Q", Region.closed(3, 4))])  # the tendency changes
+        self.assertEqual(len(m.runs), 2)
+
+    def test_the_score_is_within_twice_the_divergence(self):
+        """SEMANTICS.md, Theorem 4: a change of the rates that the tendency does
+        not read costs the text at most 2 D."""
+        for seed in range(SEEDS):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                opt = TendencyPlanner({"a": {"S": 1, "D": F(rng.randint(-3, 3))}, "b": {"S": -1, "E": 1}},
+                                      controlled=["S"], cost=F(rng.randint(0, 2), 2),
+                                      tendency=[("Q", "b"), ("S", "a")][:rng.randint(1, 2)], speed=1e6)
+                pr = opt.problem
+                track = random_track(rng, 0, 6)
+                end, grid = F(8), F(1, 2)
+                units = opt.units(track, opt.bounds(track, F(0), end, grid))
+                values = solve(pr, units)
+                new = dict(track)
+                for k in "DE":
+                    a = F(rng.randint(0, 14), 2)
+                    new[k] = (new.get(k, EMPTY) | Region.closed(a, a + 1)) if rng.random() < 0.5 else \
+                        new.get(k, EMPTY) - Region.closed(a, a + 2)
+                demand = tuple((k, r) for k, r in track.items() if k in pr.watched)
+                d = Watch(pr, demand, F(0), end, F(0), F(0)).divergence(F(0), new)
+                new_units = opt.units(new, opt.bounds(new, F(0), end, grid))  # the same units: Q did not change
+                self.assertEqual([u.start for u in units], [u.start for u in new_units])
+                best = solve(pr, new_units)[0][0, frozenset()][1]
+                # What the old text decides, valued on the new line.
+                pick, m, present = [], 0, frozenset()
+                for i, u in enumerate(units):
+                    _, s_o, s_p = decide(pr, u, u.start, m, present, values[i + 1])
+                    pick.append((s_o, s_p))
+                    m = pr.tend(u.point_kinds | s_p, value_mode(pr, u, m, s_o))
+                    present = s_p
+                got = value_of(pr, pieces_of(new_units, pick), 0, frozenset())[1]
+                self.assertLessEqual(got, best)
+                self.assertGreaterEqual(got, best - 2 * d)
+
+    def test_a_refused_install_is_tried_again_later(self):
+        opt = planner()
+        m, clock, runner = start(opt, manager())
+        runner.jobs[0].call = lambda: None  # the run gives nothing
+        runner.finish()
+        m.poll()
+        self.assertEqual((m.runs[0].outcome, len(m.runs)), ("no text", 1))  # waits before trying again
+        clock.now = 0.6
+        m.poll()
+        self.assertEqual(len(m.runs), 2)
+
+    def test_random_runs(self):
+        for seed in range(SEEDS // 2):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                opt = random_planner(rng)
+                pr = opt.problem
+                mgr = TrackManager(modes=pr.modes, initial_mode=pr.modes[0],
+                                   initial_elements=list(random_track(rng, 0, 10).items()))
+                m, clock, runner = start(opt, mgr, performance=F(rng.randint(1, 3), 4))
+                frozen: list[tuple[Fraction, dict]] = []
+                for _ in range(20):
+                    clock.now += rng.choice((0, 0.25, 1))
+                    t = rng.random()
+                    if t < 0.3 and runner.jobs:
+                        runner.finish()
+                        m.poll()
+                    elif t < 0.4:
+                        a = m.manager.chip.position + F(rng.randint(1, 8), 2)
+                        m.user_edit([Add(rng.choice("DEQ"), Region.closed(a, a + 1) - m.manager.track().get(
+                            "D", EMPTY) - m.manager.track().get("E", EMPTY) - m.manager.track().get("Q", EMPTY))]
+                                    if rng.random() < 0.8 else [])
+                        frozen.clear()
+                    else:
+                        q = m.manager.chip.position + F(rng.randint(0, 6), 4)
+                        m.update_chip(q, [(q, rng.choice(pr.modes))] if q > m.manager.chip.position else [])
+                    self.assertLessEqual(len(runner.pending()), 1)
+                    p = m.manager.chip.position
+                    frozen.append((p, restrict(m.manager.track(), at_or_behind(p))))
+                    for q, past in frozen:
+                        self.assertEqual(restrict(m.manager.track(), at_or_behind(q)), past)
+
+
+def value_mode(problem: Problem, unit, m: int, placed: frozenset) -> int:
+    """The predicted mode at the end of the open part of a unit."""
+    for _, _, kinds in unit.parts:
+        m = problem.tend(kinds | placed, m)
+    return m
 
 
 class ProcessTests(unittest.TestCase):
     def test_the_machine_with_its_optimizer_in_a_process(self):
-        opt = scheduler(speed=None, startup=2.0)
-        m = Machine(manager(Region.closed(2, 6), Region.closed(7, 8)), opt)
+        opt = planner(speed=None, startup=2.0)
+        m = Machine(manager(), opt, performance=F(1, 2))
         stop = time.monotonic() + 60
         while m.runs[0].outcome == "running" and time.monotonic() < stop:
             m.poll()
             time.sleep(0.01)
         self.assertEqual(m.runs[0].outcome, "installed", m.runs[0].reason)
-        self.assertEqual(m.manager.track()["S"], Region.union_of(Region.closed(2, 6), Region.interval(7, 8, True, False)))
-        self.assertEqual(len(m.runs), 1)
+        m.update_chip(5, [(2, "busy")])
+        self.assertEqual(m.manager.track()["S"] & at_or_behind(5), Region.interval(2, 5, False, True))
         m.close()
+
+    def test_generate_with_worker_processes(self):
+        opt = planner()
+        track = {"D": Region.union_of(*(Region.closed(2 * i, 2 * i + 1) for i in range(40)))}
+        units = opt.units(track, opt.bounds(track, F(0), F(81), F(1, 2)))
+        with multiprocessing.get_context("spawn").Pool(2) as pool:
+            many = solve(opt.problem, units, workers=2, chunk=10, mapper=_pool_mapper(pool))
+        self.assertEqual(many, solve(opt.problem, units))
 
 
 if __name__ == "__main__":

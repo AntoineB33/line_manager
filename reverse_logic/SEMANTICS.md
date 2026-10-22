@@ -26,15 +26,9 @@ Requirements: `../requirement.md` (the line, elements, rules) and
 | Examples 1, 2, 3 | `test_requirements_example_1/2/3`, and `python reverse_logic.py` |
 | No cycle between kinds, whatever the distances | `RuleCycleError` (§3) |
 | Unique result; first operand that can be placed; competing positions closest to 0 first | T5, §3 step 2, Theorem 3.4 |
-| Older positions that can no longer be placed adapt alone (the newest wins) | §3 step 2, except below |
+| Older positions that can no longer be placed adapt alone (the newest wins) | §3 step 2, Theorem 3.5 |
 
 The requirements leave two things to choose; §5 states the choices made.
-
-**Not yet met.** On a lattice where an older edit has infinitely many positions of an ordered
-disjunction (an element on a ray) and a newer edit leaves some of them no operand, the older
-positions are not kept one after the other (§3, step 4): with `A → B ∨ C`, `B → ¬B 1 unit to
-the right`, `X → ¬B`, `X → ¬C`, A on [0, +∞) and then X at 10, A is dropped at every integer
-instead of at 10 only.
 
 ## 1. Regions and why the line is computed from the history
 
@@ -118,10 +112,9 @@ seed, computed exactly on regions by backward propagation in reverse topological
    exists, the present claims of level i on it are kept one after the other in the same order
    (the kinds at one position in topological order): each is kept if some assignment has no
    violation with it and the ones kept before it. The others are dropped, and the kept ones
-   get the assignment above (`Solver._keep_in_order`).
+   get the assignment above (`Solver._keep_in_order`, `choice.keep_infinite`).
 3. **Closure.** C = least model of Γ⁺ ∪ Pᵢ with these choices (one pass in topological order).
-4. **Remaining conflicts**, only on a lattice with infinitely many new anchors where no
-   assignment exists (below): drop Pᵢ ∩ Supp and Nᵢ ∩ C, then recompute C. Add what remains to Γ.
+   Add what remains to Γ.
 
 The line is Γ⁺ after the oldest level. Everything not in Γ⁺ is absent.
 
@@ -129,6 +122,8 @@ Example: with `A → B ∨ C`, `B → ¬B 1 unit to the right`, `X → ¬B` and 
 A {0, 1, 10}, B {0, 10}, C {1} becomes A {0, 1}, B {0}, C {1}, X {10} when X is added at 10:
 only A at 10 has no operand left (`test_older_positions_that_cannot_be_placed_adapt_alone`;
 `test_older_claims_are_kept_closest_to_0_first` checks step 2 against a brute-force search).
+With A on [0, +∞) instead, A stays everywhere but at 10, with B and C alternating from 0 to 9
+and again from 11 on (`test_older_positions_on_a_ray_adapt_alone`).
 
 **Computing step 2 exactly.** Every rule offset is an integer multiple of g, the gcd of all
 offsets, so a rule only relates points of one lattice r + gℤ. Split the residues r ∈ [0, g)
@@ -144,9 +139,7 @@ After step 1 the line of no new anchor has no violation (Theorem 3.2).
   found remains. The search is exponential in the worst case; deciding whether an assignment
   exists encodes SAT, so no exact method avoids this in general. Where none exists, each claim
   kept or not in step 2 is one more such search, on the lattice without the claims left out.
-* *Infinitely many*: Theorem 3.4. Where no assignment exists, the claims are not yet kept in
-  order: the approximate choice of `Solver.choices` is used, and step 4 drops the support of
-  its conflicts, which can drop more than step 2 would (§0).
+* *Infinitely many*: Theorem 3.4, and where no assignment exists, Theorem 3.5.
 
 **Theorem 3.4 (infinitely many positions).** On a lattice with infinitely many new anchors,
 `choice.solve_infinite` gives the assignment of step 2, which repeats on each side from some
@@ -171,14 +164,37 @@ each side's repeating part, as regions with tails. ∎ (`test_competing_anchors_
 `test_infinite_positions_agree_with_long_finite_ones` compares, near 0, with the same element
 cut far away.)
 
+**Theorem 3.5 (keeping claims on infinitely many positions).** On a lattice with infinitely
+many new anchors and no assignment, `choice.keep_infinite` keeps the claims of step 2, which
+repeat on each side from some position on, and the kept ones have an assignment.
+*Proof.* (a) Fewer claims give fewer atoms, so fewer violations and fewer anchors: if some
+assignment has no violation with a set of claims, some has none with any subset. So "with it
+and the ones kept before, the later ones left out" is "with it, the ones kept before, and the
+later ones in some way", and whether a claim is kept depends only on the claims closer to 0.
+(b) A letter at a position is now its operands and which of its claims are kept; by the
+dependency of every kind on the base atoms as well, a violation anchored at j depends only on
+the letters at j + vlo … j + vhi, and Theorem 3.4 (b) and (c) hold for these letters, with
+the positions beyond the decided block keeping no claim. (c) The decided positions form one
+block around 0. Its states, the letters it can have with no violation inside it and with each
+side beyond it placeable, are finitely many (every tuple while the block is at most 2w long,
+then the pairs of its first and last w letters, which is all a further violation or side
+reads); a claim is kept iff a state remains when it is kept. (d) Once the block is longer than
+2w and both ends are in the periodic parts, the next decisions depend only on the set of
+states and the residues of the ends; these are finitely many, so they come back after the same
+number of positions on each side (the order alternates sides there), and from there the
+decisions repeat. (e) The block's states form a finitely branching tree that never ends, so by
+König's lemma one assignment of the whole lattice extends them all: the kept claims have an
+assignment, and Theorem 3.4 gives the one of step 2 (the code asserts it). ∎
+(`test_older_positions_kept_on_infinite_elements_agree_with_long_finite_ones` compares, near 0,
+with the same element cut far away, where step 2 is checked against a brute-force search.)
+
 **Theorem 3.2 (adaptation removes every conflict).** After step 1, C₀ has no violation, and
-after step 4, C has none.
-*Proof.* Step 2 then gives, on every lattice of finitely many new anchors, an assignment with
-no violation for the claims it keeps: kept ones are kept only if one exists, and without any
-of them the lattice is that of C₀ after step 1, which has none. A violation reads atoms of one
-lattice within reach of its anchors, so C has violations only on the lattices of step 4.
-It remains to show that dropping a support removes the conflicts, for step 1 (C₀, no new
-anchor expanded) and step 4 (C).
+after step 3, C has none.
+*Proof.* Step 2 then gives, on every lattice, an assignment with no violation for the claims it
+keeps: kept ones are kept only if one exists (Theorem 3.5 with infinitely many anchors), and
+without any of them the lattice is that of C₀ after step 1. A violation reads atoms of one
+lattice, so C has none. It remains to show that dropping a support in step 1 removes the
+conflicts of C₀ (C below; no new anchor is expanded).
 Choices are fixed functions of the anchor, so the closure is monotone and the new C' ⊆ C.
 Absent claims of level i that meet C were dropped, so they don't meet C' either.
 Any other violation in C' was a violation in C, so its atoms outside Γ⁺ are seeds.
@@ -194,8 +210,7 @@ initially empty). A failed anchor in C' with all premises in Γ⁺ would be old,
 violation, nothing of level i is dropped.
 *Proof.* C₀ is contained in the closure with that assignment, and violations of C₀ (atoms on
 absent claims, `Forbids` instances) stay violations in a larger closure, so step 1 finds
-none. Step 2 then finds an assignment on every piece, keeps every claim, and step 4 finds
-nothing. ∎
+none. Step 2 then finds an assignment on every piece and keeps every claim. ∎
 
 **Theorem T1 (rules always hold).** The line satisfies every rule, and every accepted claim holds.
 *Proof.* By induction on Theorem 3.2: the final least model satisfies the `Implies` rules and, with its
@@ -226,7 +241,7 @@ without A and without the edits that themselves require A (`LineSystem.requires`
 Example: A adds E, B moves that E. Without A there is no E to move, so B requires A.
 
 **Theorem T2 (adaptation and refusal).** (a) After an accepted edit, its effective claims
-hold and every element it puts is on the line; older elements adapt (§3 steps 1, 2 and 4) to make that
+hold and every element it puts is on the line; older elements adapt (§3 steps 1 and 2) to make that
 possible, whatever the kind of edit: an added element pushes out what forbids it, a removed
 element removes the premises of the rules that need it. (b) An edit that fits the line is
 refused by (solve) iff no choice of operands lets its own claims satisfy the rules, which

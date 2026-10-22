@@ -333,69 +333,6 @@ class Solver:
                     c[k] |= sel.shift(o)
         return c, new_anchor
 
-    # ---- ordered-disjunction choice --------------------------------------
-    def _forbidden(self, k: str, b0: Claims, nb: Claims, chi_of) -> Region:
-        """Points y where adding k(y) to b0 creates a new violation."""
-        rel: dict[str, dict[Fraction, Region]] = defaultdict(dict)
-        rel[k][Fraction(0)] = FULL - b0[k]
-        viol = EMPTY
-
-        def add(kind, off, reg):
-            if reg:
-                rel[kind][off] = rel[kind].get(off, EMPTY) | reg
-
-        for pos in range(self.idx[k], len(self.order)):
-            kk = self.order[pos]
-            for d, reg in rel[kk].items():
-                viol |= reg & _get(nb, kk).shift(-d)
-            for ri in self.trig[pos]:
-                r = self.rules[ri]
-                atoms = r.premises + ((r.head,) if isinstance(r, Forbids) else ())
-                cands = sorted({d - o for a, o in atoms for d in rel[a]})
-                for c in cands:
-                    allp, new = FULL, EMPTY
-                    for a, o in atoms:
-                        here = rel[a].get(c + o, EMPTY)
-                        allp &= here | b0[a].shift(-(c + o))
-                        new |= here
-                    inst = allp & new
-                    if not inst:
-                        continue
-                    if isinstance(r, Implies):
-                        h, oh = r.head
-                        add(h, c + oh, inst - b0[h].shift(-(c + oh)))
-                    elif isinstance(r, Forbids):
-                        viol |= inst
-                    else:
-                        chosen, fail = chi_of(ri)
-                        for j, (ok, oo) in enumerate(r.options):
-                            add(ok, c + oo, (inst & chosen[j].shift(-c)) - b0[ok].shift(-(c + oo)))
-                        viol |= inst & fail.shift(-c)
-        return viol
-
-    def choices(self, b0: Claims, nb: Claims):
-        """chi[ri] = (anchor region per operand, fail region): operand j is
-        chosen at x iff it is the first whose atom is not forbidden."""
-        forb: dict[str, Region] = {}
-        chi: dict[int, tuple[list[Region], Region]] = {}
-
-        def chi_of(ri):
-            if ri not in chi:
-                remaining, chosen = FULL, []
-                for ok, oo in self.rules[ri].options:
-                    sel = remaining - forb[ok].shift(-oo)
-                    chosen.append(sel)
-                    remaining -= sel
-                chi[ri] = (chosen, remaining)
-            return chi[ri]
-
-        for k in reversed(self.order):
-            if k in self.option_kinds:
-                forb[k] = self._forbidden(k, b0, nb, chi_of)
-        for ri in self.any_rules:
-            chi_of(ri)
-        return chi
-
     # ---- exact ordered-disjunction choice --------------------------------
     def exact_choices(self, base: Claims, nb: Claims, acc: _Accepted, p: Claims):
         """Operands for the new ImpliesAny anchors such that the level has no
@@ -408,9 +345,8 @@ class Solver:
         residues r below the same problem arises, so it is solved once per cell.
         On a cell where no assignment exists, the level's present claims `p`
         there are kept one after the other in the same order (`_keep_in_order`),
-        and the others are returned, to be dropped. With infinitely many anchors
-        there, the approximate choice of `choices` is used instead, and the
-        level adapts by its support (`level`, step 3).
+        and the others are returned, to be dropped (with infinitely many
+        anchors there, `choice.keep_infinite`).
 
         The line of no new anchor has no violation (`level`, step 1)."""
         g = self.g
@@ -431,7 +367,6 @@ class Solver:
         cells = [(b, b) for b in breaks]
         cells += [(a, b) for a, b in zip(breaks, breaks[1:] + [g])]
 
-        unsat = []
         for a, b in cells:
             unit = Region.point(a) if a == b else Region.open(a, b)
             r = a if a == b else (a + b) / 2
@@ -452,18 +387,21 @@ class Solver:
                 cell.unit = unit
                 res = choice.solve_infinite(cell)
                 if res is None:
-                    unsat.append(Region.tiled(unit, g, None, None))
-                    continue
+                    flags = choice.FlagCell(self, r, base, nb, acc, new_anchor, p)
+                    flags.unit = unit
+                    removed = choice.keep_infinite(flags)
+                    for kk, reg in removed.items():
+                        drop[kk].append(reg)
+                    cell = choice.Cell(self, r, {kk: reg - removed.get(kk, EMPTY) for kk, reg in base.items()},
+                                       nb, acc, new_anchor)
+                    cell.unit = unit
+                    res = choice.solve_infinite(cell)
+                    assert res is not None, "no assignment with the claims kept"
                 for ri, regs in res.items():
                     for j, reg in enumerate(regs):
                         chosen[ri][j].append(reg)
 
         chi = {ri: ([Region.union_of(*c) for c in ch], EMPTY) for ri, ch in chosen.items()}
-        if unsat:
-            mask = Region.union_of(*unsat)
-            approx = self.choices(self.close(base, acc, None)[0], nb)
-            chi = {ri: ([c | (a & mask) for c, a in zip(chi[ri][0], approx[ri][0])], approx[ri][1] & mask)
-                   for ri in chi}
         return chi, {kk: Region.union_of(*regs) for kk, regs in drop.items()}
 
     def _solve_cell(self, r, ks: range, base, nb, acc, cand, removed=frozenset()):
@@ -575,13 +513,6 @@ class Solver:
             p = _nonempty({k: r - _get(unkept, k) for k, r in p.items()})
             base = _union(acc.base, p)
         c, new_anchor = self.close(base, acc, chi)
-
-        # 3. Left only on lattices with infinitely many anchors and no assignment.
-        seeds = self.violations(c, nb, new_anchor, chi)
-        if seeds:
-            adapt(seeds, c, chi, _nonempty({k: r & c[k] for k, r in n.items()}))
-            base, nb = _union(acc.base, p), _union(acc.neg, n)
-            c, new_anchor = self.close(base, acc, chi)
         # Theorem 3.2 of SEMANTICS.md: adaptation removes every conflict.
         assert not self.violations(c, nb, new_anchor, chi), "solver invariant broken"
         drop_p, drop_n = _nonempty(drop_p), _nonempty(drop_n)

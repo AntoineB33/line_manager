@@ -656,6 +656,47 @@ class UnboundedTests(unittest.TestCase):
                 self.assertEqual(full.state().get(kind, EMPTY) & near, cut.state().get(kind, EMPTY) & near,
                                  (rules, a, kind))
 
+    def test_older_positions_on_a_ray_adapt_alone(self):
+        rules = [implies_any("A", ["B", "C"]), forbids("B", ("B", 1)), forbids("X", "B"), forbids("X", "C")]
+        line = LineSystem(rules)
+        line.apply([Add("A", self.ray)])
+        before = line.state()
+        x = line.apply([Add("X", Region.point(10))])
+        st = line.state()
+        self.assertEqual(st["A"], self.ray - Region.point(10))
+        for n in range(0, 40):
+            self.assertEqual(n in st["B"], n < 10 and n % 2 == 0 or n > 10 and n % 2 == 1, n)
+            self.assertEqual(n in st["C"], n < 10 and n % 2 == 1 or n > 10 and n % 2 == 0, n)
+        self.assertEqual(st["B"] & Region.open(10, 11), Region.open(10, 11))  # other lattices: as before
+        line.reverse(x)
+        self.assertEqual(line.state(), before)
+
+    def test_older_positions_kept_on_infinite_elements_agree_with_long_finite_ones(self):
+        """The claims kept are decided closest to 0 first, each from the ones
+        before it, so near 0 an element on a ray or on the whole line keeps what
+        the same element cut far away keeps (D can always be placed far away)."""
+        rng = random.Random(11)
+        for _ in range(SEEDS // 2):
+            o = rng.choice([F(-1), F(1)])
+            rules = [implies_any("A", ["B", ("C", o), "D"]), forbids("B", ("B", rng.choice([F(1), F(2)]))),
+                     forbids("C", ("C", rng.choice([F(1), F(-2)]))), forbids("X", "B"),
+                     forbids("X", ("C", rng.choice([o, o, F(0)]))), forbids("X", ("D", rng.choice([F(0), F(1)])))]
+            if rng.random() < 0.5:
+                rules.append(implies("D", ("E", rng.choice([F(1), F(-1)]))))
+                rules.append(forbids("E", "B"))
+            a = rng.choice([self.ray, FULL, Region(((-math.inf, False, F(rng.randint(3, 8)), True),))])
+            xs = Region.points(*rng.sample(range(-5, 6), rng.randint(1, 4)))
+            near = Region.closed(-6, 6)
+            states = []
+            for reg in (a, a & Region.closed(-30, 30)):
+                line = LineSystem(rules)
+                line.apply([Add("A", reg)])
+                line.apply([Add("X", xs)])
+                states.append(line.state())
+            for kind in "ABCDE":
+                self.assertEqual(states[0].get(kind, EMPTY) & near, states[1].get(kind, EMPTY) & near,
+                                 (rules, a, xs, kind))
+
     def test_bounded_anchors_among_unbounded_elements(self):
         for rules in ([implies_any("A", ["B", "C"]), forbids("B", ("B", 1))],
                       [implies_any("A", ["B", "C"]), forbids("B", ("Z", 1))]):

@@ -538,6 +538,116 @@ def keep_infinite(cell: FlagCell) -> dict[str, Region]:
     return {kk: Region.union_of(*regs) for kk, regs in out.items()}
 
 
+def fewest_lost(cell: Cell, cand: dict[str, Region], rank: dict[str, int]) -> dict[str, Region]:
+    """The claims of `cand` (in cell.base) to leave out on the lattice so that
+    the line of no new anchor has no violation, losing as few atoms of it as
+    possible, and on a tie keeping the earliest claims: the closest to 0 (the
+    left one first), then by `rank` (the leftmost in the rules).
+
+    Claims more than 2R apart (R: how far a claim and its derivations reach)
+    never take part in one violation, so they form independent groups, each
+    searched exactly (`_fewest_in_group`). On an infinite side, the claims
+    repeat with the period of the data; if a gap of more than 2R repeats, one
+    period of groups is solved and repeated. A side without such a gap links
+    infinitely many claims, where "fewest" means nothing: there the claims are
+    kept closest to 0 first instead (`keep_infinite`)."""
+    s, g, r = cell.s, cell.g, cell.r
+    R = (math.ceil(s.reach / g) if s.reach else 0) + max((abs(o) for st in s.steps for _, o in st), default=0) + 1
+    kinds = [kk for kk in s.order if cand.get(kk)]
+    if not kinds:
+        return {}
+
+    def at(k: int) -> list[str]:
+        return [kk for kk in kinds if cell.x(k) in cand[kk]]
+
+    out: dict[str, list[Region]] = {}
+
+    def solve(ks, tile=None):
+        """Solve the groups of the claims at ks; tile = (period, rightwards) repeats them."""
+        atoms = [(kk, k) for k in ks for kk in at(k)]
+        groups: list[list] = []
+        for a in sorted(atoms, key=lambda a: a[1]):
+            if groups and a[1] - groups[-1][-1][1] <= 2 * R:
+                groups[-1].append(a)
+            else:
+                groups.append([a])
+        for grp in groups:
+            for kk, k in _fewest_in_group(cell, grp, R, rank):
+                orbit = cell.unit.shift(k * g)
+                if tile is not None:
+                    orbit = Region.tiled(orbit, tile[0] * g, 0, None) if tile[1] else Region.tiled(orbit, tile[0] * g, None, 0)
+                out.setdefault(kk, []).append(orbit)
+
+    u = Region.union_of(*cand.values())
+    if not math.isinf(u.start) and not math.isinf(u.end):
+        solve(range(math.floor((u.start - r) / g), math.ceil((u.end - r) / g) + 1))
+        return {kk: Region.union_of(*regs) for kk, regs in out.items()}
+
+    k_right, t_right = cell.side(True)
+    k_left, t_left = cell.side(False)
+
+    def cut(right: bool):
+        """(first index of a repeating block, period), or None if the side links forever."""
+        start, t = (k_right + R + 1, t_right) if right else (k_left - R - 1, t_left)
+        ks = [start + i if right else start - i for i in range(2 * t)]
+        occ = [k for k in ks if at(k)]
+        if not occ:
+            return start, t  # no claim beyond
+        occ = sorted(occ) if right else sorted(occ, reverse=True)
+        for a1, a2 in zip(occ, occ[1:]):
+            if abs(a2 - a1) > 2 * R and abs(a1 - start) < t:
+                return (a1 + 1, t) if right else (a1 - 1, t)
+        return None
+
+    cr, cl = cut(True), cut(False)
+    if cr is None or cl is None:
+        flags = FlagCell(s, r, cell.base, cell.nb, cell.acc, {}, cand)
+        flags.unit = cell.unit
+        return keep_infinite(flags)
+    (c_r, p_r), (c_l, p_l) = cr, cl
+    solve(range(c_l + 1, c_r))
+    solve(range(c_r, c_r + p_r), (p_r, True))
+    solve(range(c_l - p_l + 1, c_l + 1), (p_l, False))
+    return {kk: Region.union_of(*regs) for kk, regs in out.items()}
+
+
+def _fewest_in_group(cell: Cell, grp: list[tuple[str, int]], R: int, rank: dict[str, int]):
+    """The claims of one group to leave out: among the subsets of claims kept
+    whose line of no new anchor has no violation near them, one with the most
+    atoms, the earliest claims kept on a tie. Depth first, keeping before
+    leaving out, so the first best one found is the earliest; a subset is cut
+    when its claims already have a violation (more claims only add atoms) or
+    when keeping every claim left could not beat the best one."""
+    order = sorted(grp, key=lambda a: (_order_key(cell.x(a[1])), rank.get(a[0], len(rank)), a[0]))
+    lo, hi = min(k for _, k in grp) - R, max(k for _, k in grp) + R
+
+    def line(kept):
+        c = Cell(cell.s, cell.r, cell.base, cell.nb, cell.acc, {},
+                 frozenset(a for a in grp if a not in kept) | cell.removed)
+        st = c.closure(lo, hi, {})
+        return st, not any(c.bad_at(j, st) for j in range(lo, hi + 1))
+
+    def score(st):
+        return sum(len(v) for v in st.values())
+
+    best: list = [-1, None]
+
+    def dfs(i: int, kept: frozenset):
+        if score(line(kept | frozenset(order[i:]))[0]) <= best[0]:
+            return
+        if i == len(order):
+            best[0], best[1] = score(line(kept)[0]), kept
+            return
+        with_it = kept | {order[i]}
+        if line(with_it)[1]:
+            dfs(i + 1, with_it)
+        dfs(i + 1, kept)
+
+    assert line(frozenset())[1], "a violation without the claims"
+    dfs(0, frozenset())
+    return [a for a in grp if a not in best[1]]
+
+
 def solve_finite(cell: Cell, ks: range, check: Callable[[dict], bool]) -> dict[tuple[int, int], int] | None:
     """Backtracking over the new anchors at r + k*g, k in ks, closest to 0
     first; `check(dec)` says whether a partial assignment has no violation yet

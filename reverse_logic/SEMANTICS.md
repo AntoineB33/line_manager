@@ -27,8 +27,9 @@ Requirements: `../requirement.md` (the line, elements, rules) and
 | No cycle between kinds, whatever the distances | `RuleCycleError` (§3) |
 | Unique result; first operand that can be placed; competing positions closest to 0 first | T5, §3 step 2, Theorem 3.4 |
 | Older positions that can no longer be placed adapt alone (the newest wins) | §3 step 2, Theorem 3.5 |
+| "A and B → C" then "no C": the fewest elements lost, the leftmost kept on a tie; the requirements' examples | §3 step 1, Theorem 3.6, `test_requirements_conjunction_examples` |
 
-The requirements leave two things to choose; §5 states the choices made.
+Where the requirements leave a choice, §5 states the one made.
 
 ## 1. Regions and why the line is computed from the history
 
@@ -102,8 +103,12 @@ taking part in violations), Supp = every atom outside Γ⁺ used in *some* deriv
 seed, computed exactly on regions by backward propagation in reverse topological order.
 
 1. **Conflicts no operand avoids.** C₀ = least model of Γ⁺ ∪ Pᵢ, new anchors getting no operand.
-   Its violations remain whatever the operands, since the rules are monotone. Drop Pᵢ ∩ Supp
-   and Nᵢ ∩ C₀.
+   Its violations remain whatever the operands, since the rules are monotone. Drop Nᵢ ∩ C₀ (an
+   absent claim loses no element). Of the claims Pᵢ ∩ Supp of the remaining violations, keep
+   those that lose the fewest elements of C₀, without violation, and on a tie the earliest:
+   the closest to 0, the one on the left first, then the kind that comes first in the rules,
+   read left to right (`choice.fewest_lost`, Theorem 3.6). Drop the others. With
+   `A ∧ B → C`, old A and B and a newer ¬C, B is dropped (the requirement's example).
 2. **Choices.** If some assignment of operands to the new anchors gives no violation, the
    first such assignment is used: positions are decided one after the other, the closest to 0
    first and the one on the left first when two are equally close (the requirement), the rules
@@ -188,13 +193,30 @@ assignment, and Theorem 3.4 gives the one of step 2 (the code asserts it). ∎
 (`test_older_positions_kept_on_infinite_elements_agree_with_long_finite_ones` compares, near 0,
 with the same element cut far away, where step 2 is checked against a brute-force search.)
 
+**Theorem 3.6 (the fewest elements lost).** `choice.fewest_lost` keeps the claims of step 1.
+*Proof.* Per cell of residues as in step 2, on one lattice. Let R bound how far a claim and
+its derivations reach, plus a rule's span. A violation and the atoms a claim adds lie within R
+of it, so claims more than 2R apart never meet in a violation, nor in a counted atom: the
+claims split into independent groups, the count of atoms is the sum over groups, and the
+earliest best choice is made group by group. In a group, the search goes depth first, keeping a
+claim before leaving it out, so the first best subset found is the earliest; it cuts a branch
+whose kept claims already have a violation (more claims only add atoms, so that stays) or
+whose count, with every remaining claim kept, cannot beat the best found (the count only grows
+with claims). On an infinite side, beyond the index where every datum is periodic, the claims
+repeat with that period; if a gap of more than 2R between claims repeats, the groups of one
+period, cut at that gap, are the same problem shifted, solved once and repeated. ∎ Without such
+a gap, infinitely many claims are linked, and "the fewest lost" is not defined (every choice
+loses infinitely many): §5. (`test_older_claims_lose_the_fewest_elements` checks step 1
+against a search over every subset of the claims.)
+
 **Theorem 3.2 (adaptation removes every conflict).** After step 1, C₀ has no violation, and
 after step 3, C has none.
 *Proof.* Step 2 then gives, on every lattice, an assignment with no violation for the claims it
 keeps: kept ones are kept only if one exists (Theorem 3.5 with infinitely many anchors), and
 without any of them the lattice is that of C₀ after step 1. A violation reads atoms of one
-lattice, so C has none. It remains to show that dropping a support in step 1 removes the
-conflicts of C₀ (C below; no new anchor is expanded).
+lattice, so C has none. Step 1 keeps only claims with no violation of C₀ (Theorem 3.6); that
+such claims exist, dropping all of Pᵢ ∩ Supp at worst, is shown below (C stands for C₀, no new
+anchor is expanded).
 Choices are fixed functions of the anchor, so the closure is monotone and the new C' ⊆ C.
 Absent claims of level i that meet C were dropped, so they don't meet C' either.
 Any other violation in C' was a violation in C, so its atoms outside Γ⁺ are seeds.
@@ -287,13 +309,15 @@ T1), and present at the first step past it, since that step is computed from scr
 
 * **Positions of different ordered disjunctions at the same position** are decided in the
   topological order of their rules (the requirement orders positions, not rules).
-* **Which older claims adapt** in a conflict that no choice of operands avoids (§3 step 1):
-  every claim of the older edit that takes part in it is dropped, and no claim of that edit is
-  preferred over another. (Conflicts that come from the operands keep the older claims closest
-  to 0 first, step 2.) Supp
-  follows every derivation, so with redundant rules (e.g. `A → C` and `A ∧ B → C`) it can
-  drop more than a minimal repair. Minimal repairs are not unique in general (with
-  `A ∧ B → C`, old A and B and a newer ¬C, dropping A and dropping B are both minimal).
+* **Elements are counted per position of a lattice** in "the fewest lost": on an interval,
+  this compares lengths, every lattice of a cell of residues posing the same problem.
+* **Infinitely many linked claims** (e.g. `A ∧ A 1 unit to the right → C` with A and ¬C on a
+  ray): "the fewest lost" is not defined, so the claims are kept closest to 0 first, each if
+  the rules can still be satisfied with it and the ones kept before (`choice.keep_infinite`):
+  A is kept on [0, 1) ∪ [2, 3) ∪ …
+* **Conflicts that come from the operands of an "or"** (step 2) keep the older claims closest
+  to 0 first, each if some operands still place it: the requirement on competing positions,
+  applied to the claims.
 
 ## 6. Running
 

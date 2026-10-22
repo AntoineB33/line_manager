@@ -322,6 +322,47 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(line.state(), {"A": Region.points(1, 2), "B": Region.point(2), "C": Region.point(1),
                                         "X": Region.point(1)})
 
+    def steps(self, rules, steps):
+        line = LineSystem(rules)
+        for ops, expected in steps:
+            line.apply(ops)
+            self.assertEqual(sorted(line.state()), expected, ops)
+
+    def test_requirements_conjunction_examples(self):
+        x = Region.point(0)
+        self.steps([implies(["A", "B", "C"], "D"), implies(["A", "B"], "C")],
+                   [([Add("A", x)], ["A"]),
+                    ([Add("B", x)], ["A", "B", "C", "D"]),
+                    ([Remove("A", x)], ["B"]),
+                    ([Remove("B", x)], [])])
+        self.steps([implies(["A", "B", "C"], "D"), forbids("X", "D"), implies(["A", "B"], "C")],
+                   [([Add("A", x), Add("B", x)], ["A", "B", "C", "D"]),
+                    ([Add("X", x)], ["A", "X"]),
+                    ([Remove("A", x)], ["B", "X"]),
+                    ([Remove("X", x)], ["B"]),
+                    ([Add("A", x)], ["A", "B", "C", "D"])])
+        self.steps([implies(["A", "B"], "C"), forbids("X", "C")],
+                   [([Add("A", x), Add("B", x)], ["A", "B", "C"]),
+                    ([Add("X", x)], ["A", "X"])])
+
+    def test_the_fewest_elements_are_lost_then_the_leftmost_kept(self):
+        x = Region.point(0)
+        # Keeping A would lose B, E and F; keeping B loses only A.
+        self.steps([implies(["A", "B"], "C"), forbids("X", "C"), implies("B", "E"), implies("B", "F")],
+                   [([Add("A", x), Add("B", x)], ["A", "B", "C", "E", "F"]),
+                    ([Add("X", x)], ["B", "E", "F", "X"])])
+        # A(x) and B(x + 1) give C(x): only the B paired with the X go.
+        line = LineSystem([implies(["A", ("B", 1)], "C"), forbids("X", "C")])
+        line.apply([Add("A", Region.closed(0, 9)), Add("B", Region.closed(0, 9))])
+        line.apply([Add("X", Region.closed(2, 4))])
+        self.assertEqual(line.state()["A"], Region.closed(0, 9))
+        self.assertEqual(line.state()["B"], Region.interval(0, 3, True, False) | Region.interval(5, 9, False, True))
+        # No two neighbours: two of the four stay, the earliest ones.
+        line = LineSystem([implies(["A", ("A", 1)], "C"), forbids("X", "C")])
+        line.apply([Add("A", Region.points(0, 1, 2, 3))])
+        line.apply([Add("X", Region.points(0, 1, 2))])
+        self.assertEqual(line.state()["A"], Region.points(0, 2))
+
     def test_requires(self):
         line = LineSystem([forbids("F", "E")])
         a = line.apply([Add("E", Region.point(0))])
@@ -431,6 +472,30 @@ def brute_force_consistent(ruleset, adds: dict[str, set[int]]) -> bool:
     def fire_at(r):
         return max(idx[a] for a, _ in r.premises + ((r.head,) if isinstance(r, Forbids) else ()))
     return run({k: set(v) for k, v in adds.items()}, sorted(ruleset.rules, key=fire_at))
+
+
+def brute_closure(ruleset, atoms, xs_x):
+    """The least model of the atoms (x, kind) and X at xs_x under definite rules,
+    or None if it breaks a Forbids rule. Integer points and offsets only."""
+    st: dict[str, set[int]] = {"X": set(xs_x)}
+    for x, k in atoms:
+        st.setdefault(k, set()).add(x)
+    changed = True
+    while changed:
+        changed = False
+        for r in ruleset.rules:
+            if isinstance(r, Implies):
+                xs = set.intersection(*({p - int(o) for p in st.get(a, set())} for a, o in r.premises))
+                h, oh = r.head
+                new = {x + int(oh) for x in xs} - st.get(h, set())
+                if new:
+                    st.setdefault(h, set()).update(new)
+                    changed = True
+    for r in ruleset.rules:
+        if isinstance(r, Forbids):
+            if set.intersection(*({p - int(o) for p in st.get(a, set())} for a, o in r.premises + (r.head,))):
+                return None
+    return st
 
 
 class PropertyTests(unittest.TestCase):
@@ -579,6 +644,43 @@ class PropertyTests(unittest.TestCase):
                                      Region.points(*kept.get(k, ())) if kept.get(k) else EMPTY)
         self.assertGreater(tried, SEEDS)
 
+    def test_older_claims_lose_the_fewest_elements(self):
+        # Without ordered disjunctions every conflict is one no operand avoids:
+        # the older claims kept are those losing the fewest elements of the line,
+        # the earliest ones (closest to 0, then leftmost in the rules) on a tie.
+        tried = 0
+        for seed in range(SEEDS * 3):
+            rng = random.Random(9000 + seed)
+            rules = [r for r in rand_rules(rng) if not isinstance(r, ImpliesAny)]
+            rules.append(implies([KINDS[0], (KINDS[1], rng.choice([0, 0, 1]))], KINDS[2]))
+            rules += [forbids("X", (k, rng.choice([-1, 0, 0, 1]))) for k in rng.sample(KINDS[1:], 2)]
+            old = {k: set(rng.sample(range(-3, 4), rng.randint(1, 4))) for k in rng.sample(KINDS, 3)}
+            new = set(rng.sample(range(-3, 4), rng.randint(1, 3)))
+            line = LineSystem(rules)
+            if try_apply(line, [Add(k, Region.points(*xs)) for k, xs in old.items()]) is None:
+                continue
+            line.apply([Add("X", Region.points(*new))])
+            ruleset = line.ruleset
+            rank = {}
+            for r in ruleset.rules:
+                for k, _ in r.premises + (r.head,):
+                    rank.setdefault(k, len(rank))
+            atoms = sorted(((x, k) for k, xs in old.items() for x in xs),
+                           key=lambda a: (abs(a[0]), a[0], rank.get(a[1], 99), a[1]))
+            best = None
+            for keep in itertools.product((True, False), repeat=len(atoms)):  # earliest kept first
+                st = brute_closure(ruleset, [a for a, kp in zip(atoms, keep) if kp], new)
+                if st is None:
+                    continue
+                n = sum(len(v) for v in st.values())
+                if best is None or n > best[0]:
+                    best = (n, st)
+            tried += 1
+            with self.subTest(seed=seed):
+                expected = {k: Region.points(*v) for k, v in best[1].items() if v}
+                self.assertEqual(line.state(), expected)
+        self.assertGreater(tried, SEEDS)
+
 
 class UnboundedTests(unittest.TestCase):
     """Elements may be rays or the whole line."""
@@ -670,6 +772,17 @@ class UnboundedTests(unittest.TestCase):
         self.assertEqual(st["B"] & Region.open(10, 11), Region.open(10, 11))  # other lattices: as before
         line.reverse(x)
         self.assertEqual(line.state(), before)
+
+    def test_conjunctions_on_rays(self):
+        line = LineSystem([implies(["A", "B"], "C"), forbids("X", "C")])
+        line.apply([Add("A", self.ray), Add("B", self.ray)])
+        line.apply([Add("X", self.ray)])
+        self.assertEqual(line.state(), {"A": self.ray, "X": self.ray})
+        # Infinitely many linked claims: kept closest to 0 first (SEMANTICS.md, sec. 5).
+        line = LineSystem([implies(["A", ("A", 1)], "C"), forbids("X", "C")])
+        line.apply([Add("A", self.ray)])
+        line.apply([Add("X", self.ray)])
+        self.assertEqual(line.state()["A"], Region.tiled(Region.interval(0, 1, True, False), 2, 0, None))
 
     def test_older_positions_kept_on_infinite_elements_agree_with_long_finite_ones(self):
         """The claims kept are decided closest to 0 first, each from the ones

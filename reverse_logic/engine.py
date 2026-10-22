@@ -306,6 +306,13 @@ class Solver:
                 for j, (k, _) in enumerate(r.options):
                     self.producers[k].append((ri, j))
                     self.option_kinds.add(k)
+        # Kinds by their first appearance in the rules, left to right: on a tie
+        # between losses, the leftmost elements are kept.
+        self.rank: dict[str, int] = {}
+        for k, _ in [a for r in self.rules for a in _rule_atoms(r)]:
+            self.rank.setdefault(k, len(self.rank))
+        for k in self.order:
+            self.rank.setdefault(k, len(self.rank))
 
     # ---- least model ------------------------------------------------------
     def close(self, base: Claims, acc: _Accepted, chi) -> tuple[Claims, dict[int, Region]]:
@@ -404,6 +411,23 @@ class Solver:
         chi = {ri: ([Region.union_of(*c) for c in ch], EMPTY) for ri, ch in chosen.items()}
         return chi, {kk: Region.union_of(*regs) for kk, regs in drop.items()}
 
+    def _fewest_lost(self, cand: Claims, base: Claims, nb: Claims, acc: _Accepted) -> Claims:
+        """The claims of `cand` to drop so that the line of no new anchor has no
+        violation, per cell of residues as in `exact_choices` (`choice.fewest_lost`)."""
+        g = self.g
+        regions = [*base.values(), *nb.values(), *acc.anchor.values(),
+                   *(r for ch in acc.choice.values() for r in ch)]
+        breaks = sorted({Fraction(0), g / 2} | {e for r in regions for e in _ends_mod(r, g)})
+        cells = [(b, b) for b in breaks] + [(a, b) for a, b in zip(breaks, breaks[1:] + [g])]
+        drop: dict[str, list[Region]] = defaultdict(list)
+        for a, b in cells:
+            unit = Region.point(a) if a == b else Region.open(a, b)
+            cell = choice.Cell(self, a if a == b else (a + b) / 2, base, nb, acc, {})
+            cell.unit = unit
+            for kk, reg in choice.fewest_lost(cell, cand, self.rank).items():
+                drop[kk].append(reg)
+        return _nonempty({kk: Region.union_of(*regs) for kk, regs in drop.items()})
+
     def _solve_cell(self, r, ks: range, base, nb, acc, cand, removed=frozenset()):
         """`choice.solve_finite` on the lattice r + k*g, k in ks, without the
         atoms `removed` of `base`."""
@@ -485,25 +509,24 @@ class Solver:
     # ---- one level ----------------------------------------------------------
     def level(self, p: Claims, n: Claims, acc: _Accepted) -> tuple[Claims, Claims]:
         drop_p: Claims = {}
-        drop_n: Claims = {}
-
-        def adapt(seeds, c, chi, dn):
-            """Drop the level's present claims supporting these conflicts, and dn."""
-            nonlocal p, n, drop_p, drop_n
-            supp = self.support(seeds, c, acc, chi)
-            dp = _nonempty({k: r & supp[k] for k, r in p.items()})
-            drop_p, drop_n = _union(drop_p, dp), _union(drop_n, dn)
-            p = _nonempty({k: r - _get(dp, k) for k, r in p.items()})
-            n = _nonempty({k: r - _get(dn, k) for k, r in n.items()})
 
         # 1. Conflicts no choice of operands avoids (the rules are monotone):
-        # those of the line of no new anchor.
+        # those of the line of no new anchor. Absent claims on it go (they
+        # lose no element); then the present claims taking part in a conflict
+        # are kept so as to lose the fewest elements, the leftmost on a tie.
         b0, _ = self.close(_union(acc.base, p), acc, None)
+        drop_n = _nonempty({k: r & b0[k] for k, r in n.items()})
+        n = _nonempty({k: r - _get(drop_n, k) for k, r in n.items()})
         nb = _union(acc.neg, n)
         seeds = self.violations(b0, nb, {}, None)
-        dn = _nonempty({k: r & b0[k] for k, r in n.items()})
-        if seeds or dn:
-            adapt(seeds, b0, {ri: ([EMPTY] * len(self.rules[ri].options), EMPTY) for ri in self.any_rules}, dn)
+        if seeds:
+            none = {ri: ([EMPTY] * len(self.rules[ri].options), EMPTY) for ri in self.any_rules}
+            supp = self.support(seeds, b0, acc, none)
+            cand = _nonempty({k: r & supp[k] for k, r in p.items()})
+            drop_p = self._fewest_lost(cand, _union(acc.base, p), nb, acc)
+            p = _nonempty({k: r - _get(drop_p, k) for k, r in p.items()})
+            b0, _ = self.close(_union(acc.base, p), acc, None)
+            assert not self.violations(b0, nb, {}, None), "solver invariant broken"
 
         # 2. The operands; where no assignment exists, the claims kept in order.
         base, nb = _union(acc.base, p), _union(acc.neg, n)

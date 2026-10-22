@@ -67,7 +67,7 @@ There can't be a cycle between kinds of elements, whatever the distances in the 
 
 The result of every edit must be unique: there must be no ambiguity.
 - If a rule says "A → B or C", the first operand in the "or" operation that can be placed is used, here element B.
-- If a rule says "A and B → C", A and B are added at x and then a "no C" element is added at x, then the script favors the leftmost elements of the "and" operation, while loosing as less element as possible. Here, only B and C are removed from x.
+- If a rule says "A and B → C", A and B are added at x and then a "no C" element is added at x, then the script chooses the combination that looses as less element as possible, and favors the leftmost elements when there is a tie. Here, only B and C are removed from x.
 - When several positions compete for the operands of an "or" (one position taking an operand prevents another from taking its first one), positions are decided one after the other: the closest to 0 first, and the one on the left first when two are equally close. Each takes the first operand of the "or" that still lets the remaining positions be placed. This also applies when the element extends infinitely, in which case the result may repeat infinitely.
 
 Examples:
@@ -82,6 +82,6 @@ rules: "A and B and C → D", "X → no D", "A and B → C".
 The line is empty.
 edit 1: add A and B at x. It is A {x}, B {x}, C {x}, D {x}.
 edit 2: add X at x. It is A {x}, X{x}.
-edit 3: remove A at x. It is X {x}.
+edit 3: remove A at x. It is B {x}, X {x}.
 edit 4: remove X at x. It is B {x}.
 edit 5: add A at x. It is A {x}, B {x}, C {x}, D {x}.

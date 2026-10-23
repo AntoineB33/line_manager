@@ -1,5 +1,6 @@
-"""An optimizer for the machine: where to place elements, for the modes the user
-tends to follow.
+"""An optimizer for the machine: where to place elements, for the highest
+expected score over the modes the user may choose, following a tendency with
+probabilities.
 
 Problem, proofs and the decisions of `plan`: SEMANTICS.md, "The optimizer".
 """
@@ -43,18 +44,23 @@ class Problem:
     rates: tuple[tuple[tuple[str, Fraction], ...], ...]   # per mode: (kind, rate)
     controlled: tuple[str, ...]                            # the kinds the texts place
     cost: tuple[Fraction, ...]                             # per controlled kind: one element
-    tendency: tuple[tuple[str, int], ...]                  # (kind, mode): the first present applies
+    tendency: tuple[tuple[str, int, Fraction], ...]        # (kind, mode, probability): the first present applies
 
     @property
     def watched(self) -> tuple[str, ...]:
         """The kinds of the line that the problem reads (not the controlled ones)."""
-        kinds = {k for rs in self.rates for k, _ in rs} | {k for k, _ in self.tendency}
+        kinds = {k for rs in self.rates for k, _ in rs} | {k for k, _, _ in self.tendency}
         return tuple(sorted(kinds - set(self.controlled)))
 
     @property
     def steering(self) -> tuple[str, ...]:
         """The watched kinds the tendency reads."""
-        return tuple(sorted({k for k, _ in self.tendency} - set(self.controlled)))
+        return tuple(sorted({k for k, _, _ in self.tendency} - set(self.controlled)))
+
+    @property
+    def certain(self) -> bool:
+        """Every switch of the tendency has probability 0 or 1."""
+        return all(q in (0, 1) for _, _, q in self.tendency)
 
     def subsets(self) -> list[frozenset]:
         """Every set of controlled kinds, smallest first (so ties keep fewer elements)."""
@@ -63,9 +69,24 @@ class Problem:
     def states(self) -> list[State]:
         return [(m, s) for m in range(len(self.modes)) for s in self.subsets()]
 
-    def tend(self, kinds: frozenset, m: int) -> int:
-        """The mode the user tends to, where `kinds` are present, coming in mode m."""
-        return next((b for k, b in self.tendency if k in kinds), m)
+    def first(self, kinds: frozenset) -> int | None:
+        """The entry of the tendency that applies where `kinds` are present: the first present."""
+        return next((i for i, (k, _, _) in enumerate(self.tendency) if k in kinds), None)
+
+    def switch(self, before: frozenset, here: frozenset, m: int) -> tuple[tuple[Fraction, int], ...]:
+        """The modes of the user, with their probabilities, on a piece with `here`
+        present, coming in mode m from a piece with `before`: where the entry
+        that applies changes to (kind, mode, q), the user switches to that mode
+        with probability q; otherwise they stay in m."""
+        i = self.first(here)
+        if i is None or i == self.first(before):
+            return ((Fraction(1), m),)
+        _, b, q = self.tendency[i]
+        if b == m or q == 0:
+            return ((Fraction(1), m),)
+        if q == 1:
+            return ((Fraction(1), b),)
+        return ((q, b), (1 - q, m))
 
     def rate(self, m: int, kinds: frozenset) -> Fraction:
         return self.base[m] + sum((r for k, r in self.rates[m] if k in kinds), Fraction(0))
@@ -81,48 +102,58 @@ Part = tuple[Fraction, Fraction | float, frozenset]  # (lo, hi, watched kinds th
 class Unit:
     """Where a text decides once: the open interval (start, end), with the
     same controlled kinds on all of it, and its end point.  `parts` are its
-    open cells and inner points, on which the watched kinds are constant."""
+    open cells and inner points, on which the watched kinds are constant (and
+    those the tendency reads the same on all of them); `start_kinds` are the
+    watched kinds at the start point."""
     start: Fraction
     end: Fraction | float  # INF: the last unit of an infinite horizon, without end point
     parts: tuple[Part, ...]
     point_kinds: frozenset
+    start_kinds: frozenset = frozenset()
 
 
 def walk(problem: Problem, parts: Sequence[Part], t: Fraction, m: int, placed: frozenset
-         ) -> tuple[Fraction, Fraction, int]:
-    """The value (a, b) of `placed` on the parts after t, from mode m, and the
-    mode after them.  Predicted modes follow the tendency on each part."""
+         ) -> tuple[Fraction, Fraction]:
+    """The value (a, b) of `placed` on the parts after t, in mode m."""
     a, b = Fraction(0), Fraction(0)
     for lo, hi, kinds in parts:
         if hi <= t:
             continue
         lo = max(lo, t)
-        m = problem.tend(kinds | placed, m)
         r = problem.rate(m, kinds | placed)
         if math.isinf(hi):
             a, b = a + r, b - r * lo
         else:
             b += (hi - lo) * r
-    return a, b, m
+    return a, b
 
 
-def decide(problem: Problem, unit: Unit, t: Fraction, m: int, present: frozenset,
+def decide(problem: Problem, unit: Unit, t: Fraction, m: int, present: frozenset, before: frozenset,
            after: dict[State, Value] | None) -> tuple[Value, frozenset, frozenset]:
-    """The best (value, kinds on (t, end), kinds at end) from position t of
-    `unit`, in mode m, with the controlled kinds `present` at t; `after` is the
-    best value from every state at the end of the unit (None if it has none)."""
+    """The best expected (value, kinds on (t, end), kinds at end) from position
+    t of `unit`, in mode m, with the controlled kinds `present` and the watched
+    kinds `before` at t; `after` is the best expected value from every state at
+    the end of the unit (None if it has none).  The user may switch where the
+    open interval starts and at the end point (`Problem.switch`)."""
     best: tuple[Value, frozenset, frozenset] | None = None
     subsets = problem.subsets()
+    opened = unit.parts[0][2]
     for s_o in subsets:
-        a, b, m_end = walk(problem, unit.parts, t, m, s_o)
-        b -= problem.price(s_o - present)
+        cost = problem.price(s_o - present)
+        ways = [(q, m1, walk(problem, unit.parts, t, m1, s_o))
+                for q, m1 in problem.switch(before | present, opened | s_o, m)]
         if after is None:
-            cands = [((a, b), frozenset())]
+            cands = [((sum(q * v[0] for q, _, v in ways), sum(q * v[1] for q, _, v in ways) - cost), frozenset())]
         else:
             cands = []
             for s_p in subsets:
-                w = after[problem.tend(unit.point_kinds | s_p, m_end), s_p]
-                cands.append(((a + w[0], b - problem.price(s_p - s_o) + w[1]), s_p))
+                a, b = Fraction(0), -cost - problem.price(s_p - s_o)
+                for q, m1, v in ways:
+                    a, b = a + q * v[0], b + q * v[1]
+                    for q2, m2 in problem.switch(opened | s_o, unit.point_kinds | s_p, m1):
+                        w = after[m2, s_p]
+                        a, b = a + q * q2 * w[0], b + q * q2 * w[1]
+                cands.append(((a, b), s_p))
         for value, s_p in cands:
             if best is None or value > best[0]:
                 best = (value, s_o, s_p)
@@ -132,20 +163,25 @@ def decide(problem: Problem, unit: Unit, t: Fraction, m: int, present: frozenset
 
 # ---- the dynamic program --------------------------------------------------------
 def _step(problem: Problem, unit: Unit, after: dict[State, Value] | None) -> dict[State, Value]:
-    return {s: decide(problem, unit, unit.start, s[0], s[1], after)[0] for s in problem.states()}
+    return {s: decide(problem, unit, unit.start, s[0], s[1], unit.start_kinds, after)[0]
+            for s in problem.states()}
 
 
 def _matrix(problem: Problem, unit: Unit) -> list[list[Value | None]]:
-    """A[s][s']: the best value of the unit from state s, ending in state s' (None: impossible)."""
+    """A[s][s']: the best value of the unit from state s, ending in state s'
+    (None: impossible).  Only when every switch is certain."""
     states = problem.states()
     index = {s: i for i, s in enumerate(states)}
     a: list[list[Value | None]] = [[None] * len(states) for _ in states]
+    opened = unit.parts[0][2]
     for i, (m, present) in enumerate(states):
         for s_o in problem.subsets():
-            _, v, m_end = walk(problem, unit.parts, unit.start, m, s_o)
+            ((_, m1),) = problem.switch(unit.start_kinds | present, opened | s_o, m)
+            _, v = walk(problem, unit.parts, unit.start, m1, s_o)
             v -= problem.price(s_o - present)
             for s_p in problem.subsets():
-                j = index[problem.tend(unit.point_kinds | s_p, m_end), s_p]
+                ((_, m2),) = problem.switch(opened | s_o, unit.point_kinds | s_p, m1)
+                j = index[m2, s_p]
                 w = (Fraction(0), v - problem.price(s_p - s_o))
                 if a[i][j] is None or w > a[i][j]:
                     a[i][j] = w
@@ -191,9 +227,11 @@ Mapper = Callable[[Callable, list, float | None], list | None]  # (function, tas
 def solve(problem: Problem, units: Sequence[Unit], *, workers: int = 1, chunk: int = 64,
           mapper: Mapper | None = None, time_left: Callable[[], float] | None = None
           ) -> list[dict[State, Value] | None] | None:
-    """values[i]: the best value from every state at the start of unit i;
-    values[n]: after the last unit (0, or None after an infinite one).
-    None if `time_left()` (seconds) runs out first."""
+    """values[i]: the best expected value from every state at the start of
+    unit i; values[n]: after the last unit (0, or None after an infinite one).
+    None if `time_left()` (seconds) runs out first.  Several workers compose
+    max-plus matrices of chunks, which needs certain switches: with
+    probabilities, one process does it all."""
     def late() -> bool:
         return time_left is not None and time_left() <= 0
 
@@ -206,7 +244,7 @@ def solve(problem: Problem, units: Sequence[Unit], *, workers: int = 1, chunk: i
     else:
         values[n] = {s: ZERO for s in problem.states()}
     end = values[len(finite)]
-    if workers <= 1 or mapper is None or len(finite) <= chunk:
+    if workers <= 1 or mapper is None or len(finite) <= chunk or not problem.certain:
         for i in reversed(range(len(finite))):
             if late():
                 return None
@@ -270,7 +308,8 @@ class Act:
     def __call__(self, position: Fraction, mode: Mode, state: Track):
         problem, unit = self.policy.problem, self.policy.units[self.i]
         present = frozenset(k for k in problem.controlled if position in state.get(k, EMPTY))
-        _, s_o, s_p = decide(problem, unit, position, problem.modes.index(mode), present,
+        before = frozenset(k for k in problem.watched if position in state.get(k, EMPTY))
+        _, s_o, s_p = decide(problem, unit, position, problem.modes.index(mode), present, before,
                              self.policy.values[self.i + 1])
         finite = not math.isinf(unit.end)
         window = Region.interval(position, unit.end, False, True) if finite else ahead(position)
@@ -353,12 +392,13 @@ class TendencyPlanner:
     Per unit of length, mode m earns `base[m]`, plus `rates[m][K]` where kind K
     is present (rates may be negative: a cost); each element of a controlled
     kind K costs `cost[K]`.  The modes are not decided here: the user decides
-    them, but tends to follow `tendency`, a list of (kind, mode): where kind is
-    present, placed by a text or not, the user tends to switch to that mode
-    (the first present kind of the list applies); elsewhere to stay in the mode.
-    Texts are optimal for that tendency from every position and actual mode,
-    among placements that change only at multiples of the grid or at ends of
-    the kinds the tendency reads (SEMANTICS.md, Theorem 3).
+    them, but tends to follow `tendency`, a list of (kind, mode) or (kind, mode,
+    probability), the probability 1 by default: where the first present kind
+    of the list becomes another one, placed by a text or not, the user switches
+    to its mode with its probability; otherwise they stay in their mode.  Texts
+    have the highest expected value for that tendency from every position and
+    actual mode, among placements that change only at multiples of the grid or
+    at ends of the kinds the tendency reads (SEMANTICS.md, Theorem 3).
 
     The machine's performance h in (0, 1) sets, with f = (1 - h)/h (1 at h = 1/2):
     the horizon `lookahead`*f, the grid `resolution`/f, the time `time_scale`*f
@@ -370,13 +410,17 @@ class TendencyPlanner:
     def __init__(self, rates: Mapping[Mode, Mapping[str, Number]], *,
                  base: Mapping[Mode, Number] | None = None, controlled: Sequence[str] = (),
                  cost: Number | Mapping[str, Number] = 0,
-                 tendency: Sequence[tuple[str, Mode]] | Mapping[str, Mode] = (),
+                 tendency: Sequence[tuple] | Mapping[str, Mode | tuple[Mode, Number]] = (),
                  lookahead: Number = 20, resolution: Number = 1, time_scale: float = 10.0,
                  scale: Number = 1, min_lead: Number = Fraction(1, 10), speed: float | None = None,
                  startup: float = 1.0, pool_startup: float = 1.0, name: str = "plan"):
         base = dict(base or {})
-        tendency = list(tendency.items()) if isinstance(tendency, Mapping) else list(tendency)
-        modes = tuple(dict.fromkeys([*rates, *base, *(m for _, m in tendency)]))
+        if isinstance(tendency, Mapping):
+            tendency = [(k, *(v if isinstance(v, tuple) else (v,))) for k, v in tendency.items()]
+        tendency = [(t[0], t[1], num(t[2]) if len(t) > 2 else Fraction(1)) for t in tendency]
+        if any(not 0 <= q <= 1 for _, _, q in tendency):
+            raise ValueError("the probabilities of the tendency must be in [0, 1]")
+        modes = tuple(dict.fromkeys([*rates, *base, *(m for _, m, _ in tendency)]))
         if not modes:
             raise ValueError("there must be at least one mode")
         controlled = tuple(dict.fromkeys(controlled))
@@ -389,7 +433,7 @@ class TendencyPlanner:
         self.problem = Problem(
             modes, tuple(num(base.get(m, 0)) for m in modes),
             tuple(tuple(sorted((k, num(r)) for k, r in rates.get(m, {}).items() if num(r) != 0)) for m in modes),
-            controlled, costs, tuple((k, modes.index(m)) for k, m in tendency))
+            controlled, costs, tuple((k, modes.index(m), q) for k, m, q in tendency))
         self.lookahead, self.resolution = num(lookahead), num(resolution)
         self.min_lead, self.scale = num(min_lead), num(scale)
         if min(self.lookahead, self.resolution, self.min_lead, self.scale) <= 0 or not time_scale > 0:
@@ -436,7 +480,7 @@ class TendencyPlanner:
                 if i:
                     parts.append((a, a, kinds_at(a)))
                 parts.append((a, b, kinds_at(a + 1 if math.isinf(b) else (a + b) / 2)))
-            out.append(Unit(lo, hi, tuple(parts), frozenset() if math.isinf(hi) else kinds_at(hi)))
+            out.append(Unit(lo, hi, tuple(parts), frozenset() if math.isinf(hi) else kinds_at(hi), kinds_at(lo)))
         return out
 
     # ---- Optimizer.plan -------------------------------------------------
@@ -486,19 +530,21 @@ class TendencyPlanner:
         return Order(end, grid, workers, chunk, budget, lead, self.scale * f)
 
     def _fit(self, units: Sequence[Unit], cpus: int) -> tuple[int, int, float]:
-        """(workers, chunk, budget) for `units`: one process, or `cpus` if faster."""
+        """(workers, chunk, budget) for `units`: one process, or `cpus` if faster
+        (only with certain switches, `solve`)."""
         s, u = len(self.problem.states()), len(self.problem.subsets())
         parts = sum(len(x.parts) for x in units)
         n, speed = len(units), self._speed()
+        ways = 1 if self.problem.certain else 4  # up to two modes after each of two switches
 
         def cost(workers: int) -> float:
             if workers == 1:
-                work = parts * s * u * u / speed
+                work = parts * s * u * u * ways / speed
             else:
                 work = self.pool_startup + (parts * (s * u * u + s * u * u) + n * s ** 3) / (speed * workers)
             return 1.25 * (self.startup + work) + 0.1
 
-        budget, workers = min((cost(w), w) for w in sorted({1, cpus}))
+        budget, workers = min((cost(w), w) for w in sorted({1, cpus if self.problem.certain else 1}))
         chunk = max(1, -(-n // (4 * workers))) if workers > 1 else max(1, n)
         return workers, chunk, budget
 

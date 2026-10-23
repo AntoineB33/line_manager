@@ -32,20 +32,29 @@ F = Fraction
 
 
 # ---- a direct evaluation of placements ---------------------------------------------
-def value_of(problem: Problem, pieces, m: int, present: frozenset) -> tuple[Fraction, Fraction]:
-    """The value of placing kinds on consecutive pieces (lo, hi, watched kinds,
-    placed kinds), lo == hi being a point, with the modes the tendency predicts."""
-    a, b = F(0), F(0)
-    for lo, hi, kinds, placed in pieces:
-        m = problem.tend(kinds | placed, m)
-        r = problem.rate(m, kinds | placed)
-        if math.isinf(hi):
-            a, b = a + r, b - r * lo
-        else:
-            b += (hi - lo) * r
-        b -= problem.price(placed - present)
-        present = placed
-    return a, b
+def outcomes(problem: Problem, pieces, m: int, present: frozenset, before: frozenset):
+    """[(probability, value, mode after)] of placing kinds on consecutive pieces
+    (lo, hi, watched kinds, placed kinds), lo == hi being a point, from mode m,
+    `present` and `before` (every kind) just before: the user switches as the
+    tendency says, with its probabilities, where the entry that applies changes."""
+    if not pieces:
+        return [(F(1), (F(0), F(0)), m)]
+    (lo, hi, kinds, placed), rest = pieces[0], pieces[1:]
+    here = kinds | placed
+    out = []
+    for q, m1 in problem.switch(before, here, m):
+        r = problem.rate(m1, here)
+        v = (r, -r * lo) if math.isinf(hi) else (F(0), (hi - lo) * r)
+        v = (v[0], v[1] - problem.price(placed - present))
+        for q2, w, m2 in outcomes(problem, rest, m1, placed, here):
+            out.append((q * q2, (v[0] + w[0], v[1] + w[1]), m2))
+    return out
+
+
+def value_of(problem: Problem, pieces, m: int, present: frozenset, before=frozenset()) -> tuple[Fraction, Fraction]:
+    """The expected value of a placement decided in advance."""
+    ways = outcomes(problem, pieces, m, present, before | present)
+    return sum(q * v[0] for q, v, _ in ways), sum(q * v[1] for q, v, _ in ways)
 
 
 def pieces_of(units, pick):
@@ -59,11 +68,26 @@ def pieces_of(units, pick):
 
 
 def brute(problem: Problem, units, m: int, present: frozenset) -> tuple[Fraction, Fraction]:
-    """The best value over every placement constant on each unit and each end point."""
+    """The best expected value over every placement constant on each unit and
+    each end point, decided at each unit's start from the mode there."""
     subsets = problem.subsets()
-    choices = [[(s, frozenset()) for s in subsets] if math.isinf(u.end) else list(itertools.product(subsets, subsets))
-               for u in units]
-    return max(value_of(problem, pieces_of(units, pick), m, present) for pick in itertools.product(*choices))
+
+    def best(i: int, m: int, present: frozenset, before: frozenset):
+        if i == len(units):
+            return F(0), F(0)
+        u = units[i]
+        choices = [(s, frozenset()) for s in subsets] if math.isinf(u.end) else itertools.product(subsets, subsets)
+        values = []
+        for s_o, s_p in choices:
+            pieces = pieces_of([u], [(s_o, s_p)])
+            a, b = F(0), F(0)
+            for q, v, m2 in outcomes(problem, pieces, m, present, before):
+                w = best(i + 1, m2, s_p, u.point_kinds | s_p) if i + 1 < len(units) else (F(0), F(0))
+                a, b = a + q * (v[0] + w[0]), b + q * (v[1] + w[1])
+            values.append((a, b))
+        return max(values)
+
+    return best(0, m, present, units[0].start_kinds | present)
 
 
 def random_planner(rng: random.Random, steer: bool = True, **kw) -> TendencyPlanner:
@@ -72,7 +96,8 @@ def random_planner(rng: random.Random, steer: bool = True, **kw) -> TendencyPlan
     rates = {m: {k: F(rng.randint(-4, 4), rng.randint(1, 2)) for k in rng.sample(controlled + ["D", "E"], 2)}
              for m in modes}
     kinds = ["D", "E", "Q"] + (controlled if steer else [])
-    tendency = [(k, rng.choice(modes)) for k in rng.sample(kinds, rng.randint(0, 2))]
+    tendency = [(k, rng.choice(modes), rng.choice([F(1), F(1), F(1, 2), F(1, 3), F(0)]))
+                for k in rng.sample(kinds, rng.randint(0, 2))]
     return TendencyPlanner(rates, base={m: F(rng.randint(-2, 2), 2) for m in modes}, controlled=controlled,
                            cost={k: F(rng.randint(0, 3), 2) for k in controlled}, tendency=tendency,
                            speed=1e6, startup=0.5, **kw)
@@ -138,7 +163,8 @@ class ProblemTests(unittest.TestCase):
                             if lo == hi:
                                 pieces.append((lo, lo, kinds, rng.choice(pr.subsets())))
                         pieces.append((u.end, u.end, u.point_kinds, rng.choice(pr.subsets())))
-                    self.assertLessEqual(value_of(pr, pieces, m, present), values[0][m, present])
+                    self.assertLessEqual(value_of(pr, pieces, m, present, units[0].start_kinds),
+                                         values[0][m, present])
 
     def test_steering_tends_to_the_best_value_as_the_grid_gets_finer(self):
         """"Element A incites the user to switch to mode busy": an A, however short,
@@ -174,7 +200,7 @@ class ProblemTests(unittest.TestCase):
                 opt = random_planner(rng)
                 track = random_track(rng, 0, 4)
                 (a, b) = solve(opt.problem, opt.units(track, opt.bounds(track, F(0), INF, None)))[0][0, frozenset()]
-                for x in (F(20), F(100)):
+                for x in (F(200), F(1000)):  # long enough: the slopes of two policies may be close
                     finite = solve(opt.problem, opt.units(track, opt.bounds(track, F(0), x, None)))[0][0, frozenset()]
                     # With a horizon x, the best is a*x + b, up to a final element's cost.
                     self.assertLessEqual(abs(finite[1] - (a * x + b)), sum(opt.problem.cost))
@@ -192,6 +218,25 @@ class ProblemTests(unittest.TestCase):
             TendencyPlanner({})
         with self.assertRaises(ValueError):
             TendencyPlanner({"a": {"S": 1}}, resolution=0)
+        with self.assertRaises(ValueError):
+            TendencyPlanner({"a": {"S": 1}}, tendency=[("D", "a", F(3, 2))])
+
+    def test_the_expected_score_decides(self):
+        """D starts just after 0 and makes the user busy with probability q. S,
+        decided at 0, earns 1 on (0, 1) if busy and loses 1 if idle, and costs
+        3/4: the text places it iff q - (1 - q) > 3/4.  Planning for the most
+        likely scenario would place it as soon as q > 1/2."""
+        track = {"D": Region.open(0, 1)}
+        for q, placed in ((F(3, 4), False), (F(15, 16), True)):
+            opt = TendencyPlanner({"busy": {"S": 1}, "idle": {"S": -1}}, controlled=["S"], cost=F(3, 4),
+                                  tendency=[("D", "busy", q)])
+            pr = opt.problem
+            idle = pr.modes.index("idle")
+            units = opt.units(track, opt.bounds(track, F(0), F(1), F(1)))
+            values = solve(pr, units)
+            _, s_o, _ = decide(pr, units[0], F(0), idle, frozenset(), frozenset(), values[1])
+            self.assertEqual("S" in s_o, placed, q)
+            self.assertEqual(values[0][idle, frozenset()], (0, max(F(0), 2 * q - 1 - F(3, 4))))
 
 
 def planner(**kw) -> TendencyPlanner:
@@ -262,7 +307,14 @@ class TextTests(unittest.TestCase):
                 for _ in range(6):
                     q = p + F(rng.randint(1, 8), 4)
                     tr = sorted({p + F(rng.randint(1, int((q - p) * 4)), 4) for _ in range(rng.randint(0, 2))})
-                    mgr.update_chip(q, [(x, rng.choice(pr.modes)) for x in tr])
+                    moves, last = [], mgr.chip.mode
+                    for x in tr:  # only changes of mode are transitions where rules run
+                        mode = rng.choice(pr.modes)
+                        if mode != last:
+                            moves.append((x, mode))
+                            last = mode
+                    tr = [x for x, _ in moves]
+                    mgr.update_chip(q, moves)
                     # At every rule start on the way, the placement is the best decision there.
                     starts = sorted({u.start for u in units if p < u.start <= q} | set(tr))
                     for x, x2 in zip(starts, [*starts[1:], q]):
@@ -270,7 +322,8 @@ class TextTests(unittest.TestCase):
                         u = units[i]
                         mode = pr.modes.index(mgr.chip.mode_at(x))
                         present = frozenset(k for k in pr.controlled if x in mgr.track().get(k, EMPTY))
-                        _, s_o, s_p = decide(pr, u, x, mode, present, values[i + 1])
+                        before = frozenset(k for k in pr.watched if x in mgr.track().get(k, EMPTY))
+                        _, s_o, s_p = decide(pr, u, x, mode, present, before, values[i + 1])
                         y = (x + min(u.end, x2)) / 2
                         if x < y:
                             self.assertEqual({k for k in pr.controlled if y in mgr.track().get(k, EMPTY)}, set(s_o))
@@ -351,11 +404,12 @@ class TextTests(unittest.TestCase):
                 # What the old text decides, valued on the new line.
                 pick, m, present = [], 0, frozenset()
                 for i, u in enumerate(units):
-                    _, s_o, s_p = decide(pr, u, u.start, m, present, values[i + 1])
+                    _, s_o, s_p = decide(pr, u, u.start, m, present, u.start_kinds, values[i + 1])
                     pick.append((s_o, s_p))
-                    m = pr.tend(u.point_kinds | s_p, value_mode(pr, u, m, s_o))
+                    ((_, m),) = pr.switch(u.start_kinds | present, u.parts[0][2] | s_o, m)
+                    ((_, m),) = pr.switch(u.parts[0][2] | s_o, u.point_kinds | s_p, m)
                     present = s_p
-                got = value_of(pr, pieces_of(new_units, pick), 0, frozenset())[1]
+                got = value_of(pr, pieces_of(new_units, pick), 0, frozenset(), new_units[0].start_kinds)[1]
                 self.assertLessEqual(got, best)
                 self.assertGreaterEqual(got, best - 2 * d)
 
@@ -400,13 +454,6 @@ class TextTests(unittest.TestCase):
                     frozen.append((p, restrict(m.manager.track(), at_or_behind(p))))
                     for q, past in frozen:
                         self.assertEqual(restrict(m.manager.track(), at_or_behind(q)), past)
-
-
-def value_mode(problem: Problem, unit, m: int, placed: frozenset) -> int:
-    """The predicted mode at the end of the open part of a unit."""
-    for _, _, kinds in unit.parts:
-        m = problem.tend(kinds | placed, m)
-    return m
 
 
 class ProcessTests(unittest.TestCase):

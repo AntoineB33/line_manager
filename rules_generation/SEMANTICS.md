@@ -180,8 +180,9 @@ f = 1 at h = 1/2): a run is allowed `time_scale`·f seconds, its horizon is
 score may be more than `scale`·f below the optimum (Theorem 4), or near the end
 of its horizon. So the ends of the range are limits, never reached:
 * as h → 0, time, horizon and tolerance grow without bound and the grid gets
-  infinitely fine: the value of a text tends to the best value of all placements
-  for every scenario of modes (Theorems 3 and 5), and no change starts a new run;
+  infinitely fine: the expected value of a text tends to the best expected value
+  of all policies, the modes not being known in advance (Theorems 3 and 5), and no
+  change starts a new run;
 * as h → 1, the time tends to 0: once it is too short for a single unit, the text
   is empty, and it asks for a new one at every change of the score (tolerance → 0).
 
@@ -258,85 +259,105 @@ whole path, whatever the steps; X on [chip + 1, chip + 2] leaves nothing; "A fro
 the chip to 3" leaves A on (start, 3]; an edit active in one mode stops exactly
 at the transitions.
 
-## The optimizer: elements for the modes the user tends to follow
+## The optimizer: the highest expected score for the modes the user may choose
 
-The requirements leave the optimization problem open, and give a tendency: the
-actual scenario of modes probably more or less follows it ("element A incites
-the user to switch to mode 2"). `TendencyPlanner(rates, base=…, controlled=…,
-cost=…, tendency=…)` uses it to predict the modes.
+"Optimal across all scenarios" is the best expected score: the modes are not known
+in advance, and the tendency gives the probability of each scenario (the actual
+scenario probably more or less follows it: "element A incites the user to switch
+to mode 2"). `TendencyPlanner(rates, base=…, controlled=…, cost=…, tendency=…)`
+maximizes it, with the time and CPUs a run allows itself.
 
 **The problem.** Modes M. Per unit of length, mode m earns `base[m]`, plus
 `rates[m][K]` wherever kind K is present (negative rates are costs). The texts
 place the controlled kinds U; each element of K ∈ U costs `cost[K]` ≥ 0. The
-tendency is a list of (kind, mode), for any kinds, placed by the texts or not:
-at a position where one of them is present, the predicted mode is the mode of
-the first such kind; elsewhere the predicted mode stays what it was. A
-*placement* puts a set of controlled kinds on each piece of a finite partition of
-the horizon (p, E] into intervals and points; its value J is the integral of the
-predicted mode's rate minus the cost of its elements (for E = +∞, J is an affine
-function a·X + b of the horizon X, compared lexicographically: the best for every
-horizon long enough). Watched kinds are the uncontrolled kinds the rates or the
-tendency read; *steering* kinds are those the tendency reads.
+tendency is a list of (kind, mode, q), for any kinds, placed by the texts or not
+(q = 1 if omitted). At a position, the entry that applies is the first of the list
+whose kind is present. Where it changes to (K, b, q), the user switches to b with
+probability q; everywhere else, they stay in their mode (`Problem.switch`). So
+switches happen where a stretch of K starts, independently of how the line is
+cut into pieces. A *policy* places a set of controlled kinds on each piece of a
+finite partition of the horizon (p, E] into intervals and points, each piece
+decided from the modes seen before it; its value J is the integral of the actual
+mode's rate minus the cost of its elements, and its score the expectation of J
+(for E = +∞, J is an affine function a·X + b of the horizon X, compared
+lexicographically: the best for every horizon long enough). Watched kinds are the
+uncontrolled kinds the rates or the tendency read; *steering* kinds are those the
+tendency reads.
 
 **The units.** A text decides on *units*: the open intervals between the chip,
 the multiples of the grid g, the ends of the steering kinds and E, and their end
-points. Its placements are constant on each unit; S_g is the best value among
-them. Inside a unit the predicted mode is constant (the steering kinds and the
-placement are), and the rates change only at the ends of the other watched kinds.
+points. Its policies decide at the start of every unit, from the mode there, the
+sets on the open unit and on its end point; S_g is the best expected value among
+them. Inside a unit the entry that applies is constant (the steering kinds and the
+placement are), so the user may switch only where the open unit starts and at its
+end point, and the rates change only at the ends of the other watched kinds.
 
 **Lemma 1 (without steering, cells suffice).** If the tendency reads no
-controlled kind, for every placement there is one at least as good, constant
-between consecutive ends of the watched kinds. *Proof.* Predicted modes then do
-not depend on the placement, and are constant there. Replace every piece's set by
-the set of the piece with the best rate: the integral does not decrease, and for
-every kind the number of runs of presence does not increase (a block replaced by
-one of its values), so neither do element costs. ∎ With steering this is false: a
-placed A, however short, can switch the mode (Theorem 5).
+controlled kind, for every placement decided in advance there is one at least as
+good, constant between consecutive ends of the watched kinds. *Proof.* The
+probabilities of the modes then do not depend on the placement, and are constant
+there. Replace every piece's set by the set of the piece with the best expected
+rate: the expected integral does not decrease, and for every kind the number of
+runs of presence does not increase (a block replaced by one of its values), so
+neither do element costs. ∎ With steering this is false: a placed A, however
+short, can switch the mode (Theorem 5).
 
 **Theorem 2 (`solve` is exact).** For every state (mode, controlled kinds present)
-at the start of every unit, `solve` gives the best value of the rest of the
-horizon among placements constant on units: W_n = 0 (or nothing after an infinite
-last unit), W_i(s) = max over the sets on the open unit and on its end point of
-the unit's value plus W_{i+1} of the state it leads to (induction). All numbers
-are exact. With several workers, each computes the max-plus matrix of a chunk of
-units; products are associative, so composing them gives the same W at every chunk
-end, and each chunk is then swept from its end: the same values
-(`test_parallel_is_the_same`). ∎
+at the start of every unit, `solve` gives the best expected value of the rest of
+the horizon among policies deciding at unit starts: W_n = 0 (or nothing after an
+infinite last unit), W_i(s) = max over the sets on the open unit and on its end
+point of the expectation, over the switches where the open unit starts and at its
+end point, of the unit's value plus W_{i+1} of the state it leads to (induction).
+All numbers are exact (the probabilities are rationals). With several workers,
+each computes the max-plus matrix of a chunk of units; products are associative,
+so composing them gives the same W at every chunk end, and each chunk is then
+swept from its end: the same values (`test_parallel_is_the_same`). This needs
+certain switches (q ∈ {0, 1}), where the expectation is a single value; with
+other probabilities, one process computes W. ∎
+(`test_exact_against_every_placement` compares with a search over every policy.)
 
-**Theorem 3 (texts are optimal for the tendency, whatever the actual modes).**
+**Theorem 3 (texts are at least that good, whatever the actual modes).**
 The text has, for every unit and mode, a rule on [unit start, unit end) for that
 mode; it runs where the chip enters the unit, at every actual transition inside
-it, and at the install. It reads the actual mode m and the controlled kinds
-present at the chip, and places on the rest of the unit the sets maximizing the
-rest of the unit's value plus W_{i+1}: by Theorem 2 this is the best placement on
-units from that position, that mode and that state, for the tendency. So whatever
-the user actually does, at every position where the text can act, it acts
-optimally for the predicted future; a deviation of the user needs no new run.
-∎ (`test_texts_react_to_the_actual_modes`.)
+it, and at the install. It reads the actual mode m and the kinds present at the
+chip, and places on the rest of the unit the sets maximizing the expected value
+of the rest of the unit plus W_{i+1}. At unit starts this is the policy of
+Theorem 2. At a transition it decides again from the actual mode, and keeping the
+current sets is one of its choices, so by policy improvement (finitely many
+decisions in every scenario) its expected value is at least W from every state;
+deviations of the user from the tendency need no new run.
+∎ (`test_texts_react_to_the_actual_modes`, `test_the_expected_score_decides`:
+with D making the user busy with probability q, S decided before the switch is
+placed iff 2q − 1 exceeds its cost, not as soon as busy is the likelier mode.)
 
 **Theorem 4 (the score as the line changes).** Let L be the line the text was
 computed for and L′ the line now. If no steering kind changed after the chip, let
 D = ∫ max_m |r′_m(x) − r_m(x)| dx over the horizon after the chip. Then the text
-is at most 2·D below the best placement on units for L′. *Proof.* The units are
-the same for L and L′ (they depend only on the grid and the steering kinds), and
-so are the predicted modes and costs of every placement on them; its value changes
-by at most D. The text is optimal for L (Theorem 3), so for an optimum μ′ of L′:
-J′(μ′) ≤ J(μ′) + D ≤ J(text) + D ≤ J′(text) + 2·D. If a steering kind changed,
-D is +∞. ∎ (`test_the_score_is_within_twice_the_divergence`.)
+is at most 2·D below the best policy on units for L′. *Proof.* The units are the
+same for L and L′ (they depend only on the grid and the steering kinds), and so
+are the probabilities of the scenarios and the costs of every policy on them; in
+every scenario its value changes by at most D, so its expected value too. The
+text is optimal for L (Theorem 3), so for an optimum μ′ of L′:
+E J′(μ′) ≤ E J(μ′) + D ≤ E J(text) + D ≤ E J′(text) + 2·D. If a steering kind
+changed, D is +∞. ∎ (`test_the_score_is_within_twice_the_divergence`.)
 
-**Theorem 5 (finer grids tend to the best of all placements).** Let J* be the
-supremum of J over all placements. Then S_g → J* as g → 0. *Proof.* Take a
-placement P with N pieces and J(P) > J* − ε. When g is smaller than every piece
-of P and every distance between a boundary of P and an end of a steering kind,
-move every boundary of P that is not such an end to a multiple of g within g, on
-the same side of every end and every other boundary; move every point piece to a
-unit end the same way. The order of the pieces, the steering kinds and the placed
-sets they meet are unchanged, so the predicted modes and the runs of every kind,
-hence the costs, are unchanged; each move changes the integral by at most g·2R,
-R the largest |rate|. The result is constant on units, so S_g ≥ J(P) − 2N·g·R >
-J* − 2ε for g small enough; and S_g ≤ J*. ∎ The supremum need not be reached: with
-"A incites busy", A costing 3 per unit and busy earning 1, J* = 4 on (0, 4] but
-every placement is below, and S_g = 4 − g
+**Theorem 5 (finer grids tend to the best of all policies).** Let J* be the
+supremum of the expected value over all policies. Then S_g → J* as g → 0.
+*Proof.* Take a policy P with E J(P) > J* − ε and at most N pieces in every
+scenario (a finite partition has finitely many switches, each with two outcomes,
+so finitely many scenarios). When g is smaller than every piece of P and every
+distance between a boundary of P and an end of a steering kind, in every
+scenario: move every boundary of P that is not such an end to a multiple of g
+within 2g, on the same side of every end and every other boundary, and after the
+unit start that follows every switch before it; move every point piece to a unit
+end the same way. Every decision is then made at a unit start, after the
+switches it depends on, so the result is a policy on units. The order of the
+pieces, the steering kinds and the placed sets they meet are unchanged, so the
+switches, their probabilities and the runs of every kind, hence the costs, are
+unchanged; each move changes the integral by at most 2g·2R, R the largest |rate|.
+So S_g ≥ E J(P) − 4N·g·R > J* − 2ε for g small enough; and S_g ≤ J*. ∎ The
+supremum need not be reached: with "A incites busy", A costing 3 per unit and busy
+earning 1, J* = 4 on (0, 4] but every placement is below, and S_g = 4 − g
 (`test_steering_tends_to_the_best_value_as_the_grid_gets_finer`).
 
 **When it generates (`plan`).** At every observation without a run, a run starts
@@ -347,8 +368,10 @@ tolerance (R14). After a run that installed nothing it waits 0.5 s, doubled at
 each further failure (at most 30 s), and doubles its time estimates.
 
 **How much time, with how many CPUs.** With n units, P parts, S states and u
-sets, one process does P·S·u² operations; w > 1 workers do (2·P·S·u² + n·S³)/w
-each, after starting (`pool_startup`). `speed` is measured once if not given. With
+sets, one process does P·S·u²·k operations, k = 1 with certain switches and 4
+otherwise (two outcomes at each of two switches); w > 1 workers do
+(2·P·S·u² + n·S³)/w each, after starting (`pool_startup`), only with certain
+switches (Theorem 2). `speed` is measured once if not given. With
 c = `resources.cpus`, `plan` takes w = 1 or w = c, whichever is faster, and the
 time 1.25·(`startup` + work) + 0.1 s, for the most units of the horizon whose time
 fits in `time_scale`·f (R14); if none fits, the text is empty. A run that cannot
@@ -377,7 +400,9 @@ are the choices made. Each satisfies the requirements.
    consistent; the requirement of a unique result is met by showing it whenever
    that is consistent (`test_an_edit_sustained_by_its_trace`).
 4. **The optimization problem** of the demo optimizer, its units and its grid
-   (above). The line's rules should not involve the problem's kinds, or its edits
+   (above), and how the tendency gives probabilities: a switch where a stretch of
+   the kind starts, with a probability, so that the scenarios do not depend on how
+   the line is cut. The line's rules should not involve the problem's kinds, or its edits
    may adapt or be refused (R4) and the optimum is that of the line as the problem
    describes it.
 5. **Elements that repeat forever.** An ordered disjunction over a ray or the whole

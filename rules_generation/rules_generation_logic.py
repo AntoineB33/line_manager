@@ -126,9 +126,9 @@ if __name__ == "__main__":
     _wait(machine)
     print(f"run: {machine.runs[-1].outcome}")
     manager.print_track()
-    for x, mode in ((1, "idle"), (3, "busy"), (5, "busy"), (Fraction(13, 2), "idle")):
+    for x, mode in ((1, "idle"), (2, "busy"), (5, "busy"), (6, "idle"), (Fraction(13, 2), "idle")):
         machine.update_chip(x, [(x, mode)] if mode != manager.chip.mode else [])
-    print("chip moved through 3 (busy) and 13/2 (idle), as the tendency said: still", len(machine.runs), "run")
+    print("chip moved through 2 (busy) and 6 (idle), as the tendency said: still", len(machine.runs), "run")
     manager.print_track()
     machine.update_chip(10, [(9, "busy")])
     print("the user became busy at 9, where nothing incites it: the text reacts by itself")

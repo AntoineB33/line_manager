@@ -1,6 +1,6 @@
 There are several modes, and only one is applied for one position of the chip on the line. Every bounded stretch of the line contains finitely many mode transitions. The mode transitions are given externally, not known to the generator.
 
-A generated text provides rules for editing the right side of the chip, utilizing the same edit types defined in the "reverse_logic" module. These rules are parameterized by the chip's current position, its active mode and the state of the line. They can do mathematically continuous or discrete edits to the line. A continuous edit places elements whose position depends on the chip's position; it is updated at every step of the chip, like a drag (Example 3 of "reverse logic"). Edits by a text of rules never change the left side of the chip, the chip's position included.
+A generated text provides rules for editing the right side of the chip, utilizing the same edit types defined in the "reverse_logic" module. These rules are parameterized by the chip's current position, its active mode and the state of the line. They can do mathematically continuous or discrete edits to the line. A continuous edit places elements whose position depends on the chip's position. Edits by a text of rules never change the left side of the chip, the chip's position included.
 
 Example:
 A → A at -1

@@ -175,14 +175,16 @@ since: the text applies from the chip's position at install.
 is in every view. What it means depends on the problem, so the optimizer applies
 it; the machine only requires a positive, finite time for every run. For the
 optimizer of this module, with f = (1 − h)/h (f → +∞ as h → 0, f → 0 as h → 1,
-f = 1 at h = 1/2): a run is allowed `time_scale`·f seconds, its horizon is
-`lookahead`·f, its grid `resolution`/f, and a text asks for a new one when its
-score may be more than `scale`·f below the optimum (Theorem 4), or near the end
-of its horizon. So the ends of the range are limits, never reached:
+f = 1 at h = 1/2) and F = max(f, 1): a run is allowed at most `time_scale`·f·F³
+seconds, its horizon is `lookahead`·f, its grid `resolution`/(f·F), and a text
+asks for a new one when its score may be more than `scale`·f below the optimum
+(Theorem 4), or near the end of its horizon. So the ends of the range are limits,
+never reached:
 * as h → 0, time, horizon and tolerance grow without bound and the grid gets
-  infinitely fine: the expected value of a text tends to the best expected value
-  of all policies, the modes not being known in advance (Theorems 3 and 5), and no
-  change starts a new run;
+  infinitely fine, faster than the horizon grows: one run solves the whole
+  horizon, and the expected value of its text comes within a vanishing distance
+  of the best expected value of all policies on that horizon, the modes not being
+  known in advance (Theorem 6);
 * as h → 1, the time tends to 0: once it is too short for a single unit, the text
   is empty, and it asks for a new one at every change of the score (tolerance → 0).
 
@@ -360,6 +362,40 @@ supremum need not be reached: with "A incites busy", A costing 3 per unit and bu
 earning 1, J* = 4 on (0, 4] but every placement is below, and S_g = 4 − g
 (`test_steering_tends_to_the_best_value_as_the_grid_gets_finer`).
 
+**Theorem 6 (the limit h → 0).** Fix the chip's position p, the line and the
+problem; for f ≥ 1 the horizon is E_f = p + `lookahead`·f and the grid
+g_f = `resolution`/f². Every kind of the line is finitely many elements and,
+possibly, a tail that repeats with a rational period (reverse logic), so there are
+A, B, c > 0 such that any (p, p + ℓ] holds at most A + B·ℓ ends of watched kinds,
+and two distinct ends are at least c apart.
+(a) *For f large enough, one run solves the whole horizon.* There are at most
+E_f/g_f + A + B·`lookahead`·f + 1 = O(f³) units, and the parts are at most the
+units plus twice the ends, O(f³) too. With `speed` fixed and `startup` at most
+60 s, the estimated time (below) is O(f³), under `time_scale`·f⁴ once f is large:
+`plan` gives the run the whole horizon, and the estimated time. It counts the
+units without listing them (`_extent`, with a binary search when they do not all
+fit), in time O(A + B·`lookahead`·f + log f). If the
+run's work takes no longer than estimated, its text is installed.
+(b) *Its value tends to the best one, when the tendency reads no controlled kind.*
+Let R be the largest |rate| and J*(E) the supremum of the expected value of all
+policies on (p, E]. The switches are then at ends of steering kinds, whatever is
+placed, so on every open cell between consecutive watched ends the mode is
+constant and known from the cell's start. Lemma 1, applied in every scenario,
+then gives an optimal policy P with one set on every open cell and one on every
+end: its replacements use only the modes seen before the cell. So J*(E) is
+reached, by P with N ≤ 2·(A + B·(E − p)) + 1 pieces in every scenario. Once
+g_f < c, the construction of Theorem 5 applies to P with ε = 0:
+S_g(E_f) ≥ J*(E_f) − 4N·g_f·R. Hence
+J*(E_f) − S_{g_f}(E_f) ≤ 4R·`resolution`·(2A + 1 + 2B·`lookahead`·f)/f² → 0,
+and the text's expected value, at least S_g (Theorem 3), is within this distance of
+the best of all policies on its horizon. ∎ The grid shrinks like 1/f², not 1/f,
+for this: with 1/f the bound stays of the order of B·R·`lookahead`·`resolution`,
+every unit of length of the horizon losing O(g).
+When the tendency reads a controlled kind (a placed A inciting a mode), Theorem 5
+still gives S_g(E) → J*(E) for every fixed E, but the bound along E_f needs
+near-optimal policies with o(f²) pieces on (p, E_f]; that is not proved here.
+(`test_as_h_tends_to_0_one_run_solves_the_whole_horizon`.)
+
 **When it generates (`plan`).** At every observation without a run, a run starts
 when, and only when, the installed text is not one of this optimizer's, or it
 asks for one (`view.rerun`): the chip is within the lead of E (2·v·t +
@@ -374,8 +410,9 @@ otherwise (two outcomes at each of two switches); w > 1 workers do
 switches (Theorem 2). `speed` is measured once if not given. With
 c = `resources.cpus`, `plan` takes w = 1 or w = c, whichever is faster, and the
 time 1.25·(`startup` + work) + 0.1 s, for the most units of the horizon whose time
-fits in `time_scale`·f (R14); if none fits, the text is empty. A run that cannot
-finish in time gives no text.
+fits in `time_scale`·f·F³ (R14); if none fits, the text is empty. `plan` counts
+the units without listing them (`_extent`). A run that cannot finish in time
+gives no text.
 
 ## Choices the requirements leave open
 

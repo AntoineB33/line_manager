@@ -6,6 +6,7 @@ Problem, proofs and the decisions of `plan`: SEMANTICS.md, "The optimizer".
 """
 from __future__ import annotations
 
+import bisect
 import math
 import multiprocessing
 import time
@@ -400,11 +401,11 @@ class TendencyPlanner:
     actual mode, among placements that change only at multiples of the grid or
     at ends of the kinds the tendency reads (SEMANTICS.md, Theorem 3).
 
-    The machine's performance h in (0, 1) sets, with f = (1 - h)/h (1 at h = 1/2):
-    the horizon `lookahead`*f, the grid `resolution`/f, the time `time_scale`*f
-    and the tolerance `scale`*f.  Towards 0 they tend to an infinite horizon,
-    an infinitely fine grid (whose optimum tends to the best value of all
-    placements, Theorem 5), unlimited time and no new run; towards 1 to no
+    The machine's performance h in (0, 1) sets, with f = (1 - h)/h (1 at h = 1/2)
+    and F = max(f, 1): the horizon `lookahead`*f, the grid `resolution`/(f*F),
+    the most time `time_scale`*f*F**3 and the tolerance `scale`*f.  Towards 0
+    a single run solves the whole horizon, which grows without bound, on a grid
+    finer than the horizon is long (Theorem 6); towards 1 they tend to no
     unit at all (an empty text), no time, and a new run at every change."""
 
     def __init__(self, rates: Mapping[Mode, Mapping[str, Number]], *,
@@ -512,29 +513,56 @@ class TendencyPlanner:
         """The horizon and grid of the next text, and the time and CPUs its run gets."""
         h, p, cpus = view.performance, view.position, resources.cpus
         f = (1 - h) / h
-        grid, allowed = self.resolution / f, self.time_scale * float(f)
-        units = self.units(view.track, self.bounds(view.track, p, p + self.lookahead * f, grid))
-        workers, chunk, budget, n = 1, 1, allowed, 0
-        lo, hi = 0, len(units)  # the most units whose run fits in the time allowed
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            if self._fit(units[:mid], cpus)[2] <= allowed:
-                lo = mid
-            else:
-                hi = mid - 1
-        if lo:
-            n = lo
-            workers, chunk, budget = self._fit(units[:n], cpus)
-        end = units[n - 1].end if n else p
+        big = max(f, 1)  # f below h = 1/2; above, the grid and the time go faster (SEMANTICS.md, Theorem 6)
+        grid, allowed = self.resolution / (f * big), self.time_scale * float(f * big ** 3)
+        end, n, parts = self._extent(view.track, p, p + self.lookahead * f, grid, allowed, cpus)
+        workers, chunk, budget = self._fit(n, parts, cpus) if n else (1, 1, allowed)
         lead = Fraction(2 * self._chip_speed * budget).limit_denominator(10 ** 6) + self.min_lead
         return Order(end, grid, workers, chunk, budget, lead, self.scale * f)
 
-    def _fit(self, units: Sequence[Unit], cpus: int) -> tuple[int, int, float]:
-        """(workers, chunk, budget) for `units`: one process, or `cpus` if faster
-        (only with certain switches, `solve`)."""
+    def _extent(self, track: Track, p: Fraction, horizon: Fraction, grid: Fraction, allowed: float, cpus: int
+                ) -> tuple[Fraction, int, int]:
+        """(end, units, parts) of the most units of `bounds(track, p, horizon, grid)`
+        whose run fits in `allowed`.  They are counted, not listed (there are
+        about `lookahead`*f**3/`resolution` of them): a binary search on the
+        multiples of the grid, then the ends of steering kinds after the last
+        multiple that fits."""
+        def off_grid(e: Fraction) -> bool:
+            return (e / grid).denominator != 1
+
+        def inner(kinds) -> set:
+            return {e for k in kinds for e in _ends(track.get(k, EMPTY), p, horizon) if p < e < horizon and off_grid(e)}
+
+        steer = sorted(inner(self.problem.steering))
+        cuts = sorted(inner(self.problem.watched) - set(steer))  # ends of watched kinds inside units
+        k0, k1 = math.floor(p / grid) + 1, math.ceil(horizon / grid) - 1  # the multiples in (p, horizon)
+
+        def counts(b) -> tuple[int, int]:  # the units up to the bound b, and their parts
+            n = max(0, min(k1, math.floor(b / grid)) - k0 + 1) + bisect.bisect_right(steer, b) + (b == horizon)
+            return n, n + 2 * bisect.bisect_left(cuts, b)
+
+        def fits(b) -> bool:
+            return self._fit(*counts(b), cpus)[2] <= allowed
+
+        if fits(horizon):
+            return horizon, *counts(horizon)
+        lo, hi = k0 - 1, k1  # the last multiple that fits, k0 - 1 if none
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            lo, hi = (mid, hi) if fits(mid * grid) else (lo, mid - 1)
+        end = lo * grid if lo >= k0 else p
+        after = (lo + 1) * grid if lo + 1 <= k1 else horizon  # does not fit
+        for b in [*(e for e in steer if end < e < after), after]:
+            if not fits(b):
+                break
+            end = b
+        return end, *counts(end)
+
+    def _fit(self, n: int, parts: int, cpus: int) -> tuple[int, int, float]:
+        """(workers, chunk, budget) for n units with `parts` parts in all: one
+        process, or `cpus` if faster (only with certain switches, `solve`)."""
         s, u = len(self.problem.states()), len(self.problem.subsets())
-        parts = sum(len(x.parts) for x in units)
-        n, speed = len(units), self._speed()
+        speed = self._speed()
         ways = 1 if self.problem.certain else 4  # up to two modes after each of two switches
 
         def cost(workers: int) -> float:

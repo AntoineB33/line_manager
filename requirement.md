@@ -8,10 +8,10 @@ Example:
 - element A at $x_1$ (true but already implied)
 There can also be rules for each kind of element.
 Examples:
-- when there is element A, there must be element B
-- when there is element A, there is not element B
-- when there is element A and B, there is element C 3 units on the left
+- where there is element A, there must be element B
+- where there is element A, there is not element B
+- where there is element A and B, there is element C 3 units on the left
 
 The same element type can't be present several times at the same position on the line.
 
-When the chip passes a point, the point keeps what it had when the chip was at this point. It only changes when the user does edits.
+When the chip passes a point, the point keeps what it had when the chip was at this point. It only changes when the user does edits. This means that the text of rules can't order to place something that modifies what is at the left of the chip.

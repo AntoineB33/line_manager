@@ -261,8 +261,8 @@ def start(opt, mgr, cpus=1, performance=F(1, 2)):
 
 class TextTests(unittest.TestCase):
     def test_installs_the_best_placement(self):
-        opt = planner()
-        m, clock, runner = start(opt, manager(), performance=F(1, 10))
+        opt = planner(lookahead=200)
+        m, clock, runner = start(opt, manager())
         runner.finish()
         m.poll()
         self.assertEqual(m.runs[0].outcome, "installed")
@@ -347,6 +347,36 @@ class TextTests(unittest.TestCase):
                             Resources(1))
         self.assertEqual(text.rules, ())
         self.assertTrue(text.rerun(F(0), "idle", {**track, "D": track["D"] | Region.closed(1, F(3, 2))}))
+
+    def test_the_extent_is_that_of_the_units(self):
+        """`_extent` counts what listing the units gives: the most units that fit."""
+        for seed in range(SEEDS):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                opt = random_planner(rng)
+                opt.speed = rng.choice([1e2, 1e3, 1e4, 1e6])
+                track = random_track(rng)
+                p, grid = F(rng.randint(0, 8), 2), F(1, rng.randint(1, 4))
+                horizon, allowed = p + F(rng.randint(1, 24), 2), rng.choice([0.5, 1.0, 1.5, 3.0])
+                units = opt.units(track, opt.bounds(track, p, horizon, grid))
+                n = max((i for i in range(len(units) + 1)
+                         if not i or opt._fit(i, sum(len(u.parts) for u in units[:i]), 1)[2] <= allowed))
+                want = (units[n - 1].end if n else p, n, sum(len(u.parts) for u in units[:n]))
+                self.assertEqual(opt._extent(track, p, horizon, grid, allowed, 1), want)
+
+    def test_as_h_tends_to_0_one_run_solves_the_whole_horizon(self):
+        """SEMANTICS.md, Theorem 6 (a): the whole horizon, on a grid of 1/f**2,
+        and plan does not list the units."""
+        opt = planner()
+        track = {"D": Region.union_of(*(Region.closed(2 * i, 2 * i + 1) for i in range(400)))}
+        for h in (F(1, 100), F(1, 10 ** 4), F(1, 10 ** 6)):
+            f = (1 - h) / h
+            began = time.perf_counter()
+            order = opt.order_for(view_of(track, performance=h), Resources(1))
+            self.assertLess(time.perf_counter() - began, 5)
+            self.assertEqual(order.end, 20 * f)
+            self.assertEqual(order.grid, 1 / f ** 2)
+            self.assertLessEqual(order.budget, 10 * f ** 4)
 
     def test_the_time_of_a_run_depends_on_the_cpus(self):
         opt = TendencyPlanner({"a": {"S": 1, "T": 1, "U": 1}, "b": {"D": 1}, "c": {}}, controlled=["S", "T", "U"],

@@ -1,23 +1,5 @@
-The user can do edits. An edit can be adding intervals of elements, removing intervals of elements or moving intervals of elements.
-An edit that puts a kind where that kind is already present is refused.
-Removing or moving something on the line that doesn't exist is refused.
-The user can reverse an edit. If the effect of the edit is not present on the line, the reverse is refused. If it is partially present, the reverse is partially done, and the rest is refused.
-If the user does edit 1, then edit 2, then reverses edit 2, then reverses edit 1, the state of the line on the modified parts is the same as if edits 1 and 2 never happened.
-
-
-Suppose A [1, 2] and B [3, 4].
-edit 1: remove A
-edit 2: remove B
-Do the requirements guarantee imply that if the user does edit 1, then edit 2, then reverse edit 1, then reverse edit 2, the state of the line will be the same as if edits 1 and 2 never happened? If we consider the program that is created to satisfy the requirements doesn't have things like if 
-
-
-Suppose A [1, 2] and B [3, 4].
-edit 1: remove A at [1, 2]
-edit 2: remove B at [3, 4]
-edit 3: nothing
-If the user does edit 1, then edit 3, then reverses edit 3, then reverses edit 1, then according to the requirements, the state of the line in [1, 2] is the same as if edit 1 never happened.
-In other words, the requirements ensure that if the user does an edit then reverses it, the state of the line on the modified parts is the same as if the edit never happened.
-If the user does edit 1, then edit 2, then reverses edit 1, then reverses edit 2, the state of the line on the modified parts is the same as if edits 1 and 2 never happened.
+The user can do edits, which is adding and removing intervals of elements on the line. The reverse of an edit is the same edit but with the opposite action (adding or removing).
+If the user does edit 1, then edit 2, then reverse edit 2, then reverse edit 1, then the state of the line is the same as before edit 1.
 
 Example 1:
 Suppose the positions $x_1$ < $x_2$ < $x_3$ < $x_4$ < $x_5$ < $x_6$ < $x_7$ < $x_8$ < $x_9$ < $x_{10}$.
@@ -66,6 +48,16 @@ While the leading edge of element C has not yet reached $x_3$, element D remains
 At every step where element C covers $x_3$, there is no element D.
 At the first step where element C is past $x_3$, element D is back at $x_3$: not at a later step.
 At the end, it is element D at $x_3$ and element C at [$x_4$, $x_5$], the same as if element C had been added directly at [$x_4$, $x_5$].
+
+The rules have restrictions:
+There can't be a cycle between kinds of elements, whatever the distances in the rules. For example, this set of rules is not possible:
+- if element A, then element B 1 unit on the right
+- if element B, then element A 1 unit on the right
+
+The result of every edit must be unique: there must be no ambiguity.
+- If a rule says "A → B or C", the first operand in the "or" operation that can be placed is used, here element B.
+- If a rule says "A and B → C", A and B are added at x and then a "no C" element is added at x, then the script chooses the combination that looses as less element as possible, and favors the leftmost elements when there is a tie. Here, only B and C are removed from x.
+- When several positions compete for the operands of an "or" (one position taking an operand prevents another from taking its first one), positions are decided one after the other: the closest to 0 first, and the one on the left first when two are equally close. Each takes the first operand of the "or" that still lets the remaining positions be placed. This also applies when the element extends infinitely, in which case the result may repeat infinitely.
 
 Examples:
 rules: "A and B and C → D", "A and B → C".

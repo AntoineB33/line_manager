@@ -13,7 +13,7 @@ There are several modes, and only one is applied for one position of the chip on
 There are "element rules". In an element rules, there are two sides:
 - the left side is a combination of element types
 - the right side is a set of intervals of elements with percentages.
-Where the left side is met, the right side must be applied.
+For each position p the left side is met, the right side must be applied, with its interval positions being relative to p.
 
 Examples:
 - A → B
@@ -32,11 +32,6 @@ This generated script has events that trigger continuous edits of the line or a 
 A generated rule must never:
 - change the left side of the chip and what is at the position of the chip.
 - remove elements added by the user.
-
-Example 1:
-A → B at -1
-chip at 0
-The text of rules is empty because it can do nothing without violating the rules. The user however can add A anywhere.
 
 Example:
 if the optimization problem is a simple presence ratio target for each kind of element, the generated script looks like this:

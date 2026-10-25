@@ -20,6 +20,13 @@ Examples:
 - A → no B
 - A & B → C 3 units on the left
 
+A set of element rules can't have a cycle.
+
+Example:
+This set of element rules is impossible:
+- if A → B 1 unit on the right
+- if B → A 1 unit on the right
+
 A "mode rule" is the same as an element rule, but can add or remove elements only at the position of the chip.
 
 Example:
@@ -49,17 +56,4 @@ The "probability finder" program is used to find probability rules in the mode t
 The result of every edit from the user or the generated script must be easily known in advance thanks to intuitive rules.
 - If an element rule says "A → B or C", the first operand in the "or" operation that can be placed is used, here element B.
 - If an element rule says "A and B → C", A and B are added at x and then a "no C" element is added at x, then the script chooses the combination that loses as few elements as possible, and favors the leftmost elements when there is a tie. Here, only B and C are removed from x.
-- When several positions compete for the operands of an "or" (one position taking an operand prevents another from taking its first one), positions are decided one after the other: the closest to 0 first, and the one on the left first when two are equally close. Each takes the first operand of the "or" that still lets the remaining positions be placed. This also applies when the element extends infinitely, in which case the result may repeat infinitely.
 
-Example:
-"A → B or C", "B → no B 1 unit on the right"
-line empty
-user edit 1: add A at [1, 2]
-result is A at [1, 2], B at [1, 2), C at 2
-
-There can't be a cycle between kinds of elements.
-
-Example:
-This set of element rules is impossible:
-- if A → B 1 unit on the right
-- if B → A 1 unit on the right

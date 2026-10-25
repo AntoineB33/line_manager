@@ -4,7 +4,7 @@ There are different kinds of elements. A state of the line is a set of intervals
 
 Example of a state of the line:
 - A at [$x_1$, $x_2$) 100%
-- A at $x_1$ 50%
+- A at $x_2$ 50%
 - B at $x_3$ 100%
 - C at $x_1$ 100%
 

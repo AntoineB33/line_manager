@@ -1,4 +1,4 @@
-There is an infinite line from left to right.
+There is an infinite line from −∞ on the left to ∞ on the right.
 There is a 0-dimensional chip on the line that moves to the right, with a mathematically continuous movement.
 There are different kinds of elements. A state of the line is a set of intervals each associated to an element type and a percentage. The same element type can't be present several times at the same position on the line.
 
@@ -12,12 +12,14 @@ There are several modes, and only one is applied for one position of the chip on
 
 There are "element rules". In an element rules, there are two sides:
 - the left side is a boolean expression manipulating element types and percentages. An element with 0% is considered absent.
-- the right side is an expression with "and", "or" and intervals of elements with percentages. The position of those intervals are relative to either the position p where the left side is met, or the l left edge of the largest interval that meets the left side and includes p. If the interval is only one position, then it can be p or l, otherwise, it can only be l.
+- the right side is an expression with "and", "or" and intervals of elements with percentages. The position of those intervals are relative to either the position p where the left side is met, or the l left edge of the largest interval that meets the left side and includes p.
 
 Examples:
 - A → B 100%
-- A → no B
+- A → B 0%
 - A & B → C 45% 3 units on the left of p
+
+If there is a "or" in the right side of the element rule, the leftmost operand that can be chosen is chosen.
 
 A set of element rules can't have a cycle.
 
@@ -52,7 +54,10 @@ The "allocated resources quantity" hyperparameter in (0, 1) balances between res
 
 The "probability finder" program is used to find probability rules in the mode transitions pattern. This helps the rules generator being more performant with a low allocated resources quantity hyperparameter.
 
-The result of every edit from the user or the generated script must be easily known in advance thanks to intuitive rules.
-- If an element rule says "A → B 100% or C 100%", the first operand in the "or" operation that can be placed is used, here element B.
-- If an element rule says "A and B → C 100%", A and B are added at x and then a "no C" element is added at x, then the script chooses the combination that loses as few elements as possible, and favors the leftmost elements when there is a tie. Here, only B and C are removed from x.
+Edits from the user always win. For example:
+"A → B 100% or C 100%"
+A and B at [1, 2]
+user edit: remove B at 1.5
+Now A at [1, 2], B at [1, 1.5)U(1.5, 2] and C at 1.5.
 
+Suppose an element rule r is applied at x, then a user edit makes it impossible to satisfy the right side of r. If the left side has a "and", then the script chooses the combination that loses as few elements as possible, and favors the leftmost elements when there is a tie.

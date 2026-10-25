@@ -46,3 +46,15 @@ if the chip is between $x_7$ and $x_8$ and mode is 2, then the generator runs ag
 The "allocated resources quantity" hyperparameter in (0, 1) balances between resource usage economy (0) and optimization problem solving (1). When the hyperparameter is lower, then a rules generator run will be faster and use less CPU resources to solve the optimization problems, and the generated script will trigger less frequently a new rules generator run.
 
 The "probability finder" program is used to find probability rules in the mode transitions pattern. This helps the rules generator being more performant with a low allocated resources quantity hyperparameter.
+
+The result of every edit from the user or the generated script must be easily known in advance thanks to intuitive rules.
+- If an element rule says "A → B or C", the first operand in the "or" operation that can be placed is used, here element B.
+- If an element rule says "A and B → C", A and B are added at x and then a "no C" element is added at x, then the script chooses the combination that loses as few elements as possible, and favors the leftmost elements when there is a tie. Here, only B and C are removed from x.
+- When several positions compete for the operands of an "or" (one position taking an operand prevents another from taking its first one), positions are decided one after the other: the closest to 0 first, and the one on the left first when two are equally close. Each takes the first operand of the "or" that still lets the remaining positions be placed. This also applies when the element extends infinitely, in which case the result may repeat infinitely.
+
+There can't be a cycle between kinds of elements.
+
+Example:
+This set of element rules is impossible:
+- if element A, then element B 1 unit on the right
+- if element B, then element A 1 unit on the right

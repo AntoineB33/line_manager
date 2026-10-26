@@ -12,7 +12,7 @@ There are several modes, and only one is applied for one position of the chip on
 
 There are "element rules". In an element rules, there are two sides:
 - the left side is a boolean expression manipulating element types and percentages. An element with 0% is considered absent.
-- the right side is an expression with "and", "or" and intervals of elements with percentages. The position of those intervals are relative to either the position p where the left side is met, or the l left edge of the largest interval that meets the left side and includes p.
+- the right side is an expression with "and", "or" and intervals of elements with percentages. The position of those intervals are relative to either the position p where the left side is met, or the l left edge (bound or unbound) of the largest interval that meets the left side and includes p.
 
 Examples:
 - A → B 100%

@@ -54,10 +54,8 @@ The "allocated resources quantity" hyperparameter in (0, 1) balances between res
 
 The "probability finder" program is used to find probability rules in the mode transitions pattern. This helps the rules generator being more performant with a low allocated resources quantity hyperparameter.
 
-Edits from the user win over what is on the line. For example:
+Edits from the user win over what is on the line. Nothing more than necessary is removed from the older elements, or more if it helps keeping a fast computation. For example:
 "A → B 100% or C 100%"
 A and B at [1, 2]
 user edit: remove B at 1.5
 Now A at [1, 2], B at [1, 1.5)U(1.5, 2] and C at 1.5.
-
-Suppose an element rule r is applied on a region X, then a user edit makes it impossible to satisfy the right side of r on X. Then elements are removed so that the left side of r is no longer met on X: among the combinations of the elements its left side rests on, the one that loses as few elements as possible is chosen, and the leftmost elements are kept when there is a tie. When several rules are in this situation, they are handled one after the other, from left to right.

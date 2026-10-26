@@ -8,13 +8,13 @@ from fractions import Fraction as F
 from helpers import check_log, rand_interval, rules_hold
 from generator import PresenceRatioProblem, RulesGenerator, budget, rerun_distance, rerun_transitions
 from intervals import INF, Interval, IntervalSet
-from line import MODE, USER, LineState, Op
+from line import GEN, MODE, USER, LineState, Op
 from modes import ModeTimeline
 from probability import ProbabilityFinder
 from region import Region
 from resolve import apply_edit
 from rules import parse_rules
-from script import ChipIn, EditAction, Event, RerunAction, Script
+from script import ChipIn, EditAction, Event, ModeRulesAction, RerunAction, Script
 from simulation import Chip, Simulation, UserEdit
 
 POOL = ["A → B or C", "B → D", "B → no D 1 unit on the right", "A → no C 1 unit on the left", "C → D",
@@ -79,23 +79,73 @@ class ScriptTest(unittest.TestCase):
 
 
 class ModeRulesTest(unittest.TestCase):
-    def test_act_at_the_chip_only(self):
-        rs = parse_rules(["mode 1 → D", "mode 2 → no D"])
-        modes = ModeTimeline(0, "1", [(5, "2"), (7, "1"), (12, "2")])
-        edits = [UserEdit(F(1), [Op.put("D", Interval.closed(0, 20))])]
-        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5), Chip([(0, 0), (10, 10), (20, 15)]), modes, edits)
+    RULES = ["mode 1 → D", "mode 2 → no D"]
+    MODES = [(5, "2"), (7, "1"), (12, "2")]
+
+    def simulate(self, rs, state, edits=(), script=None):
+        gen = RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5)
+        if script is not None:
+            class Fixed(RulesGenerator):
+                def run(self, s, chip, known):
+                    from generator import RunStats
+                    return script, RunStats()
+            gen = Fixed(rs, PresenceRatioProblem({}, 10), 0.5)
+        sim = Simulation(state, gen, Chip([(0, 0), (10, 10), (20, 15)]), ModeTimeline(0, "1", self.MODES), list(edits))
         log = sim.run(20)
-        # mode 1 adds D where the chip went in mode 1; mode 2 removes the user's D where the chip went
-        # in mode 2, and nothing beyond the chip (15)
+        check_log(log, rs)
+        return sim, log
+
+    def test_act_at_the_chip_only(self):
+        """Mode 1 adds D where the chip went in mode 1, mode 2 removes the generated D where
+        the chip went in mode 2, and nothing changes beyond the chip (15)."""
+        rs = parse_rules(self.RULES)
+        state = apply_edit(rs, LineState.empty(), [Op.put("D", Interval.open_closed(0, 20))], GEN)
+        sim, log = self.simulate(rs, state)
         self.assertEqual(sim.state.line.presence("D"), Region.of(IntervalSet.of(Interval.closed_open(0, 5), Interval.closed_open(7, 12), Interval.closed(15, 20))))
+        self.assertTrue(any(ch.source == "mode" for ch in log.changes))
+
+    def test_users_elements_win(self):
+        """Edits from the user always win: mode 2 does not remove the user's D."""
+        rs = parse_rules(self.RULES)
+        sim, log = self.simulate(rs, LineState.empty(), [UserEdit(F(1), [Op.put("D", Interval.closed(0, 20))])])
+        self.assertEqual(sim.state.line.presence("D"), Region.of(Interval.closed(0, 20)))
+        self.assertTrue(any(src == "mode" and "N2:" in why for _, src, why in log.refused))
+
+    def test_nothing_removed_away_from_the_chip(self):
+        """D at the chip conflicts with the user's A on [0, 1] through C on [0, 10] of l:
+        the mode rule is refused rather than removing A, away from the chip. Each position
+        is decided on its own: D goes where mode 1 meets no C, (10, 12)."""
+        rs = parse_rules(["A → C on [0, 10] of l", "D → no C", "mode 1 → D"])
+        state = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, 1))], USER)
+        sim, log = self.simulate(rs, state)
+        self.assertEqual(sim.state.line.presence("A"), Region.of(Interval.closed(0, 1)))
+        self.assertEqual(sim.state.line.presence("C"), Region.of(Interval.closed(0, 10)))
+        self.assertEqual(sim.state.line.presence("D"), Region.of(Interval.open(10, 12)))
+        self.assertTrue(any(src == "mode" and "M1: would change elements away from the chip" in why for _, src, why in log.refused))
+
+    def test_each_position_takes_the_first_operand(self):
+        """One stretch of the chip, [0, 5) in mode 1, and the operand changes inside it: D
+        cannot go where the generated X is (removing X would change it away from the chip)."""
+        rs = parse_rules(["mode 1 → D or E", "D → no X"])
+        state = apply_edit(rs, LineState.empty(), [Op.put("X", Interval.closed(2, 3))], GEN)
+        sim, log = self.simulate(rs, state)
+        self.assertEqual(sim.state.line.presence("X"), Region.of(Interval.closed(2, 3)))
+        self.assertEqual(sim.state.line.presence("E"), Region.of(IntervalSet.of(Interval.closed(2, 3))))
+        self.assertEqual(sim.state.line.presence("D") & Region.of(Interval.closed_open(0, 5)),
+                         Region.of(IntervalSet.of(Interval.closed_open(0, 2), Interval.open(3, 5))))
         for ch in log.changes:
             if ch.source == "mode":
-                diff = Region.empty()
-                for k in set(ch.before.line.kinds()) | set(ch.after.line.kinds()):
-                    a, b = ch.before.line.presence(k), ch.after.line.presence(k)
-                    diff = diff | (a - b) | (b - a)
-                self.assertTrue(diff.issubset(Region.of(Interval.closed(0, 15))))
-        check_log(log, rs)
+                self.assertGreaterEqual(ch.at.inf(), ch.chip)  # nothing before where the change starts
+
+    def test_only_through_the_script(self):
+        """The line is modified only by the user and the generated script: without the
+        script's mode-rule action, the mode rules do nothing."""
+        rs = parse_rules(self.RULES)
+        sim, log = self.simulate(rs, LineState.empty(), script=Script())
+        self.assertFalse(sim.state.line.kinds())
+        self.assertFalse(any(ch.source == "mode" for ch in log.changes))
+        script, _ = RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5).run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
+        self.assertTrue(any(isinstance(a, ModeRulesAction) for e in script.events for a in e.actions))
 
 
 class GuaranteesTest(unittest.TestCase):

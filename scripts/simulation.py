@@ -6,11 +6,14 @@ order at one instant: user edits, then revealed mode transitions, then a run of 
 generator if the user edited, then the script's triggers in script order (a rerun
 installs the new script, whose triggers are evaluated at once).
 
-Mode rules act at the chip's position: between two instants the chip goes through
-the positions P = chip([t0, t1)), all with one mode; each mode rule whose mode and
-left side are met there makes an edit on those positions (owner MODE), resolved like
-any edit (the "or" operands tried in order). Sweeps are cut at the multiples of half
-the smallest rule offset, so the positions of one sweep never act on each other.
+Only the user and the generated script modify the line; the script carries out the
+mode rules (script.ModeRulesAction). They act at the chip's position, one position
+after the other as the chip goes through them (mode_rules.py): each position is
+decided when the chip is there, on the line as it is then, never ahead of the chip.
+Between two instants the chip goes through the positions chip([t0, t1)), all with
+one mode; they are logged as continuous changes, each changing its positions as the
+chip goes through them. Sweeps are cut at the multiples of half the smallest rule
+offset.
 """
 
 from __future__ import annotations
@@ -20,13 +23,13 @@ from fractions import Fraction
 
 from generator import RulesGenerator, RunStats
 from guards import check_script_edit
-from intervals import INF, Interval, Num
-from line import GEN, MODE, USER, LineState, Op
+from intervals import EPS, INF, Num, Pos
+from line import GEN, USER, LineState, Op
 from modes import ModeTimeline
 from region import Region
 from resolve import Refused, apply_edit
 from script import ChipIn, EditAction, RerunAction, Script, TransitionCount
-from solver import lhs_region
+from mode_rules import ModeRules, Run
 
 
 class Chip:
@@ -72,10 +75,11 @@ class UserEdit:
 @dataclass
 class Change:
     time: Fraction
-    chip: Fraction
+    chip: Num  # for the mode rules: the first position of `at`
     source: str  # "user", "script", "mode"
     before: LineState
     after: LineState
+    at: Region | None = None  # for the mode rules: the positions, each changed when the chip is there
 
 
 @dataclass
@@ -207,19 +211,15 @@ class Simulation:
         if t1 <= t0 or not self.rules.mode_rules:
             return
         c0, c1 = self.chip.position(t0), self.chip.position(t1)
-        if c1 == c0:
-            swept = Region.point(c0)
-        else:
-            swept = Region.of(Interval(c0, c1, True, self.chip.first_time(c1) < t1))
         mode = self.modes.mode_at(c0)
-        for r in self.rules.mode_rules:
-            if r.mode != mode:
-                continue
-            met = swept & lhs_region(r.lhs, self.state.line.vals)
-            if not met:
-                continue
-            for it in r.rhs:
-                for o in it.options:  # the leftmost operand that can be chosen
-                    op = Op.put_no(o.kind, met) if o.negated else Op.put(o.kind, met, o.value or 100)
-                    if self._edit(t0, [op], MODE, "mode"):
-                        break
+        if not self.script.applies_mode_rules(c0, mode):
+            return
+        lo = Pos(c0)
+        hi = lo if c1 == c0 else (Pos(c1) if self.chip.first_time(c1) < t1 else Pos(c1) - EPS)
+        for ev in ModeRules(self.rules, mode).act(self.state, lo, hi):
+            t = max(t0, self.chip.first_time(ev.start.x if isinstance(ev, Run) else ev[0].x))
+            if isinstance(ev, Run):
+                self.log.changes.append(Change(t, ev.start, "mode", ev.before, ev.after, ev.at))
+                self.state = ev.after
+            else:
+                self.log.refused.append((t, "mode", ev[1]))

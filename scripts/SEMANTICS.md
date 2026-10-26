@@ -358,7 +358,9 @@ kinds.
 
 ## 7. Who modifies the line (`simulation.py`, `guards.py`)
 
-The line changes in only three ways:
+The line is modified only by the user and the generated script. The script makes
+two kinds of edits: its own edits, and the edits of the mode rules, which it carries
+out at the chip (`ModeRulesAction`).
 
 - **User edits** may change anything, anywhere, including at or left of the chip.
 - **Script edits** are refused if their *result*, after the rules have been
@@ -366,14 +368,38 @@ The line changes in only three ways:
   - **N1.** It would change the line or the claims on (−∞, chip], that is, the
     left side of the chip or the chip's position (chip + ε is on its right).
   - **N2.** It would remove or change a claim of the user.
-- **Mode rules** act at the chip as it moves.
-  - Between two instants the chip goes through the positions P, all with the
-    same mode. Each mode rule whose left side is met there makes an edit on P,
-    and that edit is resolved like any other.
-  - For an "or" in a mode rule, the first operand whose edit is accepted is used.
-  - Sweeps are cut at multiples of half the smallest rule distance (offset or
-    interval length), so the positions of one sweep never act on each other.
-  - `test_act_at_the_chip_only` checks that nothing changes beyond the chip.
+- **Mode rules** act at the chip as it moves, while the script carries them out
+  (every script carries them when there are mode rules). `mode_rules.py`.
+  - The chip's position is a single point x. When the chip is at x, the mode
+    rules of the mode at x are decided at x, in their order, on the line as it is
+    then. Nothing ahead of the chip is decided or written.
+  - For each item of a rule whose left side is met at x: the leftmost operand
+    that can be chosen. That is the first that already holds at x, or else the
+    first whose edit on {x} is accepted: resolved like any edit, and refused if
+    its result would break either of these:
+    - **M1.** It would change the line or the claims on (−∞, x), or the claims
+      outside {x}: a mode rule adds or removes elements only at the chip.
+    - **N2.** It would remove or change a claim of the user: edits from the user
+      always win.
+  - If no operand is accepted, the item does nothing at x.
+  - **How it is computed exactly.** From a position m, the same decision goes on
+    over [m, x) as x moves right (a run). The ends of the claims and the line are
+    then fixed, or move with x as x + d, with d a multiple of g (the gcd of the
+    rule distances) and |d| ≤ 2 · depth · reach. The decision at x can only
+    change where a moving end crosses a fixed one, at e − d + jε with |j| ≤ 2.
+    A run is checked there and at the first, middle and last positions between
+    them. A check that fails between them refuses the rest of the chip's
+    stretch, rather than guessing. A run is logged as one continuous change:
+    each of its positions changes when the chip is there.
+  - `ModeRulesTest` checks:
+    - nothing changes beyond the chip;
+    - the user's elements are kept;
+    - no element away from the chip is removed, and the positions that can take
+      D still get it;
+    - the operand changes inside one stretch when it has to;
+    - without the script, the mode rules do nothing.
+
+    `check_log` checks M1 and N2 on every change of the mode rules.
 
 `ScriptTest` checks that scripts are refused for:
 
@@ -404,6 +430,8 @@ returns a script made of events.
 - `EditAction`: an edit on exact intervals of the real line, resolved as in §6
   and guarded as in §7.
 - `RerunAction`: runs the generator again.
+- `ModeRulesAction`: while its trigger holds, the mode rules act at the chip
+  (§7). A run adds it, with `ChipIn(c, ∞)`, whenever there are mode rules.
 
 ### What a run optimizes
 

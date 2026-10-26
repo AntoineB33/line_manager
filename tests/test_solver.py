@@ -429,7 +429,7 @@ class EpsilonTest(unittest.TestCase):
                         for o2 in range(taken[0]):
                             c = [list(row) for row in before]
                             c[ii][o2] = c[ii][o2] | Region.point(m)
-                            self.assertFalse(sw._valid(c, m) and sw.complete(m, c, ii + 1) is not None,
+                            self.assertFalse(sw._valid(c, m) and sw.complete(m, c, ii + 1)[0] is not None,
                                              ([str(r) for r in rs.rules], str(m), it.text, o2))
                         before[ii][taken[0]] = before[ii][taken[0]] | Region.point(m)
             solved += 1

@@ -76,6 +76,7 @@ from solver import EMPTY, Conflict, Undetermined, _values, kinds_of, lhs_region,
 
 MAX_EVENTS = 3000
 MAX_CALLS = 3000
+PROBE_CALLS = 40
 
 
 @dataclass
@@ -110,12 +111,19 @@ def _ends(reg: Region, lo, hi) -> list:
 
 
 class Sweep:
-    def __init__(self, rs, prob, vals, fixed, forbid, kinds_in) -> None:
+    def __init__(self, rs, prob, vals, fixed, forbid, kinds_in, probe=None, shared=None) -> None:
         self.rs = rs
+        self.args = (rs, prob, vals, fixed, forbid, kinds_in)
         self.vals0 = dict(vals)
         self.fixed = fixed
         self.forbid0 = dict(forbid)
-        self.claims = {k: prob.pos.get(k, {}) for k in kinds_in}
+        self.claims = {k: dict(prob.pos.get(k, {})) for k in kinds_in}
+        # shared by the probes of one solve: their results, and the number of steps
+        self.shared = shared if shared is not None else {"probes": {}, "calls": 0, "limit": MAX_CALLS}
+        self.probe = probe
+        if probe is not None:  # what is present at P - ε, as claims (`_probe`)
+            for k, v in probe[1]:
+                self.claims[k][v] = self.claims[k].get(v, EMPTY) | Region.point(probe[0] - EPS)
         self.kin = [k for k in kinds_of(rs, prob) if k in kinds_in]
         self.items = [_Item(i, rs.element[i].lhs, rs.element[i].rhs[j].options[0].anchor, rs.element[i].rhs[j].options,
                             str(rs.element[i].rhs[j])) for i, j in rs.or_items]
@@ -143,7 +151,14 @@ class Sweep:
         self.none = [[EMPTY] * len(it.ops) for it in self.items]
         self.deltas = self._deltas()
         self.R = max((abs(d.x) for d in self.deltas), default=Fraction(0)) + 1
-        statics = list(self.vals0.values()) + [{0: f} for f in self.forbid0.values()] + list(self.claims.values())
+        self.reach = self.fwd + self.back + 1
+        if probe is not None:
+            P, _, forward = probe
+            self.inside = Region.of(Interval(P, INF, True, False))
+            self.edges_after = Region.of(Interval(P + self.fwd if forward else P, INF, not forward, False))
+        # the ends of the data (not what a probe puts at P - ε, which stands for choices)
+        claims = {k: prob.pos.get(k, {}) for k in kinds_in}
+        statics = list(self.vals0.values()) + [{0: f} for f in self.forbid0.values()] + list(claims.values())
         statics += [{0: p} for p, _ in self.fixed.values()] + [e for _, e in self.fixed.values()]
         self.static_regions = [reg for d in statics for reg in d.values() if reg]
         for it in self.items:
@@ -172,6 +187,8 @@ class Sweep:
             if o.anchor == "p":
                 return a
             e = a.left_edges()
+            if self.probe is not None:
+                e = e & self.edges_after
             return e if cut is None else e & cut
 
         for K in self.kin:
@@ -221,12 +238,12 @@ class Sweep:
         if P == -INF:
             raise Undetermined("an 'or' acts on an element unbounded on the left: with no first position, nothing decides "
                                "its choices")
-        self.memo, self.failed, self.dead, self.calls, self.stuck = {}, {}, [], 0, -INF
+        self.memo, self.failed, self.dead, self.stuck, self.first = {}, {}, [], -INF, P
         self._grid()
         if P is None:  # no "or" is met anywhere
             res = self.none if self._valid(self.none, INF) else None
         else:
-            res = self.complete(P, self.none, 0)
+            res, _ = self.complete(P, self.none, 0)
         if res is None:
             raise Conflict("no choice of the 'or' operands satisfies the rules")
         return self._finish(res)
@@ -268,13 +285,15 @@ class Sweep:
     def complete(self, P, ch, start=0, U=None):
         """The choices of the definition from P on, given `ch` (the positions before P, and
         the "or"s before `start` at P): each position takes the leftmost operand that
-        still lets all the other positions be placed. None if no completion exists.
+        still lets all the other positions be placed. Returns (choices, None), or (None,
+        q) if no completion exists, where q is the first position whose choice could be
+        why: changing a choice before q cannot help.
 
         The greedy sweep is tried first: if it never fails, it is the answer. Otherwise
         the positions from P are decided one block at a time (`_unit`), each operand
         being kept only if the rest can be completed (recursively, greedy first)."""
-        self.calls += 1
-        if self.calls > MAX_CALLS:
+        self.shared["calls"] += 1
+        if self.shared["calls"] > self.shared["limit"]:
             raise Undetermined("deciding the choices needs to look ahead further than this solver does "
                                f"({MAX_CALLS} attempts)")
         state = self._state(ch, P)
@@ -286,22 +305,27 @@ class Sweep:
         fixed_part = (ks, fixed_part)
         for failed in self.failed.get((P, start, fixed_part), ()):
             if all(have.issubset(more.get(label, IntervalSet())) for label, have in failed.items()):
-                return None  # with no less placed and forbidden, it fails too
+                return None, P - self.reach  # with no less placed and forbidden, it fails too
         # the greedy sweep only from a position with nothing decided after it, and not
         # again before the position where it last failed (it would fail there again)
         r = ("dead", None, None)
         if P > self.stuck and not any(reg.sup() > P for row in ch for reg in row):
             r = self._greedy(P, ch, start)
         if r[0] == "ok":
-            res = r[1]
+            res = r[1], None
         else:
             if r[1] is not None:
                 self.stuck = r[1]
                 if r[2] is not None and r[2] >= 0:
                     self._learn(r[1], r[2])
-            res = self._careful(P, ch, start, self._unit(P, ks) if U is None else U)
+            # nothing before P could make it possible: fail now (the probe of the start
+            # would be this very problem)
+            if start == 0 and U is None and P > self.first and self._probe(ch, P) is False:
+                res = None, P - self.reach
+            else:
+                res = self._careful(P, ch, start, self._unit(P, ks) if U is None else U)
         self.memo[key] = res
-        if res is None:
+        if res[0] is None:
             self.failed.setdefault((P, start, fixed_part), []).append(more)
         return res
 
@@ -322,11 +346,17 @@ class Sweep:
         return tuple(fixed), more
 
     def _careful(self, P, ch, start, U):
-        """Decide the block [P, U] that starts at P, operand by operand, in order."""
+        """Decide the block [P, U] that starts at P, operand by operand, in order.
+
+        Jumping back: a failure found at d comes from choices that act on d, so at
+        positions from d - reach on (reach = how far a choice acts, back and forward).
+        If no completion exists for an operand and its first such position is after P,
+        the choice at P is not why: the other operands would fail the same way, and the
+        failure goes back further at once."""
         try:
             vals = self.closure(ch, P)
         except Conflict:
-            return None
+            return None, P - self.reach
         for ii in range(start, len(self.items)):
             it = self.items[ii]
             if not self._active(it, vals, P):
@@ -334,18 +364,27 @@ class Sweep:
             if it.anchor == "l" and U != P:
                 raise Undetermined(f"the sweep could not place exactly where a choice changes after {P}")
             where = Region.of(Interval(P, U))
+            q = None
             for oi in range(len(it.ops)):
                 c = _with(ch, ii, oi, where)
-                if not self._valid(c, U) or self._doomed(c, U):
-                    continue
-                r = self.complete(P, c, ii + 1, U)
-                if r is not None:
-                    return r
-            return None
+                if not self._valid(c, U):
+                    qo = P - self.reach
+                else:
+                    d = self._doomed(c, U)
+                    if d is not None:
+                        qo = d - self.reach
+                    else:
+                        r, qo = self.complete(P, c, ii + 1, U)
+                        if r is not None:
+                            return r, None
+                if qo > P:
+                    return None, qo
+                q = qo if q is None or qo < q else q
+            return None, q
         # every "or" met on the block is decided: the next block
         nxt = self._next_active(ch, U) if not self._runs_at(P, ch) else U + EPS
         if nxt is None:
-            return ch if self._valid(ch, INF) else None
+            return (ch, None) if self._valid(ch, INF) else (None, -INF)
         return self.complete(nxt, ch, 0)
 
     def _grid(self) -> None:
@@ -412,22 +451,50 @@ class Sweep:
         if (d, ii) not in self.dead:
             self.dead.append((d, ii))
 
-    def _doomed(self, ch, h) -> bool:
+    def _probe(self, ch, P):
+        """False if no completion exists from P whatever came before P, given only what is
+        present at P - ε: the same problem with the "or"s only met from P on, the past
+        reduced to what is present at P - ε (as claims), and no consequence of a left
+        edge before P (nor up to P + fwd for kinds the past placed after P, whose left
+        edges there could differ). That problem has fewer constraints than the real one
+        (a choice only adds consequences, and being present at P - ε is the same), so
+        if it has no completion, neither has the real one. Its result depends only on
+        its key, and is shared."""
+        vals = self.closure(ch, P - EPS, check=False)
+        atoms = tuple(sorted((k, v) for k in self.kin for v, reg in vals[k].items() if reg.contains(P - EPS)))
+        after = Region.of(Interval(P, P + self.fwd))
+        static = lambda k: union(list(self.claims[k].values()) + [self.fixed.get(k, (EMPTY, {}))[0]]
+                                 + list(self.fixed.get(k, (EMPTY, {}))[1].values()))
+        forward = any((union(vals[k].values()) & after) - static(k) for k in self.kin)
+        key = (P, atoms, forward)
+        probes = self.shared["probes"]
+        if key not in probes:
+            probes[key] = None  # being computed: no answer meanwhile
+            # a probe helps only when it fails, which takes few steps (it uses the probes
+            # after it): a small budget of its own, beyond which it says nothing
+            sub = Sweep(*self.args, probe=key, shared={"probes": probes, "calls": 0, "limit": PROBE_CALLS})
+            try:
+                sub.solve()
+                probes[key] = True
+            except Conflict:
+                probes[key] = False
+            except Undetermined:
+                probes[key] = None
+        return probes[key]
+
+    def _doomed(self, ch, h):
         """A position where nothing could be chosen before, still with nothing whatever
         is decided after h (the choices in ch are up to h): no completion exists."""
         for d, ii in self.dead:
             if d > h and self._blocks(ch, d, ii, h):
-                return True
-        return False
+                return d
+        return None
 
     def _blocks(self, ch, d, ii, h) -> bool:
         it = self.items[ii]
         vals = self.closure(ch, h, check=False)
-        a = lhs_region(it.lhs, vals)
-        if it.anchor == "p":
-            if not a.contains(d):  # met at d whatever comes next (a left side only grows)
-                return False
-        elif set(it.lhs.kinds()) & set(self.kin) or not (a.contains(d) and not a.contains(d - EPS)):
+        # met at d whatever comes next (a left side only grows; a left edge only if fixed)
+        if not self._met(it, vals).contains(d) or (it.anchor == "l" and set(it.lhs.kinds()) & set(self.kin)):
             return False
         return not any(self._valid(_with(ch, ii, oi, Region.point(d)), h) for oi in range(len(it.ops)))
 
@@ -436,9 +503,7 @@ class Sweep:
         vals = self.closure(ch, INF, check=False)
         best = None
         for it in self.items:
-            a = lhs_region(it.lhs, vals)
-            if it.anchor == "l":
-                a = a.left_edges()
+            a = self._met(it, vals)
             if after is not None:
                 a = a & _after(after)
             if a:
@@ -447,9 +512,18 @@ class Sweep:
                     best = m
         return best
 
-    def _active(self, it, vals, m) -> bool:
+    def _met(self, it, vals) -> Region:
+        """Where the "or" must choose: where its left side is met, or (relative to l) the
+        left edges of that."""
         a = lhs_region(it.lhs, vals)
-        return a.contains(m) and (it.anchor == "p" or not a.contains(m - EPS))
+        if it.anchor == "l":
+            a = a.left_edges()
+            if self.probe is not None:
+                a = a & self.edges_after
+        return a if self.probe is None else a & self.inside
+
+    def _active(self, it, vals, m) -> bool:
+        return self._met(it, vals).contains(m)
 
     def _decide(self, m, ch, start=0):
         """The "or"s met at m (from `start`) take, in order, the leftmost operand that does
@@ -494,9 +568,9 @@ class Sweep:
         end = cap + EPS
         running = {ii for ii, _ in runs}
         for ii, it in enumerate(self.items):
-            a = lhs_region(it.lhs, vals)
+            a = self._met(it, vals)
             if it.anchor == "l":
-                change = (a.left_edges() & _after(P)).inf()
+                change = (a & _after(P)).inf()
             elif ii in running:
                 change = (_after(P) - a).inf()
             else:

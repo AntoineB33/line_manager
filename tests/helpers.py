@@ -88,11 +88,19 @@ def holds(o, line, pres) -> Region:
 
 def check_log(log, rs, modes=None) -> int:
     """Every state is consistent and is the line of its claims; every change made by a
-    script respects N1 and N2. Returns how many script changes were checked."""
+    script respects N1 and N2, every change made by the mode rules M1 and N2. Returns
+    how many script changes were checked."""
     n = 0
     for ch in log.changes:
         assert not rules_hold(rs, ch.after.line, ch.after.claims), rules_hold(rs, ch.after.line, ch.after.claims)
         assert ch.after.line == solve(rs, ch.after.claims.problem())
+        if ch.source == "mode":
+            left = left_side(ch.chip, closed=False)
+            assert ch.before.line.same_on(ch.after.line, left), "M1 line"
+            assert same_dict(claims_on(ch.before.claims, left), claims_on(ch.after.claims, left)), "M1 claims"
+            away = ch.at.complement()
+            assert same_dict(claims_on(ch.before.claims, away), claims_on(ch.after.claims, away)), "M1 away from the chip"
+            assert same_dict(user_claims(ch.before.claims), user_claims(ch.after.claims)), "N2 (mode rules)"
         if ch.source != "script":
             continue
         n += 1

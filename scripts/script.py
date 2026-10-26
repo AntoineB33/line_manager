@@ -12,6 +12,9 @@ Actions
   of the real line, not a grid), resolved by the fixed rules of resolve.py and applied
   only if it respects N1 and N2 (guards.py).
 - RerunAction(): runs the rules generator again; its new script replaces this one.
+- ModeRulesAction(): while its trigger holds, the mode rules act at the chip's
+  position (simulation.py), checked by M1 and N2 (guards.py). The line is modified
+  only by the user and the generated script, so the mode rules act through it.
 """
 
 from __future__ import annotations
@@ -60,6 +63,12 @@ class RerunAction:
 
 
 @dataclass(frozen=True)
+class ModeRulesAction:
+    def __str__(self) -> str:
+        return "apply the mode rules at the chip"
+
+
+@dataclass(frozen=True)
 class Event:
     trigger: ChipIn | TransitionCount
     actions: tuple
@@ -77,3 +86,7 @@ class Script:
 
     def rerun_triggers(self) -> list[ChipIn | TransitionCount]:
         return [e.trigger for e in self.events if any(isinstance(a, RerunAction) for a in e.actions)]
+
+    def applies_mode_rules(self, chip: Fraction, mode: str) -> bool:
+        return any(isinstance(a, ModeRulesAction) and isinstance(e.trigger, ChipIn) and e.trigger.holds(chip, mode)
+                   for e in self.events for a in e.actions)

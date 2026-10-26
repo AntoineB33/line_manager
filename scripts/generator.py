@@ -15,7 +15,8 @@ returns a script. It plans the window W = (c, c + H] (H: the problem's horizon).
    The best valid one minimises the expected error of the presence ratios, the
    expectation taken over the probability finder's scenarios (or uniform modes); the
    earliest wins ties, so the no-op wins when nothing is better.
-3. The script applies the best edit at once and schedules the next run.
+3. The script applies the best edit at once and schedules the next run. When there
+   are mode rules, it also carries them out at the chip (script.ModeRulesAction).
 
 The hyperparameter q in (0, 1):
     budget      B(q) = 2 + floor(36 q)           candidates evaluated (non-decreasing)
@@ -37,7 +38,7 @@ from probability import ProbabilityFinder, Scenario
 from region import Region
 from resolve import Refused, apply_edit
 from rules import RuleSet
-from script import ChipIn, EditAction, Event, RerunAction, Script, TransitionCount
+from script import ChipIn, EditAction, Event, ModeRulesAction, RerunAction, Script, TransitionCount
 from solver import lhs_region
 
 PREDICTIONS = ("scenario", "uniform", "none")
@@ -116,6 +117,8 @@ class RulesGenerator:
                 best_ops, best_key, best_label = ops, key, label
         stats.chosen, stats.key = best_label, best_key
         events: list[Event] = []
+        if self.rules.mode_rules:
+            events.append(Event(ChipIn(c, INF), (ModeRulesAction(),)))
         if best_ops:
             events.append(Event(ChipIn(c, c + H), (EditAction(tuple(best_ops)),)))
         if not self._futile(state, best_ops):

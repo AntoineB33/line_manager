@@ -3,17 +3,14 @@
 Triggers
 - ChipIn(lo, hi, mode): true while the chip is in [lo, hi) and (if mode is not
   None) the mode at the chip is `mode`. Its actions fire at each instant it
-  becomes true (at installation if it is already true); a Follow action is active
-  while it is true.
+  becomes true (at installation if it is already true).
 - TransitionCount(k): fires once, when the k-th mode transition after the
   installation of the script is revealed.
 
 Actions
-- SetAction(items): an atomic edit, (type, region, value) items, value 0 meaning
-  "remove the generated element". It is applied entirely or not at all.
-- FollowAction(type, value, offsets): a continuous edit. While active, at every
-  chip position c it writes `value` on c + offsets (offsets > 0, so always strictly
-  right of the chip).
+- EditAction(ops): an edit of the line on exact intervals (continuous: any interval
+  of the real line, not a grid), resolved by the fixed rules of resolve.py and applied
+  only if it respects N1 and N2 (guards.py).
 - RerunAction(): runs the rules generator again; its new script replaces this one.
 """
 
@@ -22,7 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from fractions import Fraction
 
-from intervals import INF, IntervalSet, Num, _fmt
+from intervals import INF, Num, _fmt
+from line import Op
 
 
 @dataclass(frozen=True)
@@ -48,30 +46,11 @@ class TransitionCount:
 
 
 @dataclass(frozen=True)
-class SetAction:
-    items: tuple[tuple[str, IntervalSet, Fraction], ...]
+class EditAction:
+    ops: tuple[Op, ...]
 
     def __str__(self) -> str:
-        parts = [f"set {t} on {x} to {v}%" if v else f"remove generated {t} on {x}" for t, x, v in self.items]
-        return ", ".join(parts)
-
-
-@dataclass(frozen=True)
-class FollowAction:
-    etype: str
-    value: Fraction
-    offsets: IntervalSet
-
-    def __post_init__(self) -> None:
-        if not self.offsets or not self.offsets.is_bounded():
-            raise ValueError("follow offsets must be a non-empty bounded set")
-        lo = self.offsets.intervals[0]
-        if lo.lo < 0 or (lo.lo == 0 and lo.lo_closed):
-            raise ValueError("follow offsets must be strictly positive")
-
-    def __str__(self) -> str:
-        what = f"{self.etype} at {self.value}%" if self.value else f"no generated {self.etype}"
-        return f"keep {what} on chip + {self.offsets}"
+        return ", ".join(map(str, self.ops))
 
 
 @dataclass(frozen=True)
@@ -86,8 +65,7 @@ class Event:
     actions: tuple
 
     def __str__(self) -> str:
-        verb = "while" if any(isinstance(a, FollowAction) for a in self.actions) else "if"
-        return f"{verb} {self.trigger}, then " + "; ".join(map(str, self.actions)) + "."
+        return f"if {self.trigger}, then " + "; ".join(map(str, self.actions)) + "."
 
 
 @dataclass

@@ -1,5 +1,6 @@
-"""Shared test helpers: import path, random objects, brute-force oracles, log checker."""
+"""Shared test helpers: import path, random objects, independent checks."""
 
+import itertools
 import os
 import random
 import sys
@@ -7,11 +8,13 @@ from fractions import Fraction as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-from guards import possible_violations  # noqa: E402
-from intervals import Interval, IntervalSet  # noqa: E402
-from line import USER  # noqa: E402
+from guards import claims_on, left_side, same_dict, user_claims  # noqa: E402
+from intervals import Interval, IntervalSet, Pos  # noqa: E402
+from region import Region  # noqa: E402
+from solver import EMPTY, lhs_region, solve, union  # noqa: E402
 
 GRID = [F(i, 16) for i in range(-16 * 8, 16 * 8 + 1)]  # [-8, 8] by 1/16
+POSITIONS = [Pos(x, k) for x in GRID for k in (-1, 0, 1)]  # and the positions next to them
 
 
 def rand_interval(rng: random.Random, lo=-4, hi=4) -> Interval:
@@ -28,41 +31,73 @@ def rand_set(rng: random.Random, n=3, lo=-4, hi=4) -> IntervalSet:
     return IntervalSet(rand_interval(rng, lo, hi) for _ in range(rng.randint(0, n)))
 
 
-def check_state(state) -> None:
-    """Uniqueness of a type at a position, percentages in (0, 100]."""
-    for t in state.types():
-        ps = state.pieces(t)
-        for i, p in enumerate(ps):
-            assert 0 < p.value <= 100
-            for q in ps[i + 1:]:
-                assert not (IntervalSet.of(p.interval) & IntervalSet.of(q.interval)), (t, p, q)
+def rules_hold(rs, line, claims=None) -> list[str]:
+    """Independent check, with region algebra only: every element rule is applied where
+    its left side is met, one percentage per kind and position, the claims hold.
+    Returns the failures."""
+    bad = []
+    kinds = set(line.kinds()) | set(rs.order)
+    pres = {k: line.presence(k) for k in kinds}
+    for k in line.kinds():
+        vs = list(line.vals[k].values())
+        for a, b in itertools.combinations(vs, 2):
+            if a & b:
+                bad.append(f"{k} has two percentages on {a & b}")
+    for r in rs.element:
+        anchors = lhs_region(r.lhs, line.vals)
+        if not anchors:
+            continue
+        edges = anchors.left_edges()
+        for it in r.rhs:
+            if it.is_or:
+                ok = union(holds(o, line, pres) for o in it.options)
+                base = anchors if it.options[0].anchor == "p" else edges
+                if not base.issubset(ok):
+                    bad.append(f"{r}: no operand on {base - ok}")
+                continue
+            o = it.options[0]
+            base = anchors if o.anchor == "p" else edges
+            tgt = base.shift(o.rel) if o.is_point else base.dilate(o.where)
+            if o.negated:
+                if tgt & pres.get(o.kind, EMPTY):
+                    bad.append(f"{r}: {o.kind} present on {tgt & pres[o.kind]}")
+            elif o.value is not None:
+                if not tgt.issubset(line.vals.get(o.kind, {}).get(o.value, EMPTY)):
+                    bad.append(f"{r}: {o.kind} not {o.value}%")
+            elif not tgt.issubset(pres.get(o.kind, EMPTY)):
+                bad.append(f"{r}: {o.kind} missing on {tgt - pres.get(o.kind, EMPTY)}")
+    if claims is not None:
+        for k in claims.kinds():
+            for v, reg in claims.by_value(k).items():
+                if not reg.issubset(line.vals.get(k, {}).get(v, EMPTY)):
+                    bad.append(f"claim {k} {v}% not on the line")
+            if claims.negative(k) & pres.get(k, EMPTY):
+                bad.append(f"claim no {k} violated")
+    return bad
 
 
-def user_pieces(state):
-    return {t: tuple(p for p in state.pieces(t) if p.owner == USER) for t in state.types()}
+def holds(o, line, pres) -> Region:
+    """The anchors a where the literal o holds: a + where inside the kind (at its
+    percentage), or outside it for "no"."""
+    have = line.vals.get(o.kind, {}).get(o.value, EMPTY) if o.value is not None else pres.get(o.kind, EMPTY)
+    back = -o.where
+    if o.negated:
+        return have.dilate(back).complement()
+    return have.complement().dilate(back).complement()
 
 
-def check_log(log, rules, modes) -> int:
-    """Every change made by a script respects N1, N2, N3. Returns how many were checked."""
+def check_log(log, rs, modes=None) -> int:
+    """Every state is consistent and is the line of its claims; every change made by a
+    script respects N1 and N2. Returns how many script changes were checked."""
     n = 0
     for ch in log.changes:
-        check_state(ch.after)
-        if ch.source == "user":
+        assert not rules_hold(rs, ch.after.line, ch.after.claims), rules_hold(rs, ch.after.line, ch.after.claims)
+        assert ch.after.line == solve(rs, ch.after.claims.problem())
+        if ch.source != "script":
             continue
         n += 1
-        frozen = IntervalSet.up_to(ch.chip)
-        for t in set(ch.before.types()) | set(ch.after.types()):
-            assert ch.before.restricted(t, frozen) == ch.after.restricted(t, frozen), ("N1", ch.source, t)
-        assert {k: v for k, v in user_pieces(ch.before).items() if v} == {k: v for k, v in user_pieces(ch.after).items() if v}, "N2"
-        if ch.source == "follow":
-            first = ch.offsets.intervals[0]
-            assert first.lo > 0 or (first.lo == 0 and not first.lo_closed)
-            assert ch.written.issubset(ch.swept + ch.offsets)
-            assert ch.swept.inf() >= ch.chip
-        else:
-            assert ch.written.issubset(IntervalSet.after(ch.chip))
-        known = modes.known(ch.chip)
-        wb = possible_violations(ch.before, rules, known)
-        wa = possible_violations(ch.after, rules, known)
-        assert all(a.issubset(b) for a, b in zip(wa, wb)), "N3"
+        left = left_side(ch.chip)
+        assert ch.before.line.same_on(ch.after.line, left), "N1 line"
+        assert same_dict(claims_on(ch.before.claims, left), claims_on(ch.after.claims, left)), "N1 claims"
+        assert same_dict(user_claims(ch.before.claims), user_claims(ch.after.claims)), "N2"
     return n

@@ -1,85 +1,60 @@
-"""What a generated script is allowed to do, checked exactly.
+"""What a generated script may never do, checked on the result of each of its edits:
 
-N1  it never changes (-inf, chip]: the left side of the chip and the chip's position;
-N2  it never removes or changes an element added by the user;
-N3  it never adds a violation of an element rule, whatever the unknown modes turn out to be.
+N1  change the left side of the chip or what is at the chip's position: the line and
+    the claims on (-inf, chip] are unchanged;
+N2  remove (or change) an element added by the user: the user's claims are unchanged.
 
-For N3, W_r(S) is the set of positions where rule r is violated in state S if
-every position whose mode is not known yet may have any mode ("possible
-violations"). Violations at a position x only depend on the mode at x, so
-W_r(S') ⊆ W_r(S) for every rule r  <=>  for every future of the modes, every
-violation of S' is a violation of S.
+The element rules hold in every state by construction (resolve.py), so an edit can
+never leave a rule unapplied.
 """
 
 from __future__ import annotations
 
 from fractions import Fraction
 
-from intervals import EMPTY, IntervalSet
-from line import GEN, USER, LineState, changed_region
-from modes import ModeKnowledge
-from rules import Rule
+from intervals import INF, Interval
+from line import USER, Claims, LineState
+from region import Region
 
 
-def mode_region(rule: Rule, known: ModeKnowledge, certain: bool = False) -> IntervalSet:
-    if rule.lhs_mode is None:
-        return IntervalSet.universe()
-    return known.region(rule.lhs_mode) if certain else known.possible(rule.lhs_mode)
+def left_side(chip) -> Region:
+    return Region.of(Interval(-INF, Fraction(chip), False, True))
 
 
-def possible_violations(state: LineState, rules: list[Rule], known: ModeKnowledge) -> list[IntervalSet]:
-    return [r.violations(state, mode_region(r, known)) for r in rules]
-
-
-def adds_violation(before: LineState, after: LineState, rules: list[Rule], known: ModeKnowledge) -> bool:
-    wb = possible_violations(before, rules, known)
-    wa = possible_violations(after, rules, known)
-    return any(not a.issubset(b) for a, b in zip(wa, wb))
-
-
-def free_types(rules: list[Rule]) -> set[str]:
-    """Types written by a continuous edit must not be in any left side."""
-    lhs = set()
-    for r in rules:
-        lhs |= r.lhs_types
-    return {it.etype for r in rules for it in r.rhs} - lhs
-
-
-def forbidden_zone(state: LineState, rules: list[Rule], known: ModeKnowledge, etype: str, value: Fraction) -> IntervalSet:
-    """Positions where writing `value` for a type that is in no left side would add a
-    possible violation: ⋃ over items on that type that do not allow the value of
-    (positions where the left side may be met) ⊕ offsets."""
-    out = EMPTY
-    for r in rules:
-        items = [it for it in r.rhs if it.etype == etype and not it.allowed.ok(value)]
-        if items:
-            met = r.met(state, mode_region(r, known))
-            for it in items:
-                out = out | (met + it.rel)
+def claims_on(c: Claims, region: Region) -> dict:
+    out = {}
+    for k, d in c.pos.items():
+        for key, r in d.items():
+            if r & region:
+                out[("pos", k, key)] = r & region
+    for k, d in c.neg.items():
+        for key, r in d.items():
+            if r & region:
+                out[("neg", k, key)] = r & region
     return out
 
 
-def check_edit(before: LineState, after: LineState, chip: Fraction, rules: list[Rule], known: ModeKnowledge) -> str | None:
-    """None if going from `before` to `after` respects N1, N2 and N3, else the reason."""
-    frozen = IntervalSet.up_to(chip)
-    for t in set(before.types()) | set(after.types()):
-        ch = changed_region(before, after, t)
-        if ch & frozen:
-            return f"N1: would change {t} on {ch & frozen}, at or left of the chip {chip}"
-        if ch & before.owned(t, USER):
-            return f"N2: would change the user's {t} on {ch & before.owned(t, USER)}"
-        if after.owned(t, USER) != before.owned(t, USER):
-            return f"N2: would add a user-owned {t}"
-    if adds_violation(before, after, rules, known):
-        return "N3: would add a violation of an element rule"
+def user_claims(c: Claims) -> dict:
+    out = {}
+    for k, d in c.pos.items():
+        for (v, o), r in d.items():
+            if o == USER and r:
+                out[("pos", k, v)] = r
+    for k, d in c.neg.items():
+        if d.get(USER):
+            out[("neg", k)] = d[USER]
+    return out
+
+
+def same_dict(a: dict, b: dict) -> bool:
+    return set(a) == set(b) and all(a[k] == b[k] for k in a)
+
+
+def check_script_edit(before: LineState, after: LineState, chip) -> str | None:
+    """None if the edit respects N1 and N2, else the reason."""
+    left = left_side(chip)
+    if not before.line.same_on(after.line, left) or not same_dict(claims_on(before.claims, left), claims_on(after.claims, left)):
+        return f"N1: would change the line at or left of the chip ({chip})"
+    if not same_dict(user_claims(before.claims), user_claims(after.claims)):
+        return "N2: would remove or change an element added by the user"
     return None
-
-
-def apply_items(state: LineState, items) -> LineState:
-    out = state.copy()
-    for t, x, v in items:
-        if v:
-            out.assign(t, x, Fraction(v), GEN)
-        else:
-            out.remove_owned(t, x, GEN)
-    return out

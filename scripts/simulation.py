@@ -1,17 +1,16 @@
 """The world: the chip moving, modes being revealed, the user editing, scripts running.
 
 Time t >= 0 is exact. The chip's position is a continuous, non-decreasing,
-piecewise-linear function of time. Everything happens at exact instants, in
-this order at one instant: user edits, then revealed mode transitions, then a
-run of the generator if the user edited (the state changed under the script),
-then the script's triggers in script order (a rerun installs the new script,
-whose triggers are evaluated at once).
+piecewise-linear function of time. Everything happens at exact instants, in this
+order at one instant: user edits, then revealed mode transitions, then a run of the
+generator if the user edited, then the script's triggers in script order (a rerun
+installs the new script, whose triggers are evaluated at once).
 
-Between two instants nothing changes but the chip's position, so continuous
-edits are applied exactly for that period: the chip goes through the positions
-P = chip([t0, t1)) and a continuous edit with offsets J writes on P ⊕ J, minus
-the positions that would break N2 or N3 (the user's elements of that type and
-the forbidden zone of guards.py, both constant during the period).
+Mode rules act at the chip's position: between two instants the chip goes through
+the positions P = chip([t0, t1)), all with one mode; each mode rule whose mode and
+left side are met there makes an edit on those positions (owner MODE), resolved like
+any edit (the "or" operands tried in order). Sweeps are cut at the multiples of half
+the smallest rule offset, so the positions of one sweep never act on each other.
 """
 
 from __future__ import annotations
@@ -20,11 +19,14 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 
 from generator import RulesGenerator, RunStats
-from guards import apply_items, check_edit, forbidden_zone
-from intervals import INF, Interval, IntervalSet, Num
-from line import GEN, USER, LineState
+from guards import check_script_edit
+from intervals import INF, Interval, Num
+from line import GEN, MODE, USER, LineState, Op
 from modes import ModeTimeline
-from script import ChipIn, FollowAction, RerunAction, Script, SetAction, TransitionCount
+from region import Region
+from resolve import Refused, apply_edit
+from script import ChipIn, EditAction, RerunAction, Script, TransitionCount
+from solver import lhs_region
 
 
 class Chip:
@@ -64,54 +66,50 @@ class Chip:
 @dataclass
 class UserEdit:
     time: Fraction
-    etype: str
-    region: IntervalSet
-    value: Fraction  # 0 removes the type (whoever added it)
+    ops: list[Op]
 
 
 @dataclass
 class Change:
-    """One change of the line, for the checks."""
     time: Fraction
-    chip: Fraction  # chip at the instant (for a continuous edit: at the start of its period)
-    source: str  # "user", "set", "follow"
+    chip: Fraction
+    source: str  # "user", "script", "mode"
     before: LineState
     after: LineState
-    written: IntervalSet = field(default_factory=IntervalSet)
-    swept: IntervalSet = field(default_factory=IntervalSet)  # follow: chip positions of the period
-    offsets: IntervalSet = field(default_factory=IntervalSet)
 
 
 @dataclass
 class Log:
     changes: list[Change] = field(default_factory=list)
-    refused: list[tuple[Fraction, str]] = field(default_factory=list)
-    runs: list[tuple[Fraction, Fraction, str, Script, RunStats]] = field(default_factory=list)  # (time, chip, why, script, stats)
+    refused: list[tuple[Fraction, str, str]] = field(default_factory=list)  # (time, source, reason)
+    runs: list[tuple[Fraction, Fraction, str, Script, RunStats]] = field(default_factory=list)
 
 
 class Simulation:
     def __init__(self, state: LineState, generator: RulesGenerator, chip: Chip, modes: ModeTimeline, user_edits: list[UserEdit] = ()) -> None:
         if modes.start != chip.position(Fraction(0)):
             raise ValueError("modes start where the chip starts")
-        self.state = state.copy()
+        self.state = state
         self.gen = generator
+        self.rules = generator.rules
         self.chip = chip
         self.modes = modes
         self.user_edits = sorted(user_edits, key=lambda e: e.time)
         self.log = Log()
         self.script = Script()
-        self.revealed = 0  # number of transitions revealed
+        self.revealed = 0
         self._since_install = 0
         self._was_true: list[bool] = []
         self._fired: list[bool] = []
+        h = self.rules.smallest_offset
+        self.grid = h / 2 if h else None
 
-    # --------------------------------------------------------------- helpers
     def known(self, t: Fraction):
         return self.modes.known(self.chip.position(t))
 
     def _install(self, t: Fraction, why: str) -> None:
         c = self.chip.position(t)
-        script, stats = self.gen.run(self.state.copy(), c, self.known(t))
+        script, stats = self.gen.run(self.state, c, self.known(t))
         self.script = script
         self._since_install = 0
         self._was_true = [False] * len(script.events)
@@ -125,17 +123,22 @@ class Simulation:
             return trig.holds(c, self.modes.mode_at(c))
         return self._since_install >= trig.k
 
-    def _apply_set(self, t: Fraction, action: SetAction) -> None:
-        c = self.chip.position(t)
-        after = apply_items(self.state, action.items)
-        why = check_edit(self.state, after, c, self.gen.rules, self.known(t))
-        if why:
-            self.log.refused.append((t, why))
-            return
-        self.log.changes.append(Change(t, c, "set", self.state, after, _union(x for _, x, _ in action.items)))
+    def _edit(self, t: Fraction, ops: list[Op], owner: str, source: str) -> bool:
+        before = self.state
+        try:
+            after = apply_edit(self.rules, before, ops, owner)
+        except Refused as e:
+            self.log.refused.append((t, source, str(e)))
+            return False
+        if source == "script":
+            why = check_script_edit(before, after, self.chip.position(t))
+            if why:
+                self.log.refused.append((t, source, why))
+                return False
+        self.log.changes.append(Change(t, self.chip.position(t), source, before, after))
         self.state = after
+        return True
 
-    # ----------------------------------------------------------------- main
     def run(self, end_time) -> Log:
         end = Fraction(end_time)
         t = Fraction(0)
@@ -158,16 +161,16 @@ class Simulation:
                 for x in (ev.trigger.lo, ev.trigger.hi):
                     if x != INF and x > c:
                         cands.append(self.chip.first_time(x))
-        return min(cands, default=INF)
+        if self.grid and self.rules.mode_rules:
+            cands.append(self.chip.first_time((c // self.grid + 1) * self.grid))
+        later = [x for x in cands if x > t]
+        return min(later, default=INF)
 
     def _instant(self, t: Fraction, first: bool = False) -> None:
         edited = False
         for e in self.user_edits:
             if e.time == t:
-                before, self.state = self.state, self.state.copy()  # states in the log are never mutated
-                self.state.assign(e.etype, e.region, e.value, USER)
-                self.log.changes.append(Change(t, self.chip.position(t), "user", before, self.state, e.region))
-                edited = True
+                edited |= self._edit(t, e.ops, USER, "user")
         c = self.chip.position(t)
         revealed = sum(1 for p, _ in self.modes.transitions if p <= c)
         self._since_install += revealed - self.revealed
@@ -176,7 +179,7 @@ class Simulation:
             self._install(t, "start")
         elif edited:
             self._install(t, "user edit")
-        for _ in range(3):  # a rerun installs a script whose own reruns cannot fire at once
+        for _ in range(3):
             rerun = False
             for i, ev in enumerate(self.script.events):
                 now = self._cond(i, t)
@@ -188,8 +191,8 @@ class Simulation:
                     continue
                 self._fired[i] = True
                 for a in ev.actions:
-                    if isinstance(a, SetAction):
-                        self._apply_set(t, a)
+                    if isinstance(a, EditAction):
+                        self._edit(t, list(a.ops), GEN, "script")
                     elif isinstance(a, RerunAction):
                         rerun = True
                 if rerun:
@@ -200,40 +203,23 @@ class Simulation:
         raise AssertionError("reruns did not settle")
 
     def _sweep(self, t0: Fraction, t1: Fraction) -> None:
-        """Apply the active continuous edits for the chip positions of [t0, t1)."""
-        if t1 <= t0:
+        """The mode rules act on the chip positions of [t0, t1)."""
+        if t1 <= t0 or not self.rules.mode_rules:
             return
         c0, c1 = self.chip.position(t0), self.chip.position(t1)
         if c1 == c0:
-            swept = IntervalSet.of(Interval.point(c0))
+            swept = Region.point(c0)
         else:
-            swept = IntervalSet.of(Interval(c0, c1, True, self.chip.first_time(c1) < t1))
-        known = self.known(t0)
-        for i, ev in enumerate(self.script.events):
-            if not self._was_true[i]:
+            swept = Region.of(Interval(c0, c1, True, self.chip.first_time(c1) < t1))
+        mode = self.modes.mode_at(c0)
+        for r in self.rules.mode_rules:
+            if r.mode != mode:
                 continue
-            for a in ev.actions:
-                if not isinstance(a, FollowAction):
-                    continue
-                if any(a.etype in r.lhs_types for r in self.gen.rules):
-                    # its forbidden zone would not be exact: refused
-                    self.log.refused.append((t0, f"continuous edit of {a.etype}, which is in a left side"))
-                    continue
-                target = swept + a.offsets
-                allowed = (target - self.state.owned(a.etype, USER)
-                           - forbidden_zone(self.state, self.gen.rules, known, a.etype, a.value))
-                after = self.state.copy()
-                if a.value:
-                    after.assign(a.etype, allowed, a.value, GEN)
-                else:
-                    after.remove_owned(a.etype, allowed, GEN)
-                if after != self.state:
-                    self.log.changes.append(Change(t0, c0, "follow", self.state, after, allowed, swept, a.offsets))
-                    self.state = after
-
-
-def _union(sets) -> IntervalSet:
-    out = IntervalSet()
-    for s in sets:
-        out = out | s
-    return out
+            met = swept & lhs_region(r.lhs, self.state.line.vals)
+            if not met:
+                continue
+            for it in r.rhs:
+                for o in it.options:  # the leftmost operand that can be chosen
+                    op = Op.put_no(o.kind, met) if o.negated else Op.put(o.kind, met, o.value or 100)
+                    if self._edit(t0, [op], MODE, "mode"):
+                        break

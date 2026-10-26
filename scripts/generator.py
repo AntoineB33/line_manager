@@ -1,22 +1,21 @@
 """The rules generator.
 
-A run takes the line, the chip's position and the revealed modes, and returns a
-script. It plans the window W = (c, c + H] (H: the problem's horizon):
+A run takes the state of the line, the chip's position c and the revealed modes, and
+returns a script. It plans the window W = (c, c + H] (H: the problem's horizon).
 
-1. It builds candidate states in a fixed order that does not depend on the
-   hyperparameter q: the current state (no-op) first, then variants combining
-   - prefill: where to satisfy, in advance, mode rules that cannot react in time
-     ("scenario": where the most probable scenario of the probability finder puts
-     the mode, "none", "everywhere" the mode is possible);
-   - a placement strategy for the presence ratio targets;
-   - with or without repair of the violations that are certain.
-2. It evaluates the first B(q) candidates. A candidate is valid iff going from the
-   current state to it respects N1, N2 and N3 (guards.py). The best valid one
-   minimises (expected violation measure, expected violation points, ratio
-   error), the earliest wins ties. The no-op is always valid.
-3. The script sets the difference between the current state and the best
-   candidate, adds a continuous edit for each mode rule that can react to the
-   mode at the chip, and schedules the next run.
+1. It builds candidate edits in a fixed order that does not depend on the
+   hyperparameter q: the no-op first, then one edit per (prediction, placement):
+   - prediction: how much of each kind the mode rules will add or remove in W when
+     the chip goes through it: from the most probable scenario of the probability
+     finder ("scenario"), every mode equally likely ("uniform"), or ignored ("none");
+   - placement: where to put the missing amount of each kind for its presence ratio
+     target (or which generated elements to remove when there is too much).
+2. It evaluates the first B(q) candidates: each is resolved like any edit
+   (resolve.py); it is valid if it is not refused and respects N1 and N2 (guards.py).
+   The best valid one minimises the expected error of the presence ratios, the
+   expectation taken over the probability finder's scenarios (or uniform modes); the
+   earliest wins ties, so the no-op wins when nothing is better.
+3. The script applies the best edit at once and schedules the next run.
 
 The hyperparameter q in (0, 1):
     budget      B(q) = 2 + floor(36 q)           candidates evaluated (non-decreasing)
@@ -30,22 +29,24 @@ import math
 from dataclasses import dataclass, field
 from fractions import Fraction
 
-from guards import check_edit, forbidden_zone, free_types, mode_region
-from intervals import EMPTY, INF, Interval, IntervalSet
-from line import GEN, USER, LineState, changed_region
+from guards import check_script_edit
+from intervals import EMPTY as IEMPTY, INF, Interval, IntervalSet
+from line import GEN, LineState, Op
 from modes import ModeKnowledge
 from probability import ProbabilityFinder, Scenario
-from rules import ABSENT, EXACT, PRESENT, Item, Rule
-from script import ChipIn, Event, FollowAction, RerunAction, Script, SetAction, TransitionCount
+from region import Region
+from resolve import Refused, apply_edit
+from rules import RuleSet
+from script import ChipIn, EditAction, Event, RerunAction, Script, TransitionCount
+from solver import lhs_region
 
-PREFILLS = ("scenario", "none", "everywhere")
-STRATEGIES = ("spread4", "left", "right", "spread2", "spread8", "skip")
-REPAIR_ROUNDS = 6
+PREDICTIONS = ("scenario", "uniform", "none")
+STRATEGIES = ("spread4", "left", "right", "spread2", "spread8", "spread16")
 
 
 @dataclass
 class PresenceRatioProblem:
-    """Targets r_T in [0, 1] for the presence ratio (1/H) ∫_W s_T(x)/100 dx of each type."""
+    """Targets r_K in [0, 1] for the presence ratio (1/H) ∫_W s_K(x)/100 dx of each kind."""
     targets: dict[str, Fraction]
     horizon: Fraction
 
@@ -58,7 +59,7 @@ class PresenceRatioProblem:
 
 @dataclass
 class RunStats:
-    work: int = 0  # candidates built and checked
+    work: int = 0  # candidates built and checked (the no-op included)
     budget: int = 0
     valid: int = 0
     chosen: str = "no-op"
@@ -82,70 +83,64 @@ def rerun_transitions(q: float) -> int:
 class RulesGenerator:
     MAX_SCENARIOS = 8
 
-    def __init__(self, rules: list[Rule], problem: PresenceRatioProblem, q: float, use_probability: bool = True) -> None:
+    def __init__(self, rules: RuleSet, problem: PresenceRatioProblem, q: float, use_probability: bool = True) -> None:
         if not 0 < q < 1:
             raise ValueError("the allocated resources quantity must be in (0, 1)")
-        self.rules = list(rules)
+        self.rules = rules
         self.problem = problem
         self.q = q
         self.use_probability = use_probability
-        self.free = free_types(self.rules)
 
-    # ------------------------------------------------------------------ run
     def run(self, state: LineState, chip, known: ModeKnowledge) -> tuple[Script, RunStats]:
         c = Fraction(chip)
         H = self.problem.horizon
         ctx = _Context(self, state, c, known)
         stats = RunStats(budget=budget(self.q), probability_rules=ctx.probability_rules)
-
-        best_state, best_key, best_label = state, ctx.score(state), "no-op"
+        best_ops, best_key, best_label = (), ctx.score(state), "no-op"
         stats.work, stats.valid = 1, 1
-        for label, build in ctx.candidates():
+        for label, ops in ctx.candidates():
             if stats.work >= stats.budget:
                 break
             stats.work += 1
-            cand = build()
-            if check_edit(state, cand, c, self.rules, known) is not None:
+            if not ops:
+                continue
+            try:
+                after = apply_edit(self.rules, state, list(ops), GEN)
+            except Refused:
+                continue
+            if check_script_edit(state, after, c) is not None:
                 continue
             stats.valid += 1
-            key = ctx.score(cand)
+            key = ctx.score(after)
             if key < best_key:
-                best_state, best_key, best_label = cand, key, label
+                best_ops, best_key, best_label = ops, key, label
         stats.chosen, stats.key = best_label, best_key
-
         events: list[Event] = []
-        items = _diff_items(state, best_state)
-        if items:
-            events.append(Event(ChipIn(c, c + H), (SetAction(items),)))
-        for (mode, etype), (value, offsets) in sorted(ctx.follows.items()):
-            events.append(Event(ChipIn(c, c + H, mode), (FollowAction(etype, value, offsets),)))
-        if not self._futile(state, items):
+        if best_ops:
+            events.append(Event(ChipIn(c, c + H), (EditAction(tuple(best_ops)),)))
+        if not self._futile(state, best_ops):
             events.append(Event(ChipIn(c + rerun_distance(self.q, H), INF), (RerunAction(),)))
             events.append(Event(TransitionCount(rerun_transitions(self.q)), (RerunAction(),)))
         return Script(events), stats
 
-    def _futile(self, state: LineState, items) -> bool:
+    def _futile(self, state: LineState, ops) -> bool:
         """A run can tell that later runs would do nothing until the user edits the line:
         - there is nothing to optimise (no target, no rule); or
-        - the line is empty, no rule depends on modes and this run does nothing: every
-          later run, until a user edit, sees the same problem translated."""
-        if not self.problem.targets and not self.rules:
+        - the line is empty, no mode rule exists and this run does nothing: every later
+          run, until a user edit, sees the same problem translated."""
+        if not self.problem.targets and not self.rules.rules:
             return True
-        no_modes = all(r.lhs_mode is None for r in self.rules)
-        return state.is_empty() and no_modes and not items
+        empty = not state.claims.kinds() and not state.line.kinds()
+        return empty and not self.rules.mode_rules and not ops
 
 
 class _Context:
-    """Everything one run computes once."""
-
     def __init__(self, gen: RulesGenerator, state: LineState, c: Fraction, known: ModeKnowledge) -> None:
         self.gen, self.state, self.c, self.known = gen, state, c, known
         H = gen.problem.horizon
-        self.W = IntervalSet.of(Interval(c, c + H, False, True))
-        reach = max((r.reach() for r in gen.rules), default=Fraction(0))
-        self.E = IntervalSet.of(Interval(c - reach, c + H, False, True))
-        self.editable = IntervalSet.after(c)
-        modes = set(known.modes_seen()) | {r.lhs_mode for r in gen.rules if r.lhs_mode is not None}
+        self.Wset = IntervalSet.of(Interval(c, c + H, False, True))
+        self.W = Region.of(self.Wset)
+        modes = set(known.modes_seen()) | {r.mode for r in gen.rules.mode_rules}
         self.scenarios: list[Scenario] = []
         self.residual = Fraction(1)
         self.probability_rules: list[str] = []
@@ -153,148 +148,88 @@ class _Context:
             model = ProbabilityFinder().fit(known)
             self.probability_rules = model.rules()
             self.scenarios, self.residual = model.scenarios(known, c + H, gen.MAX_SCENARIOS)
-            for m in list(model.next_counts) + list(model.length_counts):
-                modes.add(m)
-        self.n_modes = len(modes)
-        self._classify_reactive()
-
-    def _classify_reactive(self) -> None:
-        """Items of rules 'mode m → U on offsets > 0' with U in no left side are handled by a
-        continuous edit following the chip while the mode is m."""
-        groups: dict[tuple[str, str], dict[Fraction, IntervalSet]] = {}
-        members: dict[tuple[str, str], list[tuple[int, int]]] = {}
-        for i, r in enumerate(self.gen.rules):
-            if r.lhs_mode is None or r.lhs_types:
-                continue
-            for j, it in enumerate(r.rhs):
-                first = it.rel.intervals[0]
-                positive = first.lo > 0 or (first.lo == 0 and not first.lo_closed)
-                if it.etype in self.gen.free and positive:
-                    key = (r.lhs_mode, it.etype)
-                    vals = groups.setdefault(key, {})
-                    v = it.allowed.repair_value()
-                    vals[v] = vals.get(v, EMPTY) | it.rel
-                    members.setdefault(key, []).append((i, j))
-        self.follows: dict[tuple[str, str], tuple[Fraction, IntervalSet]] = {}
-        self.reactive: set[tuple[int, int]] = set()
-        for key, vals in groups.items():
-            if len(vals) == 1:  # two values for one type in one mode would conflict
-                (v, offs), = vals.items()
-                self.follows[key] = (v, offs)
-                self.reactive |= set(members[key])
-
-    # ----------------------------------------------------------- scoring
-    def score(self, s: LineState) -> tuple:
-        meas = Fraction(0)
-        pts = Fraction(0)
-        for i, r in enumerate(self.gen.rules):
-            if r.lhs_mode is None:
-                v = r.violations(s, IntervalSet.universe()) & self.E
-                meas += v.measure()
-                pts += v.points()
-                continue
-            m = r.lhs_mode
-            v = r.violations(s, self.known.region(m)) & self.E
-            meas += v.measure()
-            pts += v.points()
-            items = [it for j, it in enumerate(r.rhs) if (i, j) not in self.reactive]
-            base = r.violations(s, self.known.unknown(), items) & self.E
-            if not base:
-                continue
-            for sc in self.scenarios:
-                inside = base & sc.mode_region(m)
-                unc = base & sc.uncovered
-                meas += sc.probability * (inside.measure() + unc.measure() / self.n_modes)
-                pts += sc.probability * (inside.points() + Fraction(unc.points(), self.n_modes))
-            meas += self.residual * base.measure() / self.n_modes
-            pts += self.residual * Fraction(base.points(), self.n_modes)
-        H = self.gen.problem.horizon
-        err = sum((abs(s.integral(t, self.W) / H - r) for t, r in self.gen.problem.targets.items()), Fraction(0))
-        return (meas, pts, err)
-
-    # -------------------------------------------------------- candidates
-    def candidates(self):
-        prefills = [p for p in PREFILLS if p != "scenario" or self.scenarios]
-        for repair in (True, False):
-            for prefill in prefills:
-                for strategy in STRATEGIES:
-                    label = f"prefill={prefill}, placement={strategy}, repair={'yes' if repair else 'no'}"
-                    yield label, (lambda p=prefill, st=strategy, rp=repair: self.build(p, st, rp))
-
-    def build(self, prefill: str, strategy: str, repair: bool) -> LineState:
-        s = self.state.copy()
-        if prefill != "none":
-            self._prefill(s, prefill)
-        if strategy != "skip":
-            self._ratios(s, strategy)
-        if repair:
-            self._repair(s)
-        return s
-
-    def _fix(self, s: LineState, item: Item, region: IntervalSet) -> bool:
-        """Make the item hold on region where a generated element can do it."""
-        u = item.etype
-        y = region & self.editable
-        y = y - s.owned(u, USER)
-        if not y:
-            return False
-        before = s.pieces(u)
-        a = item.allowed
-        if a.kind == PRESENT:
-            s.assign(u, y - s.support(u), Fraction(100), GEN)
-        elif a.kind == EXACT:
-            s.assign(u, y - s.where(u, lambda p: p.value == a.value), a.value, GEN)
-        else:
-            s.remove_owned(u, y, GEN)
-        return s.pieces(u) != before
-
-    def _prefill(self, s: LineState, how: str) -> None:
+            modes |= set(model.next_counts) | set(model.length_counts)
+        self.modes = sorted(modes)
+        unknown = Region.of(IntervalSet.of(Interval(max(c, known.frontier), c + H, False, True)))
+        # weights: list of (mode, region, weight) giving P(mode(x) = m) on W's unknown part
+        self.weights_full = []
+        u = Fraction(1, len(self.modes)) if self.modes else Fraction(0)
+        for sc in self.scenarios:
+            for m in self.modes:
+                self.weights_full.append((m, Region.of(sc.mode_region(m)) & unknown, sc.probability))
+                self.weights_full.append((m, Region.of(sc.uncovered) & unknown, sc.probability * u))
+        for m in self.modes:
+            self.weights_full.append((m, unknown, (self.residual if gen.use_probability else Fraction(1)) * u))
+        self.weights_uniform = [(m, unknown, u) for m in self.modes]
         best = self.scenarios[0] if self.scenarios else None
-        unknown_w = self.known.unknown() & self.W
-        for i, r in enumerate(self.gen.rules):
-            if r.lhs_mode is None:
+        self.weights_best = ([(m, Region.of(best.mode_region(m)) & unknown, Fraction(1)) for m in self.modes]
+                             + [(m, Region.of(best.uncovered) & unknown, u) for m in self.modes]) if best else None
+
+    # expected integral of a kind on W, with what the mode rules will do there
+    def expected(self, s: LineState, kind: str, weights) -> Fraction:
+        base = s.line.integral(kind, self.Wset)
+        if not weights:
+            return base
+        pres = s.line.presence(kind)
+        adj = Fraction(0)
+        for m, region, w in weights:
+            if not w or not region:
                 continue
-            m = r.lhs_mode
-            if how == "scenario" and best is not None:
-                region = self.known.region(m) | ((best.mode_region(m) | best.uncovered) & self.W)
-            else:
-                region = self.known.region(m) | unknown_w
-            met = r.met(s, region)
-            for j, it in enumerate(r.rhs):
-                if (i, j) not in self.reactive:
-                    self._fix(s, it, met + it.rel)
-
-    def _repair(self, s: LineState) -> None:
-        for _ in range(REPAIR_ROUNDS):
-            changed = False
-            for r in self.gen.rules:
-                met = r.met(s, mode_region(r, self.known, certain=True))
+            for r in self.gen.rules.mode_rules:
+                if r.mode != m:
+                    continue
+                met = region & lhs_region(r.lhs, s.line.vals)
                 for it in r.rhs:
-                    fail = r.item_violations(s, it, met)
-                    if fail:
-                        changed |= self._fix(s, it, fail + it.rel)
-            if not changed:
-                return
+                    o = it.options[0]
+                    if o.kind != kind:
+                        continue
+                    if o.negated:
+                        for v, reg in s.line.vals.get(kind, {}).items():
+                            adj -= w * v / 100 * (reg & met).measure_on(self.Wset)
+                    else:
+                        adj += w * ((met - pres).measure_on(self.Wset))
+        return base + adj
 
-    def _ratios(self, s: LineState, strategy: str) -> None:
+    def score(self, s: LineState) -> tuple:
         H = self.gen.problem.horizon
-        for t, target in sorted(self.gen.problem.targets.items()):
-            need = target * H - s.integral(t, self.W)
+        err = Fraction(0)
+        for k, target in self.gen.problem.targets.items():
+            err += abs(self.expected(s, k, self.weights_full) / H - target)
+        return (err,)
+
+    def candidates(self):
+        preds = [p for p in PREDICTIONS if p != "scenario" or self.weights_best]
+        for pred in preds:
+            for strategy in STRATEGIES:
+                yield f"prediction={pred}, placement={strategy}", self.build(pred, strategy)
+
+    def build(self, pred: str, strategy: str) -> tuple[Op, ...]:
+        weights = {"scenario": self.weights_best, "uniform": self.weights_uniform, "none": None}[pred]
+        H = self.gen.problem.horizon
+        ops = []
+        s = self.state
+        for kind, target in sorted(self.gen.problem.targets.items()):
+            need = target * H - self.expected(s, kind, weights)
             if need > 0:
-                free = self.W - s.support(t) - forbidden_zone(s, self.gen.rules, self.known, t, Fraction(100))
-                s.assign(t, _place(free, need, strategy, self.W, self.c, H), Fraction(100), GEN)
+                free = (self.W - s.line.presence(kind)).on(self.c, self.c + H + 1) & self.Wset
+                place = _place(free, need, strategy, self.c, H)
+                if place:
+                    ops.append(Op.put(kind, Region.of(place)))
             elif need < 0:
-                removable = (s.owned(t, GEN) & self.W) - forbidden_zone(s, self.gen.rules, self.known, t, Fraction(0))
-                _remove_amount(s, t, removable, -need, from_right=strategy != "right")
+                mine = (s.claims.owned(kind, GEN) & self.W).on(self.c, self.c + H + 1) & self.Wset
+                cut = mine.take(-need, from_right=strategy != "right")
+                if cut:
+                    ops.append(Op.take(kind, Region.of(cut)))
+        return tuple(ops)
 
 
-def _place(free: IntervalSet, amount: Fraction, strategy: str, W: IntervalSet, c: Fraction, H: Fraction) -> IntervalSet:
+def _place(free: IntervalSet, amount: Fraction, strategy: str, c: Fraction, H: Fraction) -> IntervalSet:
     if strategy == "left":
         return free.take(amount)
     if strategy == "right":
         return free.take(amount, from_right=True)
     k = int(strategy.removeprefix("spread"))
-    out = EMPTY
+    out = IEMPTY
     carry = Fraction(0)
     for i in range(k):
         part = IntervalSet.of(Interval(c + H * i / k, c + H * (i + 1) / k, False, True)) & free
@@ -302,42 +237,3 @@ def _place(free: IntervalSet, amount: Fraction, strategy: str, W: IntervalSet, c
         carry = amount / k + carry - got.measure()
         out = out | got
     return out
-
-
-def _remove_amount(s: LineState, etype: str, region: IntervalSet, amount: Fraction, from_right: bool) -> None:
-    """Remove generated pieces of a type in region until the integral dropped by amount."""
-    pieces = [p for p in s.pieces(etype) if p.owner == GEN]
-    parts = [(iv, p.value) for p in pieces for iv in (IntervalSet.of(p.interval) & region).intervals]
-    parts.sort(key=lambda x: x[0].lo, reverse=from_right)
-    cut = []
-    left = amount
-    for iv, v in parts:
-        if left <= 0:
-            break
-        if iv.is_point:
-            continue
-        worth = v / 100 * iv.length
-        if worth <= left:
-            cut.append(iv)
-            left -= worth
-        else:
-            length = left * 100 / v
-            cut.append(IntervalSet.of(iv).take(length, from_right=from_right).intervals[0])
-            left = Fraction(0)
-    s.remove_owned(etype, IntervalSet(cut), GEN)
-
-
-def _diff_items(before: LineState, after: LineState) -> tuple:
-    items = []
-    for t in sorted(set(before.types()) | set(after.types())):
-        ch = changed_region(before, after, t)
-        if not ch:
-            continue
-        for v in sorted({p.value for p in after.pieces(t) if p.owner == GEN}):
-            x = after.where(t, lambda p: p.owner == GEN and p.value == v) & ch
-            if x:
-                items.append((t, x, v))
-        gone = ch - after.support(t)
-        if gone:
-            items.append((t, gone, Fraction(0)))
-    return tuple(items)

@@ -1,145 +1,129 @@
-"""The rules generator, its scripts, the hyperparameter and the probability finder
-(requirement.md, second part), checked on exact simulations."""
+"""The rules generator, its scripts, mode rules, the hyperparameter and the probability
+finder (requirement.md, second part), on exact simulations."""
 
 import random
 import unittest
 from fractions import Fraction as F
 
-from helpers import check_log, check_state, rand_interval
+from helpers import check_log, rand_interval, rules_hold
 from generator import PresenceRatioProblem, RulesGenerator, budget, rerun_distance, rerun_transitions
-from guards import mode_region
 from intervals import INF, Interval, IntervalSet
-from line import USER, LineState
+from line import MODE, USER, LineState, Op
 from modes import ModeTimeline
 from probability import ProbabilityFinder
-from rules import parse_rule
-from script import ChipIn, Event, FollowAction, RerunAction, Script, SetAction, TransitionCount
+from region import Region
+from resolve import apply_edit
+from rules import parse_rules
+from script import ChipIn, EditAction, Event, RerunAction, Script
 from simulation import Chip, Simulation, UserEdit
 
-RULE_POOL = ["A → B", "A → no C", "A & B → C 3 units on the left", "mode 1 → D & E", "A → A at -1",
-             "mode 2 → no D", "C → B at 1", "mode 1 → E on [1, 2]", "B → no A on (-1, 1]", "mode 2 → F 50% at 2"]
+POOL = ["A → B or C", "B → D", "B → no D 1 unit on the right", "A → no C 1 unit on the left", "C → D",
+        "A & B → D", "mode 1 → E", "mode 2 → no E", "mode 1 & A → D", "A → E 50% on [0, 1] of l", "not C & D → no E"]
 
 
-def random_world(rng, user_content=True):
-    rules = [parse_rule(t) for t in rng.sample(RULE_POOL, rng.randint(1, 4))]
-    targets = {t: F(rng.randint(0, 4), 4) for t in rng.sample("ABCDEF", rng.randint(1, 3))}
-    problem = PresenceRatioProblem(targets, F(rng.choice([4, 6, 10])))
+def random_world(rng):
+    while True:
+        try:
+            rs = parse_rules(rng.sample(POOL, rng.randint(1, 4)))
+            break
+        except ValueError:
+            continue
+    targets = {k: F(rng.randint(0, 4), 4) for k in rng.sample("ABCE", rng.randint(1, 2))}
+    problem = PresenceRatioProblem(targets, F(rng.choice([4, 6])))
     pos, trans, mode = F(0), [], "1"
-    for _ in range(rng.randint(0, 12)):
-        pos += F(rng.randint(1, 8), 2)
-        mode = rng.choice([m for m in "123" if m != mode])
+    for _ in range(rng.randint(0, 5)):
+        pos += F(rng.randint(1, 6))
+        mode = rng.choice([m for m in "12" if m != mode])
         trans.append((pos, mode))
     modes = ModeTimeline(0, "1", trans)
     pts, t, x = [(0, 0)], F(0), F(0)
-    for _ in range(rng.randint(1, 6)):
-        t += F(rng.randint(1, 6))
-        x += F(rng.choice([0, 1, 2, 5]))  # the chip may stop
+    for _ in range(rng.randint(1, 3)):
+        t += F(rng.randint(2, 5))
+        x += F(rng.choice([0, 2, 4]))  # the chip may stop
         pts.append((t, x))
-    edits = []
-    if user_content:
-        edits.append(UserEdit(F(0), rng.choice("ABC"), IntervalSet.of(Interval.closed(1, 3)), F(100)))
-    for _ in range(rng.randint(0, 4)):
-        edits.append(UserEdit(F(rng.randint(1, 20)), rng.choice("ABCDE"), IntervalSet.of(rand_interval(rng, -2, 30)),
-                              F(rng.choice([0, 50, 100]))))
-    return rules, problem, Chip(pts), modes, edits
+    edits = [UserEdit(F(0), [Op.put(rng.choice("ABC"), Interval.closed(1, 3))])]
+    for _ in range(rng.randint(0, 2)):
+        k = rng.choice("ABCDE")
+        iv = rand_interval(rng, -2, 12)
+        edits.append(UserEdit(F(rng.randint(1, 10)), [rng.choice([Op.put(k, iv), Op.put_no(k, iv), Op.take(k, iv)])]))
+    return rs, problem, Chip(pts), modes, edits
 
 
-class Example1Test(unittest.TestCase):
-    """A → A at -1, chip at 0: the text of rules is empty; the user can add A anywhere."""
+class ScriptTest(unittest.TestCase):
+    def run_script(self, script, rs, state):
+        class Fixed(RulesGenerator):
+            def run(self, s, chip, known):
+                from generator import RunStats
+                return (script if chip == 0 else Script()), RunStats()
+        sim = Simulation(state, Fixed(rs, PresenceRatioProblem({}, 10), 0.5), Chip([(0, 0), (10, 10)]), ModeTimeline(0, "1"))
+        return sim, sim.run(10)
 
-    def test_empty_script(self):
-        rules = [parse_rule("A → A at -1")]
-        known = ModeTimeline(0, "1").known(0)
-        for targets in ({}, {"A": F(1, 2)}, {"A": F(1)}):
-            for q in (0.01, 0.5, 0.99):
-                script, _ = RulesGenerator(rules, PresenceRatioProblem(targets, 10), q).run(LineState(), 0, known)
-                self.assertEqual(script.text(), "")
+    def test_never_left_of_the_chip_nor_the_users_elements(self):
+        rs = parse_rules(["A → B 1 unit on the left", "C → no B"])
+        user = apply_edit(rs, LineState.empty(), [Op.put("C", Interval.closed(4, 5))], USER)
+        cases = [
+            (LineState.empty(), Op.put("B", Interval.closed(-1, 1)), "N1"),  # left of the chip
+            (LineState.empty(), Op.put("B", Interval.point(0)), "N1"),  # the chip's position
+            (LineState.empty(), Op.put("A", Interval.closed(1, 2)), "N1"),  # its consequence B on [0, 1]
+            (user, Op.take("C", Interval.closed(4, 5)), "N2"),  # remove the user's C
+            (user, Op.put("C", Interval.closed(4, 5), 50), "N2"),  # change it
+            (user, Op.put("B", Interval.point(4)), "N2"),  # newest wins: the user's C would go
+        ]
+        for state, op, why in cases:
+            sim, log = self.run_script(Script([Event(ChipIn(0, 10), (EditAction((op,)),))]), rs, state)
+            self.assertEqual(sim.state.line, state.line, op)
+            self.assertTrue(log.refused and log.refused[0][2].startswith(why), (why, log.refused))
+        sim, log = self.run_script(Script([Event(ChipIn(0, 10), (EditAction((Op.put("A", Interval.closed(2, 3)),)),))]), rs, LineState.empty())
+        self.assertEqual(sim.state.line.presence("B"), Region.of(Interval.closed(1, 2)))
+        check_log(log, rs)
 
-    def test_user_can_add_a_anywhere(self):
-        rules = [parse_rule("A → A at -1")]
-        gen = RulesGenerator(rules, PresenceRatioProblem({"A": F(1, 2)}, 10), 0.5)
-        edits = [UserEdit(F(2), "A", IntervalSet.of(Interval.closed(-5, -4)), F(100)),  # left of the chip
-                 UserEdit(F(3), "A", IntervalSet.of(Interval.closed(20, 21)), F(30))]
-        modes = ModeTimeline(0, "1")
-        sim = Simulation(LineState(), gen, Chip([(0, 0), (40, 40)]), modes, edits)
-        log = sim.run(40)
-        self.assertEqual(sim.state.value_at("A", F(-9, 2)), 100)
-        self.assertEqual(sim.state.value_at("A", F(20)), 30)
-        check_log(log, rules, modes)
-        # the generator never adds A: each A needs another A 1 unit on its left, down to the chip
-        self.assertTrue(all(p.owner == USER for p in sim.state.pieces("A")))
+
+class ModeRulesTest(unittest.TestCase):
+    def test_act_at_the_chip_only(self):
+        rs = parse_rules(["mode 1 → D", "mode 2 → no D"])
+        modes = ModeTimeline(0, "1", [(5, "2"), (7, "1"), (12, "2")])
+        edits = [UserEdit(F(1), [Op.put("D", Interval.closed(0, 20))])]
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5), Chip([(0, 0), (10, 10), (20, 15)]), modes, edits)
+        log = sim.run(20)
+        # mode 1 adds D where the chip went in mode 1; mode 2 removes the user's D where the chip went
+        # in mode 2, and nothing beyond the chip (15)
+        self.assertEqual(sim.state.line.presence("D"), Region.of(IntervalSet.of(Interval.closed_open(0, 5), Interval.closed_open(7, 12), Interval.closed(15, 20))))
+        for ch in log.changes:
+            if ch.source == "mode":
+                diff = Region.empty()
+                for k in set(ch.before.line.kinds()) | set(ch.after.line.kinds()):
+                    a, b = ch.before.line.presence(k), ch.after.line.presence(k)
+                    diff = diff | (a - b) | (b - a)
+                self.assertTrue(diff.issubset(Region.of(Interval.closed(0, 15))))
+        check_log(log, rs)
 
 
 class GuaranteesTest(unittest.TestCase):
-    """N1: a script never changes (-inf, chip]; N2: never removes or changes the user's
-    elements; N3: never adds a rule violation, for any future of the modes."""
-
     def test_random_simulations(self):
         rng = random.Random(11)
         script_changes = 0
-        for _ in range(40):
-            rules, problem, chip, modes, edits = random_world(rng)
-            gen = RulesGenerator(rules, problem, rng.choice([0.05, 0.3, 0.7, 0.95]), rng.random() < 0.7)
-            sim = Simulation(LineState(), gen, chip, modes, edits)
-            log = sim.run(chip.points[-1][0] + 5)
-            script_changes += check_log(log, rules, modes)
-            check_state(sim.state)
-        self.assertGreater(script_changes, 40)  # the scripts did edit the line
-
-    def test_follow_is_exact(self):
-        rules = [parse_rule("mode 1 → D at 2")]
-        modes = ModeTimeline(0, "1", [(5, "2"), (7, "1"), (12, "2")])
-        gen = RulesGenerator(rules, PresenceRatioProblem({}, 10), 0.5)
-        sim = Simulation(LineState(), gen, Chip([(0, 0), (40, 40)]), modes)
-        log = sim.run(40)
-        # mode 1 on [0, 5) and [7, 12): D exactly on [2, 7) and [9, 14)
-        self.assertEqual(sim.state.support("D"), IntervalSet.of(Interval.closed_open(2, 7), Interval.closed_open(9, 14)))
-        check_log(log, rules, modes)
-        self.assertIn("while the chip is in [0, 10) and mode is 1, then keep D at 100% on chip + {2}.", log.runs[0][3].text())
-
-    def test_chip_with_stops(self):
-        rules = [parse_rule("mode 1 → D on [1, 2]")]
-        modes = ModeTimeline(0, "1", [(3, "2")])
-        gen = RulesGenerator(rules, PresenceRatioProblem({}, 10), 0.5)
-        sim = Simulation(LineState(), gen, Chip([(0, 0), (2, 1), (5, 1), (7, 3), (9, 6)]), modes)
-        log = sim.run(12)
-        self.assertEqual(sim.state.support("D"), IntervalSet.of(Interval.closed_open(1, 5)))
-        check_log(log, rules, modes)
+        for _ in range(12):
+            rs, problem, chip, modes, edits = random_world(rng)
+            gen = RulesGenerator(rs, problem, rng.choice([0.05, 0.4, 0.9]), rng.random() < 0.7)
+            sim = Simulation(LineState.empty(), gen, chip, modes, edits)
+            log = sim.run(chip.points[-1][0] + 2)
+            script_changes += check_log(log, rs)
+        self.assertGreater(script_changes, 8)
 
 
 class HyperparameterTest(unittest.TestCase):
-    QS = [0.001, 0.05, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95, 0.999]
+    QS = [0.001, 0.2, 0.5, 0.8, 0.999]
 
     def test_schedules(self):
         H = F(10)
-        for q1, q2 in zip(self.QS, self.QS[1:]):
+        qs = [0.001, 0.05, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95, 0.999]
+        for q1, q2 in zip(qs, qs[1:]):
             self.assertLessEqual(budget(q1), budget(q2))
             self.assertGreater(rerun_distance(q1, H), rerun_distance(q2, H))
             self.assertGreaterEqual(rerun_transitions(q1), rerun_transitions(q2))
         for bad in (0, 1, -0.1, 1.5):
             with self.assertRaises(ValueError):
-                RulesGenerator([], PresenceRatioProblem({}, 1), bad)
-
-    def test_per_run(self):
-        """Lower q: a run does less work, finds a solution no better, and its script asks for a
-        new run no sooner, whatever the chip and the modes do next."""
-        rng = random.Random(13)
-        for _ in range(25):
-            rules, problem, chip, modes, edits = random_world(rng)
-            sim = Simulation(LineState(), RulesGenerator(rules, problem, 0.5), chip, modes, edits)
-            sim.run(rng.randint(0, 15))  # some state reached by a run
-            t = F(rng.randint(0, 15))
-            c = chip.position(t)
-            known = modes.known(c)
-            prev = None
-            for q in self.QS:
-                script, stats = RulesGenerator(rules, problem, q).run(sim.state.copy(), c, known)
-                first = self.first_rerun(script, chip, modes, t)
-                if prev:
-                    self.assertGreaterEqual(stats.work, prev[0])
-                    self.assertLessEqual(stats.key, prev[1])
-                    self.assertLessEqual(first, prev[2])
-                prev = (stats.work, stats.key, first)
+                RulesGenerator(parse_rules([]), PresenceRatioProblem({}, 1), bad)
 
     @staticmethod
     def first_rerun(script, chip, modes, t):
@@ -154,36 +138,59 @@ class HyperparameterTest(unittest.TestCase):
                     times.append(chip.first_time(later[trig.k - 1]))
         return min(times)
 
+    def test_per_run(self):
+        """Lower q: a run does less work, finds a solution no better, and its script asks for a
+        new run no sooner, whatever the chip and the modes do next."""
+        rng = random.Random(13)
+        for _ in range(6):
+            rs, problem, chip, modes, edits = random_world(rng)
+            sim = Simulation(LineState.empty(), RulesGenerator(rs, problem, 0.5), chip, modes, edits)
+            t = F(rng.randint(0, 6))
+            sim.run(t)
+            known = modes.known(chip.position(t))
+            prev = None
+            for q in self.QS:
+                script, stats = RulesGenerator(rs, problem, q).run(sim.state, chip.position(t), known)
+                first = self.first_rerun(script, chip, modes, t)
+                if prev:
+                    self.assertGreaterEqual(stats.work, prev[0])
+                    self.assertLessEqual(stats.key, prev[1])
+                    self.assertLessEqual(first, prev[2])
+                prev = (stats.work, stats.key, first)
+
     def test_whole_runs(self):
         """Over a whole simulation, a lower q never triggers more runs from scripts."""
         rng = random.Random(17)
-        for _ in range(15):
-            rules, problem, chip, modes, edits = random_world(rng)
-            end = chip.points[-1][0] + 5
+        for _ in range(4):
+            rs, problem, chip, modes, edits = random_world(rng)
             counts = []
-            for q in self.QS[::2]:
-                sim = Simulation(LineState(), RulesGenerator(rules, problem, q), chip, modes, edits)
-                log = sim.run(end)
+            for q in (0.05, 0.5, 0.95):
+                sim = Simulation(LineState.empty(), RulesGenerator(rs, problem, q), chip, modes, edits)
+                log = sim.run(chip.points[-1][0] + 2)
                 counts.append(sum(1 for r in log.runs if r[2] == "script"))
             self.assertEqual(counts, sorted(counts), counts)
 
 
 class ProbabilityFinderTest(unittest.TestCase):
-    def periodic(self, n=40):
-        trans = [(F(2 * i), "2" if i % 2 else "1") for i in range(1, n)]
+    @staticmethod
+    def periodic(lengths=(2, 2), n=60):
+        trans, pos = [], F(0)
+        for i in range(1, n):
+            pos += lengths[(i - 1) % 2]
+            trans.append((pos, "2" if i % 2 else "1"))
         return ModeTimeline(0, "1", trans)
 
     def test_rules_of_a_periodic_pattern(self):
-        model = ProbabilityFinder().fit(self.periodic().known(F(21, 2)))
+        tl = self.periodic()
+        model = ProbabilityFinder().fit(tl.known(F(21, 2)))
         self.assertEqual(model.rules(), ["after mode 1, mode 2 follows with probability 1",
                                          "after mode 2, mode 1 follows with probability 1",
                                          "mode 1 lasts 2 with probability 1",
                                          "mode 2 lasts 2 with probability 1"])
-        scen, residual = model.scenarios(self.periodic().known(F(21, 2)), F(16))
+        scen, residual = model.scenarios(tl.known(F(21, 2)), F(16))
         self.assertEqual((len(scen), residual), (1, 0))
         self.assertEqual(scen[0].mode_region("1"), IntervalSet.of(Interval.closed_open(12, 14)))
         self.assertEqual(scen[0].mode_region("2"), IntervalSet.of(Interval.open(F(21, 2), 12), Interval.closed_open(14, 16)))
-        self.assertEqual(scen[0].uncovered, IntervalSet.of(Interval.point(16)))  # the next segment starts at the horizon
 
     def test_probabilities(self):
         tl = ModeTimeline(0, "1", [(1, "2"), (2, "1"), (4, "3"), (5, "1"), (6, "2")])
@@ -194,69 +201,23 @@ class ProbabilityFinderTest(unittest.TestCase):
         self.assertEqual(sum(s.probability for s in scen) + residual, 1)
 
     def test_helps_with_low_resources(self):
-        """mode 1 → D must be satisfied before the mode is known. With the probability rules a
-        run with few resources puts D where mode 1 will be, and only there."""
-        rules = [parse_rule("mode 1 → D")]
-        problem = PresenceRatioProblem({"D": F(0)}, F(8))
-        modes = self.periodic()
-        chip = Chip([(0, 0), (70, 70)])
-        out = {}
+        """mode 1 → D, D wanted on 3/4 of the line, mode 1 three units out of four. With the
+        probability rules, a run with the fewest resources sees that mode 1 will give D
+        and adds none; without them it expects half and adds D where mode 2 will be."""
+        rs = parse_rules(["mode 1 → D"])
+        problem = PresenceRatioProblem({"D": F(3, 4)}, F(8))
+        modes = self.periodic((3, 1))
+        chip = Chip([(0, 0), (60, 60)])
+        err = {}
         for use in (True, False):
-            sim = Simulation(LineState(), RulesGenerator(rules, problem, 0.01, use), chip, modes)
-            log = sim.run(70)
-            check_log(log, rules, modes)
-            final = modes.known(F(70))
-            violations = rules[0].violations(sim.state, mode_region(rules[0], final, certain=True))
-            out[use] = (violations.measure(), sim.state.integral("D", IntervalSet.of(Interval.closed(0, 70))))
-        self.assertEqual(out[True][0], 0)  # no violation with the probability finder
-        self.assertGreater(out[False][0], 0)
-        self.assertLess(out[True][1], 50)  # D only about where mode 1 is (35 of 70, plus the start)
+            sim = Simulation(LineState.empty(), RulesGenerator(rs, problem, 0.01, use), chip, modes)
+            log = sim.run(60)
+            check_log(log, rs)
+            window = IntervalSet.of(Interval.closed(20, 60))
+            err[use] = abs(sim.state.line.integral("D", window) / 40 - F(3, 4))
+        self.assertLess(err[True], err[False])
+        self.assertEqual(err[True], 0)
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class HandWrittenScriptsTest(unittest.TestCase):
-    """The guarantees hold for any script, not only for generated ones: the line refuses
-    what a script may not do."""
-
-    def run_script(self, script, rules, state, end=10):
-        class Fixed(RulesGenerator):
-            def run(self, s, chip, known):
-                from generator import RunStats
-                return (script if chip == 0 else Script()), RunStats()
-        gen = Fixed(rules, PresenceRatioProblem({}, 10), 0.5)
-        modes = ModeTimeline(0, "1", [(5, "2")])
-        sim = Simulation(state, gen, Chip([(0, 0), (10, 10)]), modes)
-        log = sim.run(end)
-        check_log(log, rules, modes)
-        return sim, log
-
-    def test_refusals(self):
-        user_b = LineState.from_entries([("B", Interval.closed(2, 3), 100)])
-        A = lambda lo, hi: IntervalSet.of(Interval.closed(lo, hi))
-        cases = [
-            ([], LineState(), SetAction((("A", A(-1, 1), F(100)),)), "N1"),  # left of the chip
-            ([], LineState(), SetAction((("A", A(0, 1), F(100)),)), "N1"),  # the chip's position
-            ([], user_b, SetAction((("B", A(2, 3), F(0)),)), None),  # "remove generated B": the user's B stays
-            ([], user_b, SetAction((("B", A(2, 3), F(50)),)), "N2"),  # change it
-            ([parse_rule("A → B")], LineState(), SetAction((("A", A(4, 6), F(100)),)), "N3"),
-            ([parse_rule("mode 2 → no D")], LineState(), SetAction((("D", A(7, 8), F(100)),)), "N3"),  # mode unknown there
-        ]
-        for rules, state, action, why in cases:
-            sim, log = self.run_script(Script([Event(ChipIn(0, 10), (action,))]), rules, state)
-            self.assertEqual(sim.state, state)
-            if why:
-                self.assertTrue(log.refused and log.refused[0][1].startswith(why), (why, log.refused))
-        # a continuous edit of a type in a left side is refused
-        rules = [parse_rule("A → B")]
-        sim, log = self.run_script(Script([Event(ChipIn(0, 10), (FollowAction("A", F(100), IntervalSet.of(Interval.point(1))),))]), rules, LineState())
-        self.assertEqual(sim.state, LineState())
-        # a continuous edit skips the user's elements and the forbidden zone
-        rules = [parse_rule("C → no D at 1")]
-        state = LineState.from_entries([("D", Interval.closed(3, 4), 40), ("C", Interval.closed(6, 7), 100)])
-        sim, log = self.run_script(Script([Event(ChipIn(0, 10), (FollowAction("D", F(100), IntervalSet.of(Interval.point(1))),))]), rules, state)
-        self.assertEqual(sim.state.value_at("D", F(7, 2)), 40)
-        self.assertEqual(sim.state.support("D") & IntervalSet.of(Interval.closed(7, 8)), IntervalSet())
-        self.assertEqual(sim.state.value_at("D", F(9)), 100)

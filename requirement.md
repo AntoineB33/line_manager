@@ -19,7 +19,7 @@ Examples:
 - A → B 0%
 - A & B → C 45% 3 units on the left of p
 
-If there is a "or" in the right side of the element rule, the leftmost operand that can be chosen is chosen.
+If there is a "or" in the right side of the element rule, the leftmost operand (leftmost in the expression) that can be chosen is chosen.
 
 A set of element rules can't have a cycle.
 

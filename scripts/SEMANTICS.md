@@ -334,13 +334,16 @@ The result of an edit is determined as follows:
      (2^k for a left side of k terms), however many elements there are, so an
      edit with thousands of elements in conflict is resolved in seconds. The
      result is not always the smallest loss over all conflicts together.
-   - **Otherwise.** Some conflicts can't be explained this way: those through
-     the "or" choices, which region algebra does not compute, and those that no
-     combination removes. For these, older elements are removed one after the
-     other, those within (depth + 1) × reach + 1 of the edit first, then from
-     left to right, until the claims are consistent. The edit alone is
-     consistent (step 2), so this ends. Each element removed that way is then
-     put back if the claims stay consistent with it.
+   - **Otherwise.** The fallback handles three cases: conflicts through the "or"
+     choices, which region algebra does not compute; conflicts that no
+     combination removes; and lines whose "or" choices the edit leaves undecided
+     or not computed in time (`Undetermined`, `test_undecided_with_the_line_gives_way`).
+     Older elements are removed one after the other, those within
+     (depth + 1) × reach + 1 of the edit first, then from left to right, until
+     the claims are consistent and decided. More than necessary may go then,
+     which the requirement allows to keep the computation fast. The edit alone is
+     consistent and decided (step 2), so this ends. Each element removed that way
+     is then put back if the claims stay consistent and decided with it.
 4. **Removed elements are gone for good.** Removing the newer element later does
    not bring them back (`test_gone_for_good`).
 

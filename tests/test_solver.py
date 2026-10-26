@@ -584,6 +584,18 @@ class ResolutionTest(unittest.TestCase):
         self.assertEqual(sorted(s.line.kinds()), ["A", "D"])  # removing A would also lose D
         self.assertFalse(rules_hold(rs, s.line, s.claims))
 
+    def test_undecided_with_the_line_gives_way(self):
+        """Y alone is decided, A alone too, but with both the "or" acts on an element with
+        no left end, where nothing decides its choices: the edit is not refused because of
+        the line, the older A gives way. The same in one edit is the edit's own problem."""
+        rs = parse_rules(["A & Y → B or C", "B → D", "B → no D 1 unit on the right"])
+        left = Interval(-INF, 0, False, True)
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", left)], USER)
+        s = apply_edit(rs, s, [Op.put("Y", left)], USER)
+        self.assertEqual(s.line.kinds(), ["Y"])
+        with self.assertRaises(Refused):
+            apply_edit(rs, LineState.empty(), [Op.put("A", left), Op.put("Y", left)], USER)
+
     def test_small_edit_on_a_long_element(self):
         rs = parse_rules(ALTERNATE + ["X → no C", "X → no B"])
         s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, 30))], USER)

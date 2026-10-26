@@ -3,7 +3,8 @@
 An edit is a list of operations (line.Op). Its result:
 1. Its own operations apply: a put replaces what was claimed of that kind there, a
    take removes the claims of that kind there and requires the kind to be absent.
-2. If the edit contradicts the rules by itself, it is refused.
+2. If the edit has no result by itself, it is refused: it contradicts the rules, or
+   the rules do not decide its own result (solver.py, `Undetermined`).
 3. Otherwise its elements are kept: edits from the user win over what is on the
    line. If older elements conflict with them, some older elements are removed, one
    conflict after the other, from left to right. An element is a largest interval of
@@ -25,11 +26,14 @@ An edit is a list of operations (line.Op). Its result:
      removing B loses B and C; the tie keeps A, so B and C are removed.
    - The choice is made conflict by conflict, not over all of them at once: that
      takes a few combinations per conflict, however many elements there are.
-   - A conflict these requirements do not explain (through the "or" choices), or
-     that no combination removes: the older elements are removed one after the
-     other, those near the edit first, then from left to right, until the claims
-     are consistent. The edit alone is consistent, so this ends. Then each element
-     removed that way is put back if the claims stay consistent with it.
+   - A conflict these requirements do not explain (through the "or" choices), one
+     that no combination removes, or a line with the edit whose "or" choices are not
+     decided or not computed in time (`Undetermined`): the older elements are
+     removed one after the other, those near the edit first, then from left to
+     right, until the claims are consistent and decided. More than necessary may
+     then go, to keep the computation fast. The edit alone is consistent and
+     decided (step 2), so this ends. Then each element removed that way is put back
+     if the claims stay consistent and decided with it.
 4. The operands of "or" are then chosen as in solver.py.
 
 So an edit is refused only when it has no result on its own (step 2), never because
@@ -97,21 +101,20 @@ def apply_edit(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> Line
         else:
             raise ValueError(op.action)
     own_neg = {k: mand_neg.get(k, EMPTY) | temp.get(k, EMPTY) for k in set(mand_neg) | set(temp)}
-    try:
-        try:
-            solve(rs, Problem(mand_pos, own_neg))
-        except Conflict as e:
-            raise Refused(f"the edit contradicts the rules: {e}")
-        try:
-            return LineState(c1, solve(rs, c1.problem(temp)))
-        except Conflict:
-            pass
-        footprint = union(op.region for op in ops)
-        return _Resolution(rs, state.line, c1, mand_pos, mand_neg, temp, footprint).run()
+    try:  # the edit alone: the only reason to refuse it
+        solve(rs, Problem(mand_pos, own_neg))
+    except Conflict as e:
+        raise Refused(f"the edit contradicts the rules: {e}")
     except Undetermined as e:
-        raise Refused(f"the rules do not decide the result: {e}")
+        raise Refused(f"the rules do not decide the result of the edit: {e}")
     except IncompatiblePeriods as e:
-        raise Refused(f"two results repeat with periods that cannot be compared: {e}")
+        raise Refused(f"two results of the edit repeat with periods that cannot be compared: {e}")
+    try:
+        return LineState(c1, solve(rs, c1.problem(temp)))
+    except (Conflict, Undetermined, IncompatiblePeriods):
+        pass  # with the line, no result, or none computed in time: older elements give way
+    footprint = union(op.region for op in ops)
+    return _Resolution(rs, state.line, c1, mand_pos, mand_neg, temp, footprint).run()
 
 
 # ---------------------------------------------------------------------------------
@@ -218,8 +221,11 @@ class _Resolution:
     def run(self) -> LineState:
         removed: list[int] = []
         while not self.consistent(removed):
-            lines = _Lines(self.rs, self.claims(removed), self.temp)
-            step = self.step(lines, removed) if lines.conflicts else None
+            try:
+                lines = _Lines(self.rs, self.claims(removed), self.temp)
+                step = self.step(lines, removed) if lines.conflicts else None
+            except IncompatiblePeriods:
+                step = None
             if not step:
                 removed = self.prune(self.fallback(removed), len(removed))
                 break

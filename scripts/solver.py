@@ -45,7 +45,7 @@ from fractions import Fraction
 
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from region import ZERO, Region
-from rules import RuleSet, lattice_step
+from rules import RuleSet, is_hidden, lattice_step
 
 sys.setrecursionlimit(20000)
 
@@ -77,7 +77,8 @@ class Line:
         self.vals = {k: d for k, d in self.vals.items() if d}
 
     def kinds(self) -> list[str]:
-        return sorted(self.vals)
+        """The kinds on the line (not the hidden ones, rules.HIDDEN)."""
+        return sorted(k for k in self.vals if not is_hidden(k))
 
     def presence(self, kind: str) -> Region:
         return union(self.vals.get(kind, {}).values())

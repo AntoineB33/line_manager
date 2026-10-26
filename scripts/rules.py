@@ -196,13 +196,21 @@ class Lit:
 @dataclass(frozen=True)
 class Item:
     options: tuple[Lit, ...]
+    text: str = ""  # how it is written, when an operand is a hidden kind
 
     @property
     def is_or(self) -> bool:
         return len(self.options) > 1
 
     def __str__(self) -> str:
-        return " or ".join(map(str, self.options))
+        return self.text or " or ".join(map(str, self.options))
+
+
+HIDDEN = "§"  # prefix of the hidden kinds that stand for an operand "B & C" of an "or"
+
+
+def is_hidden(kind: str) -> bool:
+    return kind.startswith(HIDDEN)
 
 
 @dataclass(frozen=True)
@@ -211,6 +219,8 @@ class Rule:
     mode: str | None
     rhs: tuple[Item, ...]
     text: str = ""
+    written: tuple[Lit, ...] = ()  # every literal as written, in order (when hidden kinds stand for some)
+    internal: tuple = ()  # the rules of its hidden kinds: §(B & C) → B & C
 
     @property
     def is_mode_rule(self) -> bool:
@@ -218,6 +228,9 @@ class Rule:
 
     def lits(self) -> list[Lit]:
         return [o for it in self.rhs for o in it.options]
+
+    def written_lits(self) -> list[Lit]:
+        return list(self.written) or self.lits()
 
     def __str__(self) -> str:
         left = ([f"mode {self.mode}"] if self.mode is not None else []) + ([str(self.lhs)] if conjuncts(self.lhs) else [])
@@ -230,20 +243,22 @@ class RuleError(ValueError):
 
 class RuleSet:
     def __init__(self, rules: list[Rule]) -> None:
-        self.rules = list(rules)
+        # the rules of the hidden kinds come after the written ones (one per hidden kind)
+        internal = {ir.lhs.kind: ir for r in rules for ir in r.internal}
+        self.rules = list(rules) + list(internal.values())
         self.element = [r for r in self.rules if not r.is_mode_rule]
         self.mode_rules = [r for r in self.rules if r.is_mode_rule]
         # kinds in order of first appearance in the text of the rules (tie-breaks)
         rank: dict[str, int] = {}
         for r in self.rules:
-            for k in r.lhs.kinds() + [o.kind for o in r.lits()]:
+            for k in r.lhs.kinds() + [o.kind for o in r.written_lits()]:
                 rank.setdefault(k, len(rank))
         self.rank = rank
         for r in self.rules:
             for it in r.rhs:
                 if it.is_or and len({o.anchor for o in it.options}) > 1:
                     raise RuleError(f"{r}: the operands of an 'or' are all relative to p or all relative to l")
-            if r.is_mode_rule and any(o.anchor != "p" or o.where != Interval.point(0) for o in r.lits()):
+            if r.is_mode_rule and any(o.anchor != "p" or o.where != Interval.point(0) for o in r.lits() + r.written_lits()):
                 raise RuleError(f"{r}: a mode rule can only act at the position of the chip")
             if not r.is_mode_rule and not r.lhs.kinds():
                 raise RuleError(f"{r}: an element rule needs a kind on its left side")
@@ -517,6 +532,98 @@ def _lit(text: str) -> Lit:
     return Lit(kind, where, anchor, value, negated)
 
 
+_INTERVAL = re.compile(r"\bon\s*[\[({][^\])}]*[\])}]")
+
+
+class _Rhs:
+    """expr := ors (& ors)* ; ors := unary (or unary)* ; unary := ( expr ) | literal.
+    "&" separates the items and "or" binds tighter: "B or C & D" is (B or C) & D;
+    parentheses group anything: "(B & C) or D". The parentheses of an interval
+    ("on (0, 1] of l") belong to its literal."""
+
+    def __init__(self, text: str) -> None:
+        saved: list[str] = []
+
+        def keep(m):
+            saved.append(m.group(0))
+            return f"\x00{len(saved) - 1}\x00"
+        t = _INTERVAL.sub(keep, text)
+        self.t = [re.sub(r"\x00(\d+)\x00", lambda m: saved[int(m.group(1))], s).strip()
+                  for s in re.split(r"(\(|\)|&|\band\b|\bor\b)", t)]
+        self.t = [s for s in self.t if s]
+        self.i = 0
+
+    def peek(self):
+        return self.t[self.i] if self.i < len(self.t) else None
+
+    def next(self):
+        tok = self.peek()
+        if tok is None:
+            raise RuleError("the right side ends too early")
+        self.i += 1
+        return tok
+
+    def parse(self):
+        node = self.expr()
+        if self.peek() is not None:
+            raise RuleError(f"unexpected {self.peek()!r} in the right side")
+        return node
+
+    def expr(self):
+        parts = [self.ors()]
+        while self.peek() in ("&", "and"):
+            self.next()
+            parts.append(self.ors())
+        return parts[0] if len(parts) == 1 else ("and", parts)
+
+    def ors(self):
+        parts = [self.unary()]
+        while self.peek() == "or":
+            self.next()
+            parts.append(self.unary())
+        return parts[0] if len(parts) == 1 else ("or", parts)
+
+    def unary(self):
+        tok = self.next()
+        if tok == "(":
+            node = self.expr()
+            if self.next() != ")":
+                raise RuleError("missing ')' in the right side")
+            return node
+        if tok in (")", "&", "and", "or"):
+            raise RuleError(f"unexpected {tok!r} in the right side")
+        return ("lit", _lit(tok))
+
+
+def _conjuncts(node) -> list:
+    return [c for p in node[1] for c in _conjuncts(p)] if node[0] == "and" else [node]
+
+
+def _operands(node) -> list[tuple[Lit, ...]]:
+    """The operands of an "or", in the order they are tried: each "or" takes its leftmost
+    operand that can be chosen, the left ones first, so ((B or C) & D) or E tries B & D,
+    C & D, then E."""
+    if node[0] == "lit":
+        return [(node[1],)]
+    if node[0] == "or":
+        return [o for p in node[1] for o in _operands(p)]
+    out = [()]
+    for p in node[1]:
+        out = [a + b for a in out for b in _operands(p)]
+    return out
+
+
+def _shown(node, inner=False) -> str:
+    if node[0] == "lit":
+        return str(node[1])
+    s = (" or " if node[0] == "or" else " & ").join(_shown(p, True) for p in node[1])
+    return f"({s})" if inner else s
+
+
+def _lits_of(node) -> list[Lit]:
+    return [node[1]] if node[0] == "lit" else [o for p in node[1] for o in _lits_of(p)]
+
+
 def parse_rule(text: str) -> Rule:
     t = text.strip()
     t = re.sub(r"^if\s+", "", t)
@@ -526,10 +633,31 @@ def parse_rule(text: str) -> Rule:
         raise RuleError(f"a rule has one arrow: {text!r}")
     p = _Lhs(parts[0])
     lhs = p.parse()
-    items = []
-    for it in re.split(r"&|\band\b", parts[1]):
-        items.append(Item(tuple(_lit(o) for o in re.split(r"\bor\b", it))))
-    return Rule(lhs, p.mode, tuple(items), text)
+    tree = _Rhs(parts[1]).parse()
+    items, internal = [], []
+    for node in _conjuncts(tree):
+        if node[0] == "lit":
+            items.append(Item((node[1],)))
+            continue
+        lits = _lits_of(node)
+        if len({o.anchor for o in lits}) > 1:
+            raise RuleError(f"{text}: the operands of an 'or' are all relative to p or all relative to l")
+        anchor = lits[0].anchor
+        opts, hidden = [], False
+        for conj in _operands(node):
+            if len(conj) == 1:
+                opts.append(conj[0])
+                continue
+            # the operand "B & C" is the hidden kind §(B & C), placed where the operand
+            # goes, whose rule places B and C (relative to it: at l, it is l itself)
+            name = HIDDEN + "(" + " & ".join(map(str, conj)) + ")"
+            opts.append(Lit(name, Interval.point(0), anchor))
+            inner = tuple(Item((Lit(o.kind, o.where, "p", o.value, o.negated),)) for o in conj)
+            internal.append(Rule(Atom(name), None, inner, f"{name} → " + " & ".join(map(str, conj))))
+            hidden = True
+        items.append(Item(tuple(opts), _shown(node) if hidden else ""))
+    written = tuple(_lits_of(tree)) if internal else ()
+    return Rule(lhs, p.mode, tuple(items), text, written, tuple(internal))
 
 
 def parse_rules(texts: list[str]) -> RuleSet:

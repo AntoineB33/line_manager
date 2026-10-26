@@ -112,22 +112,23 @@ class ModeRulesTest(unittest.TestCase):
         self.assertTrue(any(src == "mode" and "N2:" in why for _, src, why in log.refused))
 
     def test_nothing_removed_away_from_the_chip(self):
-        """D at the chip conflicts with the user's A on [0, 1] through C on [0, 10] of l:
-        the mode rule is refused rather than removing A, away from the chip. Each position
-        is decided on its own: D goes where mode 1 meets no C, (10, 12)."""
+        """D at the chip conflicts with the generated A on [-3, -2] through C on [-3, 7]:
+        the mode rule is refused rather than removing A, away from the chip (and the user's
+        A, at the chip, is not removed either: test_users_elements_win). Each position is
+        decided on its own: D goes where mode 1 meets no C, (7, 12)."""
         rs = parse_rules(["A → C on [0, 10] of l", "D → no C", "mode 1 → D"])
-        state = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, 1))], USER)
+        state = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(-3, -2))], GEN)
         sim, log = self.simulate(rs, state)
-        self.assertEqual(sim.state.line.presence("A"), Region.of(Interval.closed(0, 1)))
-        self.assertEqual(sim.state.line.presence("C"), Region.of(Interval.closed(0, 10)))
-        self.assertEqual(sim.state.line.presence("D"), Region.of(Interval.open(10, 12)))
-        self.assertTrue(any(src == "mode" and "M1: would change elements away from the chip" in why for _, src, why in log.refused))
+        self.assertEqual(sim.state.line.presence("A"), Region.of(Interval.closed(-3, -2)))
+        self.assertEqual(sim.state.line.presence("C"), Region.of(Interval.closed(-3, 7)))
+        self.assertEqual(sim.state.line.presence("D"), Region.of(Interval.open(7, 12)))
+        self.assertTrue(any(src == "mode" and "M1:" in why for _, src, why in log.refused))
 
     def test_each_position_takes_the_first_operand(self):
         """One stretch of the chip, [0, 5) in mode 1, and the operand changes inside it: D
-        cannot go where the generated X is (removing X would change it away from the chip)."""
+        cannot go where the user's X is."""
         rs = parse_rules(["mode 1 → D or E", "D → no X"])
-        state = apply_edit(rs, LineState.empty(), [Op.put("X", Interval.closed(2, 3))], GEN)
+        state = apply_edit(rs, LineState.empty(), [Op.put("X", Interval.closed(2, 3))], USER)
         sim, log = self.simulate(rs, state)
         self.assertEqual(sim.state.line.presence("X"), Region.of(Interval.closed(2, 3)))
         self.assertEqual(sim.state.line.presence("E"), Region.of(IntervalSet.of(Interval.closed(2, 3))))
@@ -136,6 +137,15 @@ class ModeRulesTest(unittest.TestCase):
         for ch in log.changes:
             if ch.source == "mode":
                 self.assertGreaterEqual(ch.at.inf(), ch.chip)  # nothing before where the change starts
+
+    def test_only_at_the_chip_point(self):
+        """The generated X on [2, 3] is in D's way: as the chip goes through it, X goes at
+        each position the chip reaches, and only there, so D can be chosen everywhere."""
+        rs = parse_rules(["mode 1 → D or E", "D → no X"])
+        state = apply_edit(rs, LineState.empty(), [Op.put("X", Interval.closed(2, 3))], GEN)
+        sim, log = self.simulate(rs, state)
+        self.assertEqual(sim.state.line.presence("D") & Region.of(Interval.closed_open(0, 5)), Region.of(Interval.closed_open(0, 5)))
+        self.assertEqual(sim.state.line.presence("X"), Region.empty())
 
     def test_only_through_the_script(self):
         """The line is modified only by the user and the generated script: without the

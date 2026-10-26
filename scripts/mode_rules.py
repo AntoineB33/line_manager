@@ -91,19 +91,22 @@ class ModeRules:
                     if reason:
                         why.append(f"{r}: {o} at {x}: {reason}")
                         continue
-                    s, choice = after, (PUT, oi)
+                    s, choice = after, (PUT, oi, _gone(s, after, x, o.kind))
                     break
                 out.append(choice)
         return tuple(out), s, why
 
     def with_run(self, state: LineState, decision: tuple, at: Region) -> LineState:
-        """The state with the decision's edits on `at` (no older element is removed in a
-        run: it would be an element at one position, an end of the state)."""
+        """The state with the decision's edits on `at`: the operands placed, and the older
+        claims the edit removed at its position (M1: at that position only) removed on
+        `at` too."""
         if not any(choice and choice[0] == PUT for choice in decision):
             return state
         c = state.claims.copy()
         for (r, it), choice in zip(self.items, decision):
             if choice and choice[0] == PUT:
+                for kind, positive in choice[2]:
+                    (c.remove_pos if positive else c.remove_neg)(kind, at)
                 o = it.options[choice[1]]
                 if o.negated:
                     c.add_neg(o.kind, at, MODE)
@@ -210,6 +213,20 @@ class _Changes(Exception):
 
 def _iv(a: Pos, b: Pos) -> Interval:
     return Interval(a, b)
+
+
+def _gone(before: LineState, after: LineState, x: Pos, placed: str) -> tuple:
+    """(kind, positive): the claims at x the edit removed, besides those of the kind it
+    places (which the put replaces anyway)."""
+    out = []
+    for k in sorted(set(before.claims.pos) | set(before.claims.neg)):
+        if k == placed:
+            continue
+        if before.claims.positive(k).contains(x) and not after.claims.positive(k).contains(x):
+            out.append((k, True))
+        if before.claims.negative(k).contains(x) and not after.claims.negative(k).contains(x):
+            out.append((k, False))
+    return tuple(out)
 
 
 def _holds(o, s: LineState, x: Pos) -> bool:

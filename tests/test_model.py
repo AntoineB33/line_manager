@@ -145,6 +145,25 @@ class RulesTest(unittest.TestCase):
         r = parse_rule("if element A, then element B 1 unit on the right")
         self.assertEqual((r.lhs, r.rhs[0].options[0].rel), (Atom("A"), 1))
 
+    def test_right_side_expressions(self):
+        """Any expression with "and", "or" and parentheses. "&" separates the items and
+        "or" binds tighter; an operand "B & C" is a hidden kind whose rule places B and C,
+        and the operands are tried left first: ((B or C) & E) or D is B & E, C & E, D."""
+        self.assertEqual([str(it) for it in parse_rule("A → B or C & D").rhs], ["B or C", "D"])
+        r = parse_rule("A → (B & C) or D")
+        self.assertEqual(([str(it) for it in r.rhs], [ir.text for ir in r.internal]), (["(B & C) or D"], ["§(B & C) → B & C"]))
+        r = parse_rule("A → ((B or C) & E) or D")
+        self.assertEqual([o.kind for o in r.rhs[0].options], ["§(B & E)", "§(C & E)", "D"])
+        r = parse_rule("A → B or (C & no D 1 unit on the right) & (E or F on (0, 1] of p)")
+        self.assertEqual([str(it) for it in r.rhs], ["B or (C & no D 1 unit on the right of p)", "E or F on (0, 1] of p"])
+        self.assertEqual(r.rhs[1].options[1].where, Interval.closed(EPS, 1))  # its parentheses stay an interval
+        with self.assertRaises(RuleError):
+            parse_rule("A → (B & C on [0, 1] of l) or D")  # one operand relative to l, another to p
+        with self.assertRaises(RuleError):
+            parse_rule("A → (B or C")
+        rs = parse_rules(["A → (B & C) or D", "E → (B & C) or F"])  # one hidden kind, one rule for it
+        self.assertEqual(sum(1 for r in rs.rules if r.lhs == Atom("§(B & C)")), 1)
+
     def test_left_sides(self):
         f = parse_rule("(A >= 50% | B 30%) & not C → D").lhs
         self.assertEqual(f.kinds(), ["A", "B", "C"])

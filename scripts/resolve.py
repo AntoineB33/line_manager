@@ -6,42 +6,45 @@ An edit is a list of operations (line.Op). Its result:
 2. If the edit has no result by itself, it is refused: it contradicts the rules, or
    the rules do not decide its own result (solver.py, `Undetermined`).
 3. Otherwise its elements are kept: edits from the user win over what is on the
-   line. If older elements conflict with them, some older elements are removed, one
-   conflict after the other, from left to right. An element is a largest interval of
-   one claim ("K p%" or "no K", one owner), removed whole.
+   line. If older elements conflict with them, parts of older elements are removed,
+   nothing more than necessary, one conflict after the other, from left to right.
+   An element is a largest interval of one claim ("K p%" or "no K", one owner).
    - A conflict is two requirements that contradict on a region X: K present and
      "no K" (a claim, or a rule applied there), or two percentages. A requirement
      that comes from a rule r applied on X gives way by making r's left side false
-     there: the combinations of the elements its terms rest on (a kind that a rule
-     places rests on that rule's left side, and so on). A requirement that comes
-     from an older claim gives way by removing it. The edit's own never gives way.
+     where r reaches X, and only there: relative to p, on the anchors that reach X;
+     relative to l, from each left edge that reaches X up to the first position of
+     its interval that does not (it becomes the left edge: with A → B on [0, 1] of l,
+     A on [0, 10] and "no B" at 1/2, A goes on [0, 1/2], the left edge is 1/2+ε and
+     B is on (1/2, 3/2]). The combinations are the parts of the elements its terms
+     rest on there (a kind that a rule places rests on that rule's left side, and so
+     on). A requirement that comes from an older claim gives way by removing the
+     claim on X. The edit's own never gives way.
    - Among the combinations that remove the conflict from X: only what is necessary
-     (none strictly contains another one that works), the one that loses the fewest
-     elements (the elements of the line, the largest intervals of one kind and
-     percentage, that do not stay whole, plus the "no K" elements removed), and on a
-     tie the one that keeps the leftmost elements: at the leftmost position where
-     two combinations differ, the one that keeps the element there, the kinds at one
-     position in the order they first appear in the rules.
+     (none removes everything another one that works removes, and more), the one
+     that loses the fewest elements (the elements of the line, the largest
+     intervals of one kind and percentage, that do not stay whole, plus the "no K"
+     elements that lose a part), and on a tie the one that keeps the leftmost
+     elements: at the leftmost position where two combinations differ, the one that
+     keeps the element there, the kinds at one position in the order they first
+     appear in the rules.
    - With "A and B → C", A and B at x, then "no C" at x: removing A loses A and C,
      removing B loses B and C; the tie keeps A, so B and C are removed.
    - The choice is made conflict by conflict, not over all of them at once: that
      takes a few combinations per conflict, however many elements there are.
-   - A conflict these requirements do not explain (through the "or" choices), one
-     that no combination removes, or a line with the edit whose "or" choices are not
-     decided or not computed in time (`Undetermined`): the older elements are
-     removed one after the other, those near the edit first, then from left to
-     right, until the claims are consistent and decided. More than necessary may
-     then go, to keep the computation fast. The edit alone is consistent and
-     decided (step 2), so this ends. Then each element removed that way is put back
-     if the claims stay consistent and decided with it.
+   - Otherwise, more than necessary is removed, to keep the computation fast. That
+     is a conflict these requirements do not explain (through the "or" choices), one
+     that no combination removes, a line with the edit whose "or" choices are not
+     decided or not computed in time (`Undetermined`), or too many conflicts one
+     after the other. The rest of the older elements are removed whole, one after
+     the other, those near the edit first, then from left to right, until the
+     claims are consistent and decided. The edit alone is consistent and decided
+     (step 2), so this ends. Then each element removed that way is put back as it
+     was if the claims stay consistent and decided with it.
 4. The operands of "or" are then chosen as in solver.py.
 
 So an edit is refused only when it has no result on its own (step 2), never because
 of what is on the line.
-
-(Removing a part of an element is not an option: with rules relative to l, the left
-edge of an interval, removing [0, a) of an element for every a > 1/2 can work while
-a = 1/2 does not, and then no removal would be the smallest.)
 """
 
 from __future__ import annotations
@@ -53,7 +56,7 @@ from fractions import Fraction
 from intervals import Interval, IntervalSet
 from line import USER, Claims, LineState, Op
 from region import IncompatiblePeriods, Region
-from rules import And, Atom, Not, Or, RuleSet
+from rules import And, Atom, Not, Or, RuleSet, is_hidden
 from solver import EMPTY, Conflict, Line, Problem, Undetermined, _values, kinds_of, lhs_region, solve, target, union
 
 MAX_OPTIONS = 64  # combinations kept per requirement (the smallest first)
@@ -192,10 +195,17 @@ class _Lines:
             self._met[i] = lhs_region(self.rs.element[i].lhs, self.vals)
         return self._met[i]
 
-    def anchors(self, i: int, o, where: Region) -> Region:
-        """The anchors of rule i whose literal o applies somewhere on `where`."""
-        base = self.met(i) if o.anchor == "p" else self.met(i).left_edges()
-        return base & where.dilate(-o.where)
+    def stop(self, i: int, o, where: Region) -> Region:
+        """Where the left side of rule i must stop being met so that its literal o no
+        longer applies on `where`, and nowhere else. Relative to p: the anchors that reach
+        `where`. Relative to l: from each left edge that reaches it, up to the first
+        position of its interval that does not; that one is then the left edge."""
+        met = self.met(i)
+        reach = met & where.dilate(-o.where)
+        if o.anchor == "p" or not reach:
+            return reach
+        edges = met.left_edges()
+        return union(c for c in reach.components() if c & edges)
 
     def placing(self, K: str) -> list:
         """(i, literal): the rules that place K present, always (no "or")."""
@@ -207,8 +217,9 @@ class _Lines:
 
 
 class _Resolution:
-    """Remove older elements, one conflict after the other, so that the claims are
-    consistent again (see the top of this file)."""
+    """Remove parts of older elements, one conflict after the other, so that the claims
+    are consistent again (see the top of this file). What is removed: {element index:
+    the part of it removed}; a combination is a frozenset of (index, part)."""
 
     def __init__(self, rs: RuleSet, old_line: Line, c1: Claims, mand_pos, mand_neg, temp, footprint: Region) -> None:
         self.rs, self.old_line, self.c1, self.temp = rs, old_line, c1, temp
@@ -216,27 +227,32 @@ class _Resolution:
         self.older = _older_elements(c1, mand_pos, mand_neg)
         R = (len(rs.order) + 1) * rs.reach + 1
         self.near = footprint.dilate(Interval.closed(-R, R))
+        self.max_steps = 4 * len(self.older) + 16  # beyond: whole elements (fast)
         self._lines: dict[frozenset, Line | None] = {}
 
     def run(self) -> LineState:
-        removed: list[int] = []
+        removed: dict[int, Region] = {}
+        steps = 0
         while not self.consistent(removed):
-            try:
-                lines = _Lines(self.rs, self.claims(removed), self.temp)
-                step = self.step(lines, removed) if lines.conflicts else None
-            except IncompatiblePeriods:
-                step = None
+            step = None
+            if steps < self.max_steps:
+                try:
+                    lines = _Lines(self.rs, self.claims(removed), self.temp)
+                    step = self.step(lines, removed) if lines.conflicts else None
+                except IncompatiblePeriods:
+                    step = None
             if not step:
-                removed = self.prune(self.fallback(removed), len(removed))
+                removed = self.fallback(removed)
                 break
-            removed += step
-        return LineState(self.claims(removed), self._lines[frozenset(removed)])
+            removed = _merge(removed, step)
+            steps += 1
+        return LineState(self.claims(removed), self._lines[_key(removed)])
 
-    def claims(self, removed) -> Claims:
-        return _without(self.c1, [self.older[i] for i in removed])
+    def claims(self, removed: dict) -> Claims:
+        return _without(self.c1, [(self.older[i][0], reg) for i, reg in removed.items()])
 
-    def consistent(self, removed) -> bool:
-        key = frozenset(removed)
+    def consistent(self, removed: dict) -> bool:
+        key = _key(removed)
         if key not in self._lines:
             try:
                 self._lines[key] = solve(self.rs, self.claims(removed).problem(self.temp))
@@ -244,70 +260,76 @@ class _Resolution:
                 self._lines[key] = None
         return self._lines[key] is not None
 
-    def live(self, removed, name: str, where: Region, value=None) -> frozenset:
-        """The older elements still there, of this name, that meet `where`."""
-        gone = set(removed)
-        idx = [i for i, (n, _, v) in enumerate(self.older) if i not in gone and n == name and (value is None or v == value)]
+    def pieces(self, removed: dict, name: str, where: Region, value=None) -> frozenset:
+        """The parts on `where` of the older elements of this name still there."""
+        idx = [i for i, (n, _, v) in enumerate(self.older) if n == name and (value is None or v == value)]
         if not idx:
             return frozenset()
         meets = _Meets(where, [self.older[i][1] for i in idx])
-        return frozenset(i for i in idx if meets(self.older[i][1]))
+        out = []
+        for i in idx:
+            if meets(self.older[i][1]):
+                part = (self.older[i][1] & where) - removed.get(i, EMPTY)
+                if part:
+                    out.append((i, part))
+        return frozenset(out)
 
     # ------------------------------------------------------------ one conflict
 
-    def step(self, lines: _Lines, removed) -> list[int] | None:
+    def step(self, lines: _Lines, removed: dict) -> frozenset | None:
         """The removal that resolves the leftmost conflict, or None."""
         X, a, b = min(lines.conflicts, key=lambda c: c[0].inf())
         opts = set(self.give_way(lines, a, X, removed)) | set(self.give_way(lines, b, X, removed))
         opts.discard(frozenset())
         works = []
-        for opt in sorted(opts, key=lambda o: (len(o), sorted(o))):
-            if any(w <= opt for w, _ in works):
+        for opt in _cap(opts):
+            if any(_within(w, opt) for w, _ in works):
                 continue  # only what is necessary
-            after = _Lines(self.rs, self.claims(removed + sorted(opt)), self.temp)
+            after = _Lines(self.rs, self.claims(_merge(removed, opt)), self.temp)
             if any(w & X and {a2, b2} == {a, b} for w, a2, b2 in after.conflicts):
                 continue
             works.append((opt, after))
         best = None
         for opt, after in works:
-            lost = _lost(self.old_line, after.line(), Region.universe()) + sum(1 for i in opt if self.older[i][0].startswith("no "))
-            cand = (lost, _dropped([self.older[i] for i in opt]))
+            lost = _lost(self.old_line, after.line(), Region.universe()) + sum(1 for i, _ in opt if self.older[i][0].startswith("no "))
+            cand = (lost, _dropped([(self.older[i][0], reg) for i, reg in opt]))
             if best is None or _better(cand, best[0], self.rs):
                 best = (cand, opt)
-        return sorted(best[1]) if best else None
+        return best[1] if best else None
 
-    def give_way(self, lines: _Lines, side: tuple, X: Region, removed) -> list[frozenset]:
-        """The combinations of older elements whose removal drops this requirement on X."""
+    def give_way(self, lines: _Lines, side: tuple, X: Region, removed: dict) -> list[frozenset]:
+        """The combinations of parts of older elements whose removal drops this
+        requirement on X, and nothing more."""
         if side[0] == "rule":
             _, i, o = side
-            A = lines.anchors(i, o, X)
-            return self.falsify(lines, self.rs.element[i].lhs, A, removed) if A else []
+            S = lines.stop(i, o, X)
+            return self.falsify(lines, self.rs.element[i].lhs, S, removed) if S else []
         if side[0] == "claim":
             _, K, v = side
             if self.mand_pos.get(K, {}).get(v, EMPTY) & X:
                 return []  # the edit's own
-            s = self.live(removed, K, X, v)
+            s = self.pieces(removed, K, X, v)
             return [s] if s else []
         if side[0] == "no":
             K = side[1]
             if self.mand_neg.get(K, EMPTY) & X:
                 return []
-            s = self.live(removed, "no " + K, X)
+            s = self.pieces(removed, "no " + K, X)
             return [s] if s else []
         if side[0] == "present":
             return self.absent(lines, side[1], X, removed)
         return []  # "taken": the edit's own
 
-    def absent(self, lines: _Lines, K: str, Q: Region, removed) -> list[frozenset]:
-        """Combinations that make K absent on Q: its older claims there go, and each rule
-        that places K there stops applying."""
+    def absent(self, lines: _Lines, K: str, Q: Region, removed: dict) -> list[frozenset]:
+        """Combinations that make K absent on Q: its older claims on Q go, and each rule
+        that places K on Q stops applying there."""
         if K in lines.kinds_in or any(reg & Q for reg in self.mand_pos.get(K, {}).values()):
             return []
-        choices = [[self.live(removed, K, Q)]]
+        choices = [[self.pieces(removed, K, Q)]]
         for i, o in lines.placing(K):
-            A = lines.anchors(i, o, Q)
-            if A:
-                sub = self.falsify(lines, self.rs.element[i].lhs, A, removed)
+            S = lines.stop(i, o, Q)
+            if S:
+                sub = self.falsify(lines, self.rs.element[i].lhs, S, removed)
                 if not sub:
                     return []
                 choices.append(sub)
@@ -335,27 +357,28 @@ class _Resolution:
 
     # ------------------------------------------------------------ otherwise
 
-    def fallback(self, removed) -> list[int]:
-        """Older elements removed one after the other, near the edit first, then from left
-        to right, until the claims are consistent (with none left, only the edit stays,
-        which is consistent: step 2)."""
+    def fallback(self, removed: dict) -> dict:
+        """The rest of older elements removed whole, one after the other, near the edit
+        first, then from left to right, until the claims are consistent (with none left,
+        only the edit stays, which is consistent: step 2). Then each of them is put back
+        as it was if the claims stay consistent, the last removed first."""
         rank = lambda i: self.rs.rank.get(self.older[i][0].removeprefix("no "), 10 ** 6)
-        order = sorted((i for i in range(len(self.older)) if i not in removed),
+        order = sorted((i for i in range(len(self.older)) if self.older[i][1] - removed.get(i, EMPTY)),
                        key=lambda i: (not (self.older[i][1] & self.near), self.older[i][1].inf(), rank(i)))
-        cur = list(removed)
+        cur, added = dict(removed), []
         for i in order:
-            cur.append(i)
+            cur[i] = self.older[i][1]
+            added.append(i)
             if self.consistent(cur):
-                return cur
-        raise Refused("no removal of older elements resolves the conflict")
-
-    def prune(self, removed, start: int) -> list[int]:
-        """An element the fallback removed (removed[start:]) is put back if the claims
-        stay consistent with it, the last removed first. (Each conflict's own removal is
-        already only what is necessary.)"""
-        cur = list(removed)
-        for i in reversed(removed[start:]):
-            trial = [j for j in cur if j != i]
+                break
+        else:
+            raise Refused("no removal of older elements resolves the conflict")
+        for i in reversed(added):
+            trial = dict(cur)
+            if i in removed:
+                trial[i] = removed[i]
+            else:
+                del trial[i]
             if self.consistent(trial):
                 cur = trial
         return cur
@@ -383,18 +406,44 @@ class _Meets:
         return False
 
 
+def _norm(pairs) -> frozenset:
+    """(index, part) pairs, one per index."""
+    d: dict[int, Region] = {}
+    for i, reg in pairs:
+        d[i] = d[i] | reg if i in d else reg
+    return frozenset(d.items())
+
+
+def _merge(removed: dict, opt) -> dict:
+    out = dict(removed)
+    for i, reg in opt:
+        out[i] = out[i] | reg if i in out else reg
+    return out
+
+
+def _key(removed: dict) -> frozenset:
+    return frozenset(removed.items())
+
+
+def _within(a: frozenset, b: frozenset) -> bool:
+    """Combination a removes nothing that b does not."""
+    d = dict(b)
+    return all(i in d and reg.issubset(d[i]) for i, reg in a)
+
+
 def _combine(choices: list[list[frozenset]]) -> list[frozenset]:
     """One combination from each list, together; none if a list has none."""
     if any(not c for c in choices):
         return []
     out = [frozenset()]
     for c in choices:
-        out = _cap([a | b for a in out for b in c])
+        out = _cap([_norm(a | b) for a in out for b in c])
     return out
 
 
 def _cap(opts) -> list[frozenset]:
-    return sorted(set(opts), key=lambda o: (len(o), sorted(o)))[:MAX_OPTIONS]
+    """The combinations, the smallest first, at most MAX_OPTIONS of them."""
+    return sorted(set(opts), key=lambda o: (len(o), sorted(i for i, _ in o)))[:MAX_OPTIONS]
 
 
 def _without(c1: Claims, drop) -> Claims:
@@ -426,6 +475,8 @@ def _lost(old: Line, new: Line, where: Region):
     that meet `where` and do not stay whole."""
     n = 0
     for k, d in old.vals.items():
+        if is_hidden(k):
+            continue
         for v, reg in d.items():
             diff = (reg - new.vals.get(k, {}).get(v, EMPTY)) & where
             if diff:

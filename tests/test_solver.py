@@ -471,6 +471,38 @@ def bf_sweep(rs, prob):
     return None
 
 
+class RightSideTest(unittest.TestCase):
+    """A right side with "and" inside "or": the leftmost operand that can be chosen, an
+    operand being a conjunction (requirement.md); the hidden kinds are not on the line."""
+
+    def line(self, rules, ops):
+        rs = parse_rules(rules)
+        s = apply_edit(rs, LineState.empty(), ops, USER)
+        self.assertFalse(rules_hold(rs, s.line, s.claims))
+        return s.line
+
+    def test_conjunction_operand(self):
+        line = self.line(["A → (B & C) or D"], [Op.put("A", Interval.closed(0, 2))])
+        self.assertEqual(line.kinds(), ["A", "B", "C"])
+        line = self.line(["A → (B & C) or D", "X → no C"], [Op.put("A", Interval.closed(0, 2)), Op.put("X", Interval.point(1))])
+        everywhere_but_1 = Region.of(IntervalSet.of(Interval.closed_open(0, 1), Interval.open_closed(1, 2)))
+        self.assertEqual((line.presence("B"), line.presence("C"), line.presence("D")), (everywhere_but_1, everywhere_but_1, Region.point(1)))
+
+    def test_nested(self):
+        line = self.line(["A → ((B or C) & E) or D", "X → no B", "Y → no E"],
+                         [Op.put("A", Interval.closed(0, 3)), Op.put("X", Interval.closed(1, 3)), Op.put("Y", Interval.closed(2, 3))])
+        self.assertEqual(line.presence("B"), Region.of(Interval.closed_open(0, 1)))
+        self.assertEqual(line.presence("C"), Region.of(Interval.closed_open(1, 2)))
+        self.assertEqual(line.presence("E"), Region.of(Interval.closed_open(0, 2)))
+        self.assertEqual(line.presence("D"), Region.of(Interval.closed(2, 3)))
+
+    def test_and_of_ors(self):
+        """(B or C) & (D or E): each "or" takes its own leftmost operand."""
+        line = self.line(["A → (B or C) & (D or E)", "X → no D"], [Op.put("A", Interval.closed(0, 1)), Op.put("X", Interval.point(1))])
+        self.assertEqual(line.presence("B"), Region.of(Interval.closed(0, 1)))
+        self.assertEqual((line.presence("D"), line.presence("E")), (Region.of(Interval.closed_open(0, 1)), Region.point(1)))
+
+
 # ------------------------------------------------------------------- resolution
 
 def bf_resolve(rs, old_claims: dict, old_neg: set, ops):
@@ -523,13 +555,22 @@ class ResolutionTest(unittest.TestCase):
         self.assertEqual((s.line.presence("B"), s.line.presence("C")), (Region.empty(), Region.empty()))
         self.assertEqual(s.claims.negative("C"), Region.point(3))
 
-    def test_whole_elements(self):
-        """Removing A loses A and C, removing B loses B and C: the tie keeps A, the leftmost."""
+    def test_part_of_an_element(self):
+        """Nothing more than necessary: C must go on [5, 10]. Removing A there loses A and
+        C, removing B there loses B and C: the tie keeps A, the leftmost. Only [5, 10] of
+        B goes."""
         rs = parse_rules(["A and B → C"])
         s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, 10)), Op.put("B", Interval.closed(2, 12))], USER)
         s = apply_edit(rs, s, [Op.put_no("C", Interval.closed(5, 20))], USER)
         self.assertEqual(s.line.presence("A"), Region.of(Interval.closed(0, 10)))
-        self.assertEqual(s.line.kinds(), ["A"])
+        self.assertEqual(s.line.presence("B"), Region.of(IntervalSet.of(Interval.closed_open(2, 5), Interval.open_closed(10, 12))))
+        self.assertEqual(s.line.presence("C"), Region.of(Interval.closed_open(2, 5)))
+
+    def test_a_point_is_enough(self):
+        rs = parse_rules(["A → C"])
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, 10))], USER)
+        s = apply_edit(rs, s, [Op.put_no("C", Interval.point(5))], USER)
+        self.assertEqual(s.line.presence("A"), Region.of(IntervalSet.of(Interval.closed_open(0, 5), Interval.open_closed(5, 10))))
 
     def test_fewest_lost(self):
         # removing A loses A, D, E; removing B loses B only: B goes although A is left of it
@@ -551,31 +592,38 @@ class ResolutionTest(unittest.TestCase):
         self.assertEqual(s.line.kinds(), ["A"])  # B does not come back
 
     def test_consequence_relative_to_l(self):
+        """B on [l, l + 1] reaches 7/2 from the left edge 3: A goes on [3, 7/2], the left
+        edge becomes 7/2+ε and B is on (7/2, 9/2+ε]. [8, 9] is untouched."""
         rs = parse_rules(["A → B on [0, 1] of l"])
         s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(3, 6)), Op.put("A", Interval.closed(8, 9))], USER)
         s = apply_edit(rs, s, [Op.put_no("B", Interval.point(F(7, 2)))], USER)
-        self.assertEqual(s.line.presence("A"), Region.of(Interval.closed(8, 9)))  # all of [3, 6] goes, not a part
-        self.assertEqual(s.line.presence("B"), Region.of(Interval.closed(8, 9)))
+        self.assertEqual(s.line.presence("A"), Region.of(IntervalSet.of(Interval.open_closed(F(7, 2), 6), Interval.closed(8, 9))))
+        self.assertEqual(s.line.presence("B"), Region.of(IntervalSet.of(Interval(Pos(F(7, 2), 1), Pos(F(9, 2), 1)), Interval.closed(8, 9))))
 
     def test_fewest_elements_not_measure(self):
-        """Removing A loses A and two C; removing the two B loses them and two C: A goes,
-        although it is longer."""
+        """Removing A on [1, 2] and [3, 4] loses A and two C; removing the two B loses
+        them and two C: A loses those parts, although it is longer."""
         rs = parse_rules(["A & B → C"])
         s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, 10))], USER)
-        s = apply_edit(rs, s, [Op.put("B", IntervalSet.of(Interval.closed(1, 2), Interval.closed(3, 4)))], USER)
+        bs = IntervalSet.of(Interval.closed(1, 2), Interval.closed(3, 4))
+        s = apply_edit(rs, s, [Op.put("B", bs)], USER)
         s = apply_edit(rs, s, [Op.put_no("C", Interval.closed(0, 5))], USER)
-        self.assertEqual(s.line.kinds(), ["B"])
+        self.assertEqual(s.line.presence("A"), Region.of(Interval.closed(0, 10)) - Region.of(bs))
+        self.assertEqual(s.line.presence("B"), Region.of(bs))
+        self.assertEqual(s.line.presence("C"), Region.empty())
 
     def test_many_elements_in_conflict(self):
         """200 older elements in conflict at once (more than any search over removal sets
-        could try): removing A loses A and the 100 C, removing the 100 B loses them and
-        the 100 C, so A goes. And 100 separate conflicts are decided one after the other."""
+        could try): removing A at the 100 points loses A and the 100 C, removing the 100 B
+        loses them and the 100 C, so A goes there. And 100 separate conflicts are decided
+        one after the other."""
         rs = parse_rules(["A & B → C"])
         bs = IntervalSet(Interval.point(i) for i in range(100))
         s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, 100))], USER)
         s = apply_edit(rs, s, [Op.put("B", bs)], USER)
         s = apply_edit(rs, s, [Op.put_no("C", Interval.closed(0, 100))], USER)
-        self.assertEqual(s.line.kinds(), ["B"])
+        self.assertEqual(s.line.kinds(), ["A", "B"])
+        self.assertEqual(s.line.presence("A"), Region.of(Interval.closed(0, 100)) - Region.of(bs))
         self.assertEqual(s.line.presence("B"), Region.of(bs))
         rs = parse_rules(["A & B → C", "A → D"])
         s = apply_edit(rs, LineState.empty(), [Op.put("A", IntervalSet(Interval.point(3 * i) for i in range(100)))], USER)

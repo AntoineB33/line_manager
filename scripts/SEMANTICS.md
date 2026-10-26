@@ -90,11 +90,24 @@ An element rule has the form L → R.
   Atoms combine with `not`/`no`, `and`/`&`, `or`/`|` and parentheses. The set
   where L is met is computed exactly with region algebra (`lhs_region`), and
   `test_left_sides` checks it point by point.
-- **Right side R.** A list of items, all applied. An item is one of:
+- **Right side R.** Any expression of literals with "and" (`&`), "or" and
+  parentheses (`test_right_side_expressions`). A literal is one of:
   - `K p%`: K present at exactly p%;
   - `K`: K present (it gets 100% when it is added);
-  - `no K` or `K 0%`: K absent;
-  - `L₁ or L₂ or …`: an ordered disjunction of such literals (§5).
+  - `no K` or `K 0%`: K absent.
+
+  "&" separates the items, all applied, and "or" binds tighter: `B or C & D` is
+  `(B or C) & D`. Parentheses group anything, and the parentheses of an interval
+  (`on (0, 1] of l`) belong to its literal.
+  - **"or" (§5).** An "or" takes the leftmost operand that can be chosen. An
+    operand can be a conjunction, `(B & C) or D`, or contain other "or"s. The
+    operands are tried with the left ones first, so `((B or C) & E) or D` tries
+    `B & E`, then `C & E`, then `D`.
+  - **Hidden kinds.** An operand `B & C` is a hidden kind `§(B & C)`, placed
+    where the operand goes, with the rule `§(B & C) → B & C`. Choosing it places
+    B and C, and it can be chosen exactly when both can. Hidden kinds are not
+    shown on the line, and they are not counted as lost elements
+    (`RightSideTest`).
 - **Locations.** Each item has a location relative to an anchor: "at d", "d units
   on the left/right" or "on [a, b)", followed by "of p" or "of l".
   - p is each position where L is met. The literal applies at p + d, or on
@@ -304,27 +317,37 @@ The result of an edit is determined as follows:
    the rules do not decide its own result (§5, `Undetermined`). It is never
    refused because of what is on the line: edits from the user win over it.
 3. **The edit wins.** The edit's elements are kept. If older elements conflict
-   with them, older elements are removed, one conflict after the other, from left
-   to right.
+   with them, parts of older elements are removed, nothing more than necessary,
+   one conflict after the other, from left to right.
    - **What an element is.** An element is a largest interval of one claim
-     ("K p%" or "no K", with one owner), and it is removed whole.
+     ("K p%" or "no K", with one owner). Only the part of it that has to go is
+     removed.
    - **A conflict** is two requirements that contradict on a region X: K present
      and "no K", or two percentages of K. Each requirement comes from a claim or
      from a rule r applied on X. The conflict region X is all of the region
      where those two contradict, not one point.
-   - **The combinations.** A requirement from a rule r gives way when r's left
-     side becomes false on X. That means removing the elements that one term or
-     more of the left side rest on: these are the combinations. A kind that a
+   - **Where a rule stops applying.** A requirement from a rule r gives way when
+     r's left side stops being met where r reaches X, and only there:
+     - relative to p: on the anchors whose literal reaches X;
+     - relative to l: from each left edge whose literal reaches X, up to the
+       first position of its interval whose literal does not. That position
+       becomes the left edge. With `A → B on [0, 1] of l`, A on [0, 10] and
+       "no B" at 1/2, A goes on [0, 1/2]: the left edge becomes 1/2+ε and B is
+       on (1/2, 3/2+ε] (`test_consequence_relative_to_l`).
+   - **The combinations.** The left side stops being met there when one term or
+     more of it stop holding there. That means removing the parts of the
+     elements those terms rest on: these are the combinations. A kind that a
      rule places rests on that rule's left side, and so on, since there is no
      cycle. A term that holds where a kind is absent (`not`, `K 0%`, `K < p%`)
      cannot be made false by removing. A requirement from an older claim gives
-     way by removing that claim. The edit's own requirements never give way.
+     way by removing that claim on X. The edit's own requirements never give way.
    - **Criteria, in order,** among the combinations that remove the conflict
      from X:
-     - Only what is necessary: none may strictly contain another one that works.
+     - Only what is necessary: no combination may remove everything that
+       another working combination removes, and more.
      - The combination that loses the fewest elements. A lost element is either
        an element of the line (a largest interval of one kind and percentage)
-       that does not stay whole, or a removed "no K" element.
+       that does not stay whole, or a "no K" element that loses a part.
      - On a tie, the combination that keeps the leftmost elements: at the
        leftmost position where two combinations differ, the one that keeps the
        element there. Kinds at the same position are ordered by their first
@@ -334,34 +357,43 @@ The result of an edit is determined as follows:
      (2^k for a left side of k terms), however many elements there are, so an
      edit with thousands of elements in conflict is resolved in seconds. The
      result is not always the smallest loss over all conflicts together.
-   - **Otherwise.** The fallback handles three cases: conflicts through the "or"
-     choices, which region algebra does not compute; conflicts that no
-     combination removes; and lines whose "or" choices the edit leaves undecided
-     or not computed in time (`Undetermined`, `test_undecided_with_the_line_gives_way`).
-     Older elements are removed one after the other, those within
-     (depth + 1) × reach + 1 of the edit first, then from left to right, until
-     the claims are consistent and decided. More than necessary may go then,
-     which the requirement allows to keep the computation fast. The edit alone is
+   - **Otherwise: whole elements, to keep the computation fast.** The fallback
+     removes more than necessary, which the requirement allows for a fast
+     computation. It handles four cases:
+     - conflicts through the "or" choices, which region algebra does not
+       compute;
+     - conflicts that no combination removes;
+     - lines whose "or" choices the edit leaves undecided or not computed in
+       time (`Undetermined`, `test_undecided_with_the_line_gives_way`);
+     - more than 4 × (number of older elements) + 16 conflicts one after the
+       other.
+
+     The rest of the older elements are removed whole, one after the other,
+     those within (depth + 1) × reach + 1 of the edit first, then from left to
+     right, until the claims are consistent and decided. The edit alone is
      consistent and decided (step 2), so this ends. Each element removed that way
-     is then put back if the claims stay consistent and decided with it.
+     is then put back as it was if the claims stay consistent and decided with
+     it.
 4. **Removed elements are gone for good.** Removing the newer element later does
    not bring them back (`test_gone_for_good`).
 
-**Why whole elements.** With rules relative to l, removing parts of elements has
-no smallest choice. With `A → B on [0, 1] of l`, A on [0, 10], then "no B" at
-1/2: removing A on [0, a) works for every a > 1/2 but not for a = 1/2. So the
-requirement's "loses as few elements as possible" counts whole elements, the
-intervals of the state.
+**Removing parts.** "Nothing more than necessary" removes parts of elements, not
+whole elements. In positions x + kε a smallest part exists where the reals have
+none. With `A → B on [0, 1] of l`, A on [0, 10] and "no B" at 1/2, removing A on
+[0, a) works for every real a > 1/2 but not for a = 1/2, so the reals have no
+smallest removal. Among positions there is one: [0, 1/2], since 1/2+ε is the
+first position after 1/2.
 
 The requirement's example: with "A and B → C", put A and B at x, then "no C" at
 x. Only B and C are removed (`test_requirement_example`). Other cases tested:
 
+- `A → C`, A on [0, 10], "no C" at 5: A only loses the point 5
+  (`test_a_point_is_enough`).
 - When removing A would lose more elements than removing B, B is removed
-  (`test_fewest_lost`).
-- Elements are counted, not measured: one long A goes rather than two short B
-  (`test_fewest_elements_not_measure`).
-- A consequence relative to l removes the whole element
-  (`test_consequence_relative_to_l`).
+  (`test_fewest_lost`). Of B on [2, 12], only the part [5, 10] where C has to go
+  is removed (`test_part_of_an_element`).
+- Elements are counted, not measured: one long A loses two parts rather than two
+  short B going (`test_fewest_elements_not_measure`).
 - 200 older elements in conflict at once, and 100 separate conflicts, are
   resolved (`test_many_elements_in_conflict`).
 

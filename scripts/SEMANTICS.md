@@ -299,17 +299,29 @@ The result of an edit is determined as follows:
 
 1. **Direct effects.** The edit's own operations apply. A put replaces what was
    claimed of that kind on its region.
-2. **Refusal.** If the edit contradicts the rules on its own, it is refused, for
-   example C and D at x with D → no C. It is also refused when the rules do not
-   decide its result, or when the search for it is too long (§5, `Undetermined`):
-   no older element is removed for that.
-3. **Newest wins.** The edit's elements are kept. If older elements conflict
-   with them, older elements are removed.
+2. **Refusal.** An edit is refused only when it has no result on its own: it
+   contradicts the rules by itself, for example C and D at x with D → no C, or
+   the rules do not decide its own result (§5, `Undetermined`). It is never
+   refused because of what is on the line: edits from the user win over it.
+3. **The edit wins.** The edit's elements are kept. If older elements conflict
+   with them, older elements are removed, one conflict after the other, from left
+   to right.
    - **What an element is.** An element is a largest interval of one claim
      ("K p%" or "no K", with one owner), and it is removed whole.
-   - **Criteria, in order:**
-     - Only what is necessary: no removal set may strictly contain another one
-       that works.
+   - **A conflict** is two requirements that contradict on a region X: K present
+     and "no K", or two percentages of K. Each requirement comes from a claim or
+     from a rule r applied on X. The conflict region X is all of the region
+     where those two contradict, not one point.
+   - **The combinations.** A requirement from a rule r gives way when r's left
+     side becomes false on X. That means removing the elements that one term or
+     more of the left side rest on: these are the combinations. A kind that a
+     rule places rests on that rule's left side, and so on, since there is no
+     cycle. A term that holds where a kind is absent (`not`, `K 0%`, `K < p%`)
+     cannot be made false by removing. A requirement from an older claim gives
+     way by removing that claim. The edit's own requirements never give way.
+   - **Criteria, in order,** among the combinations that remove the conflict
+     from X:
+     - Only what is necessary: none may strictly contain another one that works.
      - The combination that loses the fewest elements. A lost element is either
        an element of the line (a largest interval of one kind and percentage)
        that does not stay whole, or a removed "no K" element.
@@ -317,6 +329,18 @@ The result of an edit is determined as follows:
        leftmost position where two combinations differ, the one that keeps the
        element there. Kinds at the same position are ordered by their first
        appearance in the rules.
+   - **Conflict by conflict.** The choice is made for each conflict in turn,
+     not over all conflicts at once. It tries a few combinations per conflict
+     (2^k for a left side of k terms), however many elements there are, so an
+     edit with thousands of elements in conflict is resolved in seconds. The
+     result is not always the smallest loss over all conflicts together.
+   - **Otherwise.** Some conflicts can't be explained this way: those through
+     the "or" choices, which region algebra does not compute, and those that no
+     combination removes. For these, older elements are removed one after the
+     other, those within (depth + 1) × reach + 1 of the edit first, then from
+     left to right, until the claims are consistent. The edit alone is
+     consistent (step 2), so this ends. Each element removed that way is then
+     put back if the claims stay consistent with it.
 4. **Removed elements are gone for good.** Removing the newer element later does
    not bring them back (`test_gone_for_good`).
 
@@ -335,26 +359,13 @@ x. Only B and C are removed (`test_requirement_example`). Other cases tested:
   (`test_fewest_elements_not_measure`).
 - A consequence relative to l removes the whole element
   (`test_consequence_relative_to_l`).
+- 200 older elements in conflict at once, and 100 separate conflicts, are
+  resolved (`test_many_elements_in_conflict`).
 
 `ResolutionTest.test_matches_brute_force` compares the result with a brute-force
-search over every removal set.
-
-### What is computed, and where it stops
-
-A change of a left side on a set E moves its left edges only within the closure
-of E, because being a left edge is a local property. A rule then acts within
-`reach` (the largest distance in a location) of that change. So removing an
-element can only matter within depth × reach of it, where depth is the number of
-kinds.
-
-- **Candidates.** The older elements within (depth + 1) × reach + 1 of the edit.
-- **Groups.** Candidates farther apart than twice that distance are decided
-  separately, from left to right. Each group counts the losses near itself.
-- **Limit.** A group of more than 12 elements is refused rather than guessed. A
-  refused edit has a known result: nothing changes.
-- **Approximation.** With "or" choices, a forced choice can in principle travel
-  along a lattice farther than this distance. There, the grouping is an
-  approximation.
+search over every removal set, minimizing the loss over all conflicts together.
+On those small random cases, the conflict-by-conflict choice gives the same
+result.
 
 ## 7. Who modifies the line (`simulation.py`, `guards.py`)
 

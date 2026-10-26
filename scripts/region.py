@@ -259,8 +259,14 @@ class Region:
         lo = self.lo if self.lo <= x.lo else x.lo
         hi = self.hi if self.hi >= x.hi else x.hi
         a, b = lo - m, hi + m
-        xs = x.on(a, b)
-        return sum(1 for iv in self.on(a, b).intervals if IntervalSet.of(iv) & xs)
+        xs = x.on(a, b).intervals
+        n, j = 0, 0
+        for iv in self.on(a, b).intervals:  # both sorted: one pass
+            while j < len(xs) and xs[j].hi < iv.lo:
+                j += 1
+            if j < len(xs) and xs[j].lo <= iv.hi:
+                n += 1
+        return n
 
     def issubset(self, other: Region) -> bool:
         return (self - other).is_empty()

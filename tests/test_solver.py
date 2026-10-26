@@ -566,6 +566,24 @@ class ResolutionTest(unittest.TestCase):
         s = apply_edit(rs, s, [Op.put_no("C", Interval.closed(0, 5))], USER)
         self.assertEqual(s.line.kinds(), ["B"])
 
+    def test_many_elements_in_conflict(self):
+        """200 older elements in conflict at once (more than any search over removal sets
+        could try): removing A loses A and the 100 C, removing the 100 B loses them and
+        the 100 C, so A goes. And 100 separate conflicts are decided one after the other."""
+        rs = parse_rules(["A & B → C"])
+        bs = IntervalSet(Interval.point(i) for i in range(100))
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, 100))], USER)
+        s = apply_edit(rs, s, [Op.put("B", bs)], USER)
+        s = apply_edit(rs, s, [Op.put_no("C", Interval.closed(0, 100))], USER)
+        self.assertEqual(s.line.kinds(), ["B"])
+        self.assertEqual(s.line.presence("B"), Region.of(bs))
+        rs = parse_rules(["A & B → C", "A → D"])
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", IntervalSet(Interval.point(3 * i) for i in range(100)))], USER)
+        s = apply_edit(rs, s, [Op.put("B", IntervalSet(Interval.point(3 * i) for i in range(100)))], USER)
+        s = apply_edit(rs, s, [Op.put_no("C", Interval.closed(0, 300))], USER)
+        self.assertEqual(sorted(s.line.kinds()), ["A", "D"])  # removing A would also lose D
+        self.assertFalse(rules_hold(rs, s.line, s.claims))
+
     def test_small_edit_on_a_long_element(self):
         rs = parse_rules(ALTERNATE + ["X → no C", "X → no B"])
         s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, 30))], USER)

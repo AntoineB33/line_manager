@@ -222,9 +222,20 @@ class AnchorTest(unittest.TestCase):
         self.assertEqual(s.line.presence("C"), Region.point(6))
 
     def test_no_left_edge(self):
+        """An interval with no left end: l is -inf (unbound). l + [0, 1] is at -inf, not on
+        the line: nothing. l + [0, +inf) is the whole line."""
+        left = Interval(-INF, F(2), False, True)
         rs = parse_rules(["A → B on [0, 1] of l"])
-        s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval(-INF, F(2), False, True))], USER)
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", left)], USER)
         self.assertEqual(s.line.kinds(), ["A"])
+        rs = parse_rules(["A → B on [0, inf) of l"])
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", left)], USER)
+        self.assertEqual(s.line.presence("B"), Region.universe())
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(3, 4))], USER)
+        self.assertEqual(s.line.presence("B"), Region.of(Interval(3, INF, True, False)))
+        # "no B" far right: every part of A would still reach it, so all of A goes
+        s = apply_edit(rs, apply_edit(rs, LineState.empty(), [Op.put("A", left)], USER), [Op.put_no("B", Interval.point(100))], USER)
+        self.assertEqual(s.line.kinds(), [])
 
     def test_once_per_largest_interval(self):
         """Relative to l, "no F on (0, 1]" acts once per largest interval of B."""
@@ -469,6 +480,85 @@ def bf_sweep(rs, prob):
             continue
         return {k: got[k] for k in sw.kin}
     return None
+
+
+# kinds only act on later kinds (A < B < ... < E); "not" on the kinds an "or" changes
+ABSENT_POOL = ["A & not B → D", "A & not C → E 1 unit on the right", "B → no D 1 unit on the left", "D & not B → no E",
+               "C → no E 1 unit on the right", "A → C or D 1 unit on the right", "not C & B → no D", "A 100% & not D → E",
+               "A & D 0% → E 1 unit on the left", "not B & A → no C 1 unit on the right",
+               "A & not B → D or E 1 unit on the right", "A & not D → no E 1 unit on the left", "not C & not D & A → E",
+               "A & not E → no D 1 unit on the right", "B & not D → no E 1 unit on the right"]
+
+
+def bf_absent(rs, claims: set):
+    """Points only, integer offsets, every "or" met where A is (as in ABSENT_POOL). The
+    line, or None: the first assignment of operands, in the order (x, "or"), whose line
+    breaks no rule. Each line is computed kind after kind (no cycle), so a kind read as
+    absent is read once it is known: no assumption that choices only add consequences."""
+    ors = [rs.element[i].rhs[j] for i, j in rs.or_items]
+    xs = sorted({x for k, x in claims if k == "A"})
+    lo, hi = int(min(x for _, x in claims)) - 3, int(max(x for _, x in claims)) + 3
+    anchors = sorted(((x, n) for x in xs for n in range(len(ors))))
+    for combo in itertools.product(*[range(len(ors[n].options)) for _, n in anchors]):
+        took = dict(zip(anchors, combo))
+        have: set = set(claims)
+        holds = lambda f, x: f.holds(lambda k: 100 if (k, x) in have else 0)
+        for K in rs.order:
+            for x in range(lo, hi + 1):
+                for i, r in enumerate(rs.element):
+                    for j, it in enumerate(r.rhs):
+                        for t, o in enumerate(it.options):
+                            if o.kind != K or o.negated or (it.is_or and took.get((x - o.rel.x, rs.or_items.index((i, j)))) != t):
+                                continue
+                            if holds(r.lhs, x - o.rel.x):
+                                have.add((K, F(x)))
+        ok = True
+        for r in rs.element:
+            for it in r.rhs:
+                o = it.options[0]
+                if not it.is_or and o.negated:
+                    for x in range(lo, hi + 1):
+                        if holds(r.lhs, x) and (o.kind, F(x + o.rel.x)) in have:
+                            ok = False
+        if ok:
+            return have
+    return None
+
+
+class AbsentReadTest(unittest.TestCase):
+    """A left side that reads under "not" a kind an "or" changes (requirement.md: any
+    boolean expression), solved exactly on lattices."""
+
+    def test_example(self):
+        rs = parse_rules(["A → B or C", "A & not B → E"])
+        line = solve(rs, Problem({"A": {F(100): Region.of(Interval.closed(0, 2))}}))
+        self.assertEqual((line.presence("B"), line.presence("E")), (Region.of(Interval.closed(0, 2)), Region.empty()))
+        # B cannot be at 1: C there, so E there
+        rs = parse_rules(["A → B or C", "A & not B → E", "X → no B"])
+        line = solve(rs, Problem({"A": {F(100): Region.of(Interval.closed(0, 2))}, "X": {F(100): Region.point(1)}}))
+        self.assertEqual((line.presence("C"), line.presence("E")), (Region.point(1), Region.point(1)))
+
+    def test_matches_brute_force(self):
+        rng = random.Random(29)
+        checked = 0
+        for _ in range(250):
+            try:
+                rs = parse_rules(["A → B or C"] + rng.sample(ABSENT_POOL, rng.randint(2, 5)))
+            except RuleError:
+                continue
+            claims = {("A", F(x)) for x in rng.sample(range(0, 5), rng.randint(1, 4))}
+            claims |= {(rng.choice("BCDE"), F(rng.randint(-1, 5))) for _ in range(rng.randint(0, 2))}
+            expect = bf_absent(rs, claims)
+            try:
+                line = solve(rs, problem_of(claims, set()))
+            except Conflict:
+                self.assertIsNone(expect, ([str(r) for r in rs.rules], sorted(claims)))
+                continue
+            self.assertIsNotNone(expect, ([str(r) for r in rs.rules], sorted(claims)))
+            self.assertEqual(as_points(line, "ABCDE"), expect, ([str(r) for r in rs.rules], sorted(claims)))
+            self.assertFalse(rules_hold(rs, line))
+            checked += 1
+        self.assertGreater(checked, 60)
 
 
 class RightSideTest(unittest.TestCase):

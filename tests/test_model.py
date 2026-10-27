@@ -197,8 +197,8 @@ class RulesTest(unittest.TestCase):
         for bad in (["mode 1 → D 1 unit on the right"],  # mode rules act at the chip only
                     ["A → B or C on [0, 1]"],  # C on an interval is relative to l: all of p or all of l
                     ["A → B 1 unit on the right of l or C"],
-                    ["A → B or C", "not B → E"],  # a chosen kind only required present
-                    ["A → B or C", "B 0% → E"],
+                    # read as absent: on lattices only (single positions relative to p)
+                    ["A → B or C", "not B → E on [0, 1] of p"],
                     ["A → B or C", "B < 50% & A → E"],
                     # decided by the sweep: a chosen kind a left side reads is not placed before its decision
                     ["A → B or C", "B → E on [-1, 0] of l", "E → no F on (0, 1] of l"]):
@@ -206,6 +206,12 @@ class RulesTest(unittest.TestCase):
                 parse_rules(bad)
         rs = parse_rules(["A → B or C", "B & not X → E 1 unit on the left", "A → B at 1 of l or C at 1 of l", "X → no B on [0, 2] of l"])
         self.assertTrue(rs.lattice)
+        for absent in (["A → B or C", "not B → E"], ["A → B or C", "B 0% → E"], ["A → B or C", "A & not B → no C 1 unit on the right"]):
+            self.assertTrue(parse_rules(absent).lattice, absent)
+        # a mode rule acts once, at the chip: no cycle through it
+        parse_rules(["mode 1 & not X → D", "D → X 1 unit on the right"])
+        with self.assertRaises(RuleError):
+            parse_rules(["mode 1 → D", "D → X", "X → D"])  # the element rules alone have one
         parse_rules(["A → B on [0, 2] of p"])  # an interval relative to p
         for sweep in (["A → B or no C"], ["A → B or C", "B → E", "B → no E on (0, 1]"], ["A → B or C", "B → E at 1 of l"],
                       ["A → B or C", "B | X → E"], ["A → B or C on [0, 1] of p"], ["A → B or C", "B >= 50% → E on [0, 1)"]):

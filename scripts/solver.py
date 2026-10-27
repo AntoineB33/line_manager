@@ -127,8 +127,17 @@ def lhs_region(f, vals: dict[str, dict[Fraction, Region]]) -> Region:
 
 def target(lit, anchors: Region) -> Region:
     """Where a literal applies when its rule's left side is met on `anchors`."""
+    if unbound_reach(lit, anchors):
+        return Region.universe()
     base = anchors if lit.anchor == "p" else anchors.left_edges()
     return base.shift(lit.rel) if lit.is_point else base.dilate(lit.where)
+
+
+def unbound_reach(lit, anchors: Region) -> bool:
+    """A literal relative to l that reaches +inf, on an interval of `anchors` with no
+    left end: l is -inf there (unbound), and l + [a, +inf) is the whole line. (With a
+    finite end instead, l + [a, b] is at -inf: not on the line, nothing.)"""
+    return lit.anchor == "l" and lit.where.hi == INF and anchors.inf() == -INF
 
 
 def kinds_of(rs: RuleSet, prob: Problem) -> list[str]:
@@ -212,7 +221,9 @@ class KP:
 class Spec:
     """The rules acting on one lattice, offsets in lattice steps. lrules: (names whose
     presence makes the left side, item) for the "or" items and the items of the rules
-    that read chosen kinds."""
+    that read chosen kinds. A name "!K" is K read as absent ("not K"); in a left side it
+    is ~index. With such names the choices no longer only add consequences: atoms are
+    then evaluated with three values (`_evaluate3`)."""
 
     def __init__(self, kinds: list[str], kinds_in: set[str], g: Fraction, lrules, mirror=False):
         sgn = -1 if mirror else 1
@@ -220,8 +231,9 @@ class Spec:
         self.idx = {k: i for i, k in enumerate(kinds)}
         self.in_order = [k for k in kinds if k in kinds_in]
         self.defs, self.negs, self.ors, self.or_ranks = [], [], [], []
+        self.has_neg = any(k.startswith("!") for names, _, _ in lrules for k in names)
         for names, it, rank in lrules:
-            lhs = tuple(self.idx[k] for k in names)
+            lhs = tuple(~self.idx[k[1:]] if k.startswith("!") else self.idx[k] for k in names)
             if it.is_or:
                 self.ors.append((lhs, tuple((self.idx[o.kind], sgn * int(o.rel.x / g), o.value) for o in it.options)))
                 self.or_ranks.append(rank)
@@ -231,18 +243,19 @@ class Spec:
                 (self.negs if o.negated else self.defs).append((lhs, self.idx[o.kind], d, o.value) if not o.negated else (lhs, self.idx[o.kind], d))
         # dist[K]: how far (in steps) an atom of K can be from the choices it depends on
         dist = [0] * len(kinds)
+        far = lambda lhs: max((dist[l if l >= 0 else ~l] for l in lhs), default=0)
         for k in self.in_order:
             ki = self.idx[k]
             for lhs, kk, d, _ in self.defs:
                 if kk == ki:
-                    dist[ki] = max(dist[ki], max((dist[l] for l in lhs), default=0) + abs(d))
+                    dist[ki] = max(dist[ki], far(lhs) + abs(d))
             for lhs, os in self.ors:
                 for kk, d, _ in os:
                     if kk == ki:
-                        dist[ki] = max(dist[ki], max((dist[l] for l in lhs), default=0) + abs(d))
+                        dist[ki] = max(dist[ki], far(lhs) + abs(d))
         D = max(dist, default=0)
         # rho: the choices involved in one violation lie within rho + 1 consecutive points
-        spans = [2 * D] + [max((dist[l] for l in lhs), default=0) + abs(d) + dist[kk] for lhs, kk, d in self.negs]
+        spans = [2 * D] + [far(lhs) + abs(d) + dist[kk] for lhs, kk, d in self.negs]
         self.rho = max(spans)
         self.n_opts = [len(os) for _, os in self.ors]
         self.by_kind_defs = {i: [x for x in self.defs if x[1] == i] for i in range(len(kinds))}
@@ -253,7 +266,10 @@ class Spec:
     def _independent(self) -> bool:
         """No violation can involve the choices of two different positions. A production
         of an atom is (the offsets, in steps back from the atom, of the choices it uses,
-        its value); an atom may also be present by itself (no choice)."""
+        its value); an atom may also be present by itself (no choice). With a kind read
+        as absent, a choice can also remove consequences: not shown independent."""
+        if self.has_neg:
+            return False
         inset = set(self.in_idx)
         none = [(frozenset(), None)]
         prods = {}
@@ -288,7 +304,10 @@ class Spec:
     def evaluate(self, pat, choose, a: int, b: int, ca: int, cb: int, optimistic=False):
         """Atoms on points a..b (choices given by `choose`, missing ones contribute
         nothing) and whether a violation shows on ca..cb. Monotone: atoms only grow
-        with more choices, so a violation found is a violation of every completion."""
+        with more choices, so a violation found is a violation of every completion.
+        With a kind read as absent: `_evaluate3`."""
+        if self.has_neg:
+            return self._evaluate3(pat, (lambda k, oi: None) if optimistic else choose, a, b, ca, cb)
         n = b - a + 1
         nk = len(self.kinds)
         P = [pat(a + i) for i in range(n)]
@@ -340,7 +359,89 @@ class Spec:
                 break
         return present, exs, P, bad
 
+    @staticmethod
+    def lhs_value(row, lhs):
+        """A left side on one point, with three values: True, False, None (unknown)."""
+        out = True
+        for l in lhs:
+            v = row[l] if l >= 0 else (None if row[~l] is None else not row[~l])
+            if v is False:
+                return False
+            if v is None:
+                out = None
+        return out
+
+    def _evaluate3(self, pat, choose, a: int, b: int, ca: int, cb: int):
+        """`evaluate` when a left side reads a chosen kind as absent: then a choice can
+        remove a consequence as well as add one, and a missing choice is unknown, not
+        absent. An atom is True, False or None (unknown): unknown when it depends on a
+        choice not given, or on an anchor out of a..b. Only definite violations count, so
+        a violation found is a violation of every completion. The atoms of kinds read
+        only as present are as `evaluate` makes them when every choice is given."""
+        n = b - a + 1
+        P = [pat(a + i) for i in range(n)]
+        present = [[kp.fixed or kp.claim is not None for kp in p] for p in P]
+        exs: dict[tuple[int, int], set] = {}
+        for ki in self.in_idx:
+            defs = self.by_kind_defs[ki]
+            ors = self.by_kind_ors[ki]
+            for i in range(n):
+                kp = P[i][ki]
+                pr = kp.fixed or kp.claim is not None
+                unknown = False
+                ex = set(kp.exacts)
+                for lhs, _, d, v in defs:
+                    j = i - d
+                    c = self.lhs_value(present[j], lhs) if 0 <= j < n else None
+                    if c:
+                        pr = True
+                        if v is not None:
+                            ex.add(v)
+                    elif c is None:
+                        unknown = True
+                for oi, t, d, v in ors:
+                    j = i - d
+                    c = self.lhs_value(present[j], self.ors[oi][0]) if 0 <= j < n else None
+                    if c is False:
+                        continue
+                    took = choose(a + j, oi) if 0 <= j < n else None
+                    if c and took == t:
+                        pr = True
+                        if v is not None:
+                            ex.add(v)
+                    elif took is None or took == t:
+                        unknown = True
+                present[i][ki] = True if pr else (None if unknown else False)
+                if ex:
+                    exs[(i, ki)] = ex
+        bad = False
+        for i in range(max(0, ca - a), min(n, cb - a + 1)):
+            p, row = P[i], present[i]
+            for ki in self.in_idx:
+                if row[ki]:
+                    kp = p[ki]
+                    ex = exs.get((i, ki))
+                    if kp.forbidden or (ex and (len(ex) > 1 or (kp.claim is not None and kp.claim not in ex))):
+                        bad = True
+                        break
+            if bad:
+                break
+            for lhs, ki, d in self.negs:
+                t = i + d
+                if 0 <= t < n and present[t][ki] is True and self.lhs_value(row, lhs) is True:
+                    bad = True
+                    break
+            if bad:
+                break
+        return present, exs, P, bad
+
+    def met(self, row, lhs) -> bool:
+        """Some choice could meet this left side on this point (`evaluate` optimistic)."""
+        return self.lhs_value(row, lhs) is not False if self.has_neg else all(row[l] for l in lhs)
+
     def value(self, P, present, exs, i, ki) -> Fraction | None:
+        if present[i][ki] is None:
+            raise Undetermined("an atom of the lattice is not decided where its value is read")
         if not present[i][ki]:
             return None
         kp = P[i][ki]
@@ -446,11 +547,11 @@ class Lattice:
             k = lo + i
             if self.kmin <= k <= self.kmax:
                 for oi, (lhs, _) in enumerate(spec.ors):
-                    if all(present[i][l] for l in lhs):
+                    if spec.met(present[i], lhs):
                         self.vars.append((k, oi))
         mid_r, mid_l = self.kmax + R2, self.kmin - R2
-        self.ray_vars = (tuple(oi for oi, (lhs, _) in enumerate(spec.ors) if all(present[mid_l - lo][l] for l in lhs)),
-                         tuple(oi for oi, (lhs, _) in enumerate(spec.ors) if all(present[mid_r - lo][l] for l in lhs)))
+        self.ray_vars = (tuple(oi for oi, (lhs, _) in enumerate(spec.ors) if spec.met(present[mid_l - lo], lhs)),
+                         tuple(oi for oi, (lhs, _) in enumerate(spec.ors) if spec.met(present[mid_r - lo], lhs)))
         self.vars.sort(key=lambda v: (v[0], spec.or_ranks[v[1]]))
         if self.ray_vars[0] and not spec.independent:
             raise Undetermined("an 'or' acts on an element unbounded on the left, where its choices act on each other: "
@@ -655,21 +756,21 @@ def solve(rs: RuleSet, prob: Problem) -> Line:
         return Line(vals)
     kinds = kinds_of(rs, prob)
     regions: dict[str, dict] = {}
-    # the lattice rules: a left side is the presence of its chosen kinds and of a
-    # "context" pseudo-kind, where the rest of the left side is met (its left edges for
-    # an "or" relative to l)
+    # the lattice rules: a left side is the presence of its chosen kinds, the absence of
+    # those it reads under "not" ("!K"), and the presence of a "context" pseudo-kind,
+    # where the rest of the left side is met (its left edges for an "or" relative to l)
     lrules = []
     for i, r in enumerate(rs.element):
-        cd, ctx = rs.split[i]
+        cd, ncd, ctx = rs.split[i]
         for j, it in enumerate(r.rhs):
-            if not (it.is_or or cd):
+            if not (it.is_or or cd or ncd):
                 continue
             o = it.options[0]
             name = f"#{i}{o.anchor}"
             if name not in regions:
                 reg = lhs_region(ctx, vals)
                 regions[name] = {"fixed": reg.left_edges() if o.anchor == "l" else reg}
-            lrules.append((cd + (name,), it, rs.or_rank.get((i, j))))
+            lrules.append((cd + tuple("!" + k for k in ncd) + (name,), it, rs.or_rank.get((i, j))))
             if o.negated and o.kind not in kinds_in:  # read where a chosen kind forbids it
                 regions[o.kind] = {"fixed": union(vals.get(o.kind, {}).values())}
     for k in kinds:

@@ -9,7 +9,7 @@ from fractions import Fraction as F
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 from guards import claims_on, left_side, same_dict, user_claims  # noqa: E402
-from intervals import Interval, IntervalSet, Pos  # noqa: E402
+from intervals import INF, Interval, IntervalSet, Pos  # noqa: E402
 from region import Region  # noqa: E402
 from solver import EMPTY, lhs_region, solve, union  # noqa: E402
 
@@ -58,6 +58,8 @@ def rules_hold(rs, line, claims=None) -> list[str]:
             o = it.options[0]
             base = anchors if o.anchor == "p" else edges
             tgt = base.shift(o.rel) if o.is_point else base.dilate(o.where)
+            if o.anchor == "l" and o.where.hi == INF and anchors.inf() == -INF:
+                tgt = Region.universe()  # l = -inf (unbound) and the interval reaches +inf
             if o.negated:
                 if tgt & pres.get(o.kind, EMPTY):
                     bad.append(f"{r}: {o.kind} present on {tgt & pres[o.kind]}")

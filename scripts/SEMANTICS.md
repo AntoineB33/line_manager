@@ -116,8 +116,9 @@ An element rule has the form L → R.
     contains p: its first position. The literal applies at l + d, or on
     l + [a, b), once per largest interval. The left edge of (6, 8) is 6+ε.
   - Without "of", a single position is relative to p and an interval to l.
-  - A largest interval that is unbounded on the left has no left edge, so nothing
-    is placed for it (`test_no_left_edge`).
+  - On a largest interval that is unbounded on the left, l is −∞ (unbound). Then
+    l + d, and l + [a, b] with b finite, are at −∞, which is not on the line, so
+    nothing is placed. l + [a, +∞) is the whole line (`test_no_left_edge`).
   - `Region.left_edges` and `Region.dilate` compute these sets exactly, tails
     included. `test_left_edges_dilate_components` checks them point by point.
 
@@ -130,7 +131,9 @@ is refused.
 ### Restrictions (`RuleError`)
 
 - **No cycle between kinds**, whatever the distances. The graph is "kind read by
-  L → kind of R".
+  L → kind of R" of the element rules. A mode rule acts once, at the chip, on the
+  line as it is then; it is not kept true, so a cycle through a mode rule is
+  allowed (`mode 1 & not X → D` with `D → X 1 unit on the right`).
   - It includes the kinds read under "not" and the "no K" literals, because "no K"
     is an element of kind K.
   - A → A counts as a cycle, and so does `B → no B 1 unit on the right`.
@@ -140,17 +143,21 @@ is refused.
   l, one choice is made per largest interval, at its left edge.
 - **Chosen kinds.** A kind is *chosen* if it is a present operand of an "or", or
   if a rule whose left side reads a chosen kind places it.
-  - A left side reads chosen kinds only as present (`K`, `K p%` with p > 0,
-    `K >= p%`, `K > p%`), never under "not" and never as `K < p%` or `K 0%`. So
-    choosing an operand only adds consequences, and a contradiction found with
-    the choices on the left stays whatever comes next.
-  - When the choices need the sweep (§5), a chosen kind that some left side reads
-    is placed at or after the position where it is decided: at an offset ≥ 0 from
-    p, or from l. Then what lies left of the sweep, its largest intervals and
-    their left edges included, never changes again.
+  - When the choices need the sweep (§5), two more conditions apply:
+    - A left side reads chosen kinds only as present (`K`, `K p%` with p > 0,
+      `K >= p%`, `K > p%`), never under "not" and never as `K < p%` or `K 0%`.
+      Then choosing an operand only adds consequences, and a contradiction found
+      with the choices on the left stays whatever comes next.
+    - A chosen kind that some left side reads is placed at or after the position
+      where it is decided: at an offset ≥ 0 from p, or from l. Then what lies
+      left of the sweep, its largest intervals and their left edges included,
+      never changes again.
+  - On lattices, a left side may also read chosen kinds as absent (`not K`,
+    `K 0%`), and they may be placed before their decision (`AbsentReadTest`).
 
-  These conditions are not in the requirement; they keep "the leftmost operand
-  that can be chosen" defined and computable (`test_restrictions`).
+  These conditions, with the one on the anchors of an "or", are not in the
+  requirement. Without them, the sweep has no exact method for "the leftmost
+  operand that can be chosen" (`test_restrictions`).
 
 ## 5. Consequences: the "or" rules (`solver.py`)
 
@@ -212,6 +219,12 @@ simply takes its first valid operand (`test_unbounded_on_the_left`).
 - **The core.** On a lattice, the points with |x| ≤ T are decided by an exact
   depth-first search from left to right. Pruning is sound because violations are
   monotone in the elements present.
+  - When a left side reads a chosen kind as absent, a choice can also remove a
+    consequence. Atoms are then true, false or unknown. A missing choice, or an
+    anchor out of the window, gives unknown, and only definite violations prune.
+    So pruning stays sound without monotonicity. The left ray is then not shown
+    independent: an "or" acting on an element unbounded on the left is
+    `Undetermined` there.
 - **The rays.** Beyond T the problem is translation-invariant.
   - A violation involves at most ρ + 1 consecutive points, so the choices form a
     finite automaton whose states are the last ρ + 1 choices.

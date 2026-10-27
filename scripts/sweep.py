@@ -72,7 +72,7 @@ from fractions import Fraction
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from region import ZERO, Region, _constant
 from rules import _fgcd
-from solver import EMPTY, Conflict, Undetermined, _values, kinds_of, lhs_region, union
+from solver import EMPTY, Conflict, Undetermined, _values, kinds_of, lhs_region, unbound_reach, union
 
 MAX_EVENTS = 3000
 MAX_CALLS = 3000
@@ -196,6 +196,8 @@ class Sweep:
             exact = dict(exact)
             for i, o in self.pos_lits[K]:
                 t = _target(o, base(i, o))
+                if unbound_reach(o, anchors[i]):
+                    t = Region.universe()
                 if o.value is None:
                     plain = plain | t
                 else:
@@ -213,7 +215,8 @@ class Sweep:
             return vals
         forbid = dict(self.forbid0)
         for i, o in self.neg_lits:
-            forbid[o.kind] = forbid.get(o.kind, EMPTY) | _target(o, base(i, o))
+            t = _target(o, base(i, o))
+            forbid[o.kind] = forbid.get(o.kind, EMPTY) | (Region.universe() if unbound_reach(o, anchors[i]) else t)
         for ii, oi, o in self.op_neg:
             if ch[ii][oi]:
                 forbid[o.kind] = forbid.get(o.kind, EMPTY) | _target(o, ch[ii][oi])

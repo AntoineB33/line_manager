@@ -53,7 +53,7 @@ import bisect
 import itertools
 from fractions import Fraction
 
-from intervals import Interval, IntervalSet
+from intervals import INF, Interval, IntervalSet
 from line import USER, Claims, LineState, Op
 from region import IncompatiblePeriods, Region
 from rules import And, Atom, Not, Or, RuleSet, is_hidden
@@ -202,10 +202,13 @@ class _Lines:
         position of its interval that does not; that one is then the left edge."""
         met = self.met(i)
         reach = met & where.dilate(-o.where)
-        if o.anchor == "p" or not reach:
+        if o.anchor == "p":
             return reach
         edges = met.left_edges()
-        return union(c for c in reach.components() if c & edges)
+        out = union(c for c in reach.components() if c & edges)
+        if o.where.hi == INF:  # an interval with no left end reaches everything (l = -inf): all of it
+            out = out | union(c for c in met.components() if c.inf() == -INF)
+        return out
 
     def placing(self, K: str) -> list:
         """(i, literal): the rules that place K present, always (no "or")."""

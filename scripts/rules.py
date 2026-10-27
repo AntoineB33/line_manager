@@ -21,8 +21,9 @@ is m; it can add or remove elements only at the chip's position, so all its loca
 are "at 0 of p".
 
 Restrictions, checked by RuleSet:
-- no cycle between kinds: the graph "kind read by L → kind of R" ("no K" included)
-  has no cycle, not even K → K;
+- no cycle between kinds: the graph "kind read by L → kind of R" of the element rules
+  ("no K" included) has no cycle, not even K → K (mode rules act once, at the chip:
+  they are not kept true, so they make no cycle);
 - the operands of an "or" are all relative to p or all relative to l;
 - a kind is "chosen" if it is a present operand of an "or" or is placed by a rule whose
   left side reads a chosen kind. A left side reads chosen kinds only as "present"
@@ -262,9 +263,10 @@ class RuleSet:
                 raise RuleError(f"{r}: a mode rule can only act at the position of the chip")
             if not r.is_mode_rule and not r.lhs.kinds():
                 raise RuleError(f"{r}: an element rule needs a kind on its left side")
-        # no cycle between kinds
+        # no cycle between kinds, through the element rules (a mode rule acts once, at
+        # the chip, on the line as it is then: it is not kept true, so it makes no cycle)
         edges: dict[str, set[str]] = {k: set() for k in rank}
-        for r in self.rules:
+        for r in self.element:
             for k in r.lhs.kinds():
                 edges[k] |= {o.kind for o in r.lits()}
         self.order = self._toposort(edges)
@@ -278,27 +280,35 @@ class RuleSet:
                 dep.add(k)
                 todo += [o.kind for r in self.element if k in r.lhs.kinds() for o in r.lits() if not o.negated]
         self.choice_dependent = dep
-        # each element rule's left side as (chosen kinds that must be present, the rest),
-        # and which solver the choices need
+        # each element rule's left side as (chosen kinds that must be present, chosen kinds
+        # that must be absent, the rest), and which solver the choices need
         lattice = all(not o.negated and o.is_point for r in self.element for it in r.rhs if it.is_or for o in it.options)
-        self.split: list[tuple[tuple[str, ...], object]] = []
+        self.split: list[tuple[tuple[str, ...], tuple[str, ...], object]] = []
+        absent_read = []  # the rules that read a chosen kind as absent: the lattices only
         for r in self.element:
             read = set(r.lhs.kinds()) & dep
             if read and not _monotone(r.lhs, dep):
-                raise RuleError(f"{r}: a kind an 'or' can change ({', '.join(sorted(read))}) can only be required present "
-                                "(not under 'not', not below a percentage)")
-            cd, rest = [], []
+                absent_read.append((r, read))
+            cd, ncd, rest = [], [], []
             for f in conjuncts(r.lhs):
                 if isinstance(f, Atom) and f.kind in dep and f.op == "present":
                     cd.append(f.kind)
+                elif isinstance(f, Not) and isinstance(f.f, Atom) and f.f.kind in dep and f.f.op == "present":
+                    ncd.append(f.f.kind)
+                elif isinstance(f, Atom) and f.kind in dep and f.op == "=" and f.value == 0:  # K 0%: K absent
+                    ncd.append(f.kind)
                 elif set(f.kinds()) & dep:
                     lattice = False
                 else:
                     rest.append(f)
             if read and any(o.anchor != "p" or not o.is_point for o in r.lits()):
                 lattice = False
-            self.split.append((tuple(dict.fromkeys(cd)), And(tuple(rest))))
+            self.split.append((tuple(dict.fromkeys(cd)), tuple(dict.fromkeys(ncd)), And(tuple(rest))))
         self.lattice = lattice
+        if absent_read and not lattice:
+            r, read = absent_read[0]
+            raise RuleError(f"{r}: a kind an 'or' can change ({', '.join(sorted(read))}) can only be required present "
+                            "(not under 'not', not below a percentage) when the choices need intervals or left edges")
         # causal: a chosen kind that a left side reads is placed at or after the position
         # where it is decided (needed by the sweep)
         read_kinds = {k for r in self.element for k in r.lhs.kinds()}

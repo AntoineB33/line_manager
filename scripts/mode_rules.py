@@ -112,7 +112,7 @@ class ModeRules:
                     c.add_neg(o.kind, at, MODE)
                 else:
                     c.add_pos(o.kind, at, o.value or 100, MODE)
-        return LineState(c, solve(self.rs, c.problem()))
+        return LineState(c, solve(self.rs, c.problem()), state.history)
 
     # ------------------------------------------------------------ the positions of a sweep
 
@@ -122,6 +122,7 @@ class ModeRules:
         ends = {m}
         regions = [r for d in state.claims.pos.values() for r in d.values()]
         regions += [r for d in state.claims.neg.values() for r in d.values()]
+        regions += [r for d in state.claims.taken.values() for r in d.values()]
         regions += [r for d in state.line.vals.values() for r in d.values()]
         for reg in regions:
             for iv in reg.on(a, b).intervals:

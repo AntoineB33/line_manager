@@ -1,6 +1,27 @@
 """Edits: the result of every edit is decided by fixed rules.
 
-An edit is a list of operations (line.Op). Its result:
+An edit is a list of operations (line.Op); a later operation wins over an earlier one
+where both act. A put places K, a put_no a "no K" element, a take removes K (K must be
+absent there) and a take_no removes the "no K" elements.
+
+The user's edits are all kept, in order (LineState.history), and the claims are
+computed from all of them at each edit of the user, the newest first:
+- the newest edit applies whole (if it has no result alone, it is refused: 2.);
+- each older edit then applies except where it contradicts the newer ones as they
+  apply: directly (at a position, the newer of "K p%" and "off K" decides K, the
+  newer of "no K" and a take_no decides the "no K" elements, "K p%" and "no K"
+  contradict each other), or through the rules (3., the newer ones being the edit's
+  own, and the losses counted on the line of the older edit alone).
+So an older edit gives way only where, and as long as, it contradicts newer ones:
+when what it contradicted goes, it applies again. That is "contradicts newer ones"
+literally: with "X & not A → no B", the edits B (newest), X, then A (oldest), X gives
+way, since it contradicts B; A, older, does not count.
+The elements of the generated script and of the mode rules come last, below every
+edit of the user: they give way to them (3.), and what gives way of them is gone.
+
+An edit of the generated script or of a mode rule is resolved against the claims as
+they are, by 1-3 below, and refused if an element of the user would change (N2).
+
 1. Its own operations apply: a put replaces what was claimed of that kind there, a
    take removes the claims of that kind there and requires the kind to be absent.
 2. If the edit has no result by itself, it is refused: it contradicts the rules, or
@@ -8,7 +29,8 @@ An edit is a list of operations (line.Op). Its result:
 3. Otherwise its elements are kept: edits from the user win over what is on the
    line. If older elements conflict with them, parts of older elements are removed,
    nothing more than necessary, one conflict after the other, from left to right.
-   An element is a largest interval of one claim ("K p%" or "no K", one owner).
+   An element is a largest interval of one claim ("K p%", "no K" or "off K", one
+   owner).
    - A conflict is two requirements that contradict on a region X: K present and
      "no K" (a claim, or a rule applied there), or two percentages. A requirement
      that comes from a rule r applied on X gives way by making r's left side false
@@ -19,12 +41,12 @@ An edit is a list of operations (line.Op). Its result:
      B is on (1/2, 3/2]). The combinations are the parts of the elements its terms
      rest on there (a kind that a rule places rests on that rule's left side, and so
      on). A requirement that comes from an older claim gives way by removing the
-     claim on X. The edit's own never gives way.
+     claim on X ("no K" and "off K" alike). The edit's own never gives way.
    - Among the combinations that remove the conflict from X: only what is necessary
      (none removes everything another one that works removes, and more), the one
      that loses the fewest elements (the elements of the line, the largest
      intervals of one kind and percentage, that do not stay whole, plus the "no K"
-     elements that lose a part), and on a tie the one that keeps the leftmost
+     and "off K" elements that lose a part), and on a tie the one that keeps the leftmost
      elements: at the leftmost position where two combinations differ, the one that
      keeps the element there, the kinds at one position in the order they first
      appear in the rules.
@@ -53,6 +75,9 @@ import bisect
 import itertools
 from fractions import Fraction
 
+from dataclasses import dataclass
+
+from guards import same_dict, user_claims
 from intervals import INF, Interval, IntervalSet
 from line import USER, Claims, LineState, Op
 from region import IncompatiblePeriods, Region
@@ -80,6 +105,143 @@ def initial_state(rs: RuleSet, entries, owner: str = USER) -> LineState:
 
 def apply_edit(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> LineState:
     """The state after the edit; raises Refused."""
+    if owner != USER:
+        after = _apply(rs, state, ops, owner)
+        if not same_dict(user_claims(state.claims), user_claims(after.claims)):
+            raise Refused("N2: would remove or change an element added by the user")
+        return after
+    rec = Record.of(ops)
+    _alone(rs, rec.claims.problem())
+    return rebuild(rs, state.history + (rec,), _owned_by_others(state.claims), state.line)
+
+
+@dataclass
+class Record:
+    """An edit of the user, as kept: its claims (owner USER) and where it takes the
+    "no K" elements off (`clear`), each operation where no later one of the edit acts."""
+    claims: Claims
+    clear: dict
+    footprint: Region
+
+    @staticmethod
+    def of(ops: list[Op]) -> Record:
+        c, clear = Claims(), {}
+        for op in reversed(ops):
+            piece, pclear = Claims(), {}
+            if op.action == "put":
+                piece.add_pos(op.kind, op.region, op.value, USER)
+            elif op.action == "put_no":
+                piece.add_neg(op.kind, op.region, USER)
+            elif op.action == "take":
+                piece.add_taken(op.kind, op.region, USER)
+            elif op.action == "take_no":
+                pclear[op.kind] = op.region
+            else:
+                raise ValueError(op.action)
+            piece, pclear = _below(piece, pclear, c, clear)
+            c = c.merged(piece)
+            _add(clear, pclear)
+        return Record(c, clear, union(op.region for op in ops))
+
+
+def rebuild(rs: RuleSet, history: tuple, layer: Claims, old_line: Line) -> LineState:
+    """The state of these edits of the user (oldest first): the newest first, each older
+    one giving way to the newer ones, then the elements of the other owners (`layer`),
+    which give way to all of them (old_line: the line before, for their losses)."""
+    above, clear, line = Claims(), {}, None
+    footprint = history[-1].footprint if history else EMPTY
+    for rec in reversed(history):
+        c, cl = _below(rec.claims, rec.clear, above, clear)
+        _add(clear, cl)
+        if not c.is_empty():
+            above, line = _give_way(rs, above, c, _line_or_empty(rs, c), footprint)
+    c, _ = _below(layer, {}, above, clear)
+    if not c.is_empty():
+        above, line = _give_way(rs, above, c, old_line, footprint)
+    if line is None:
+        line = solve(rs, above.problem())
+    return LineState(above, line, history)
+
+
+def _below(c: Claims, clear: dict, above: Claims, above_clear: dict) -> tuple[Claims, dict]:
+    """What applies of the claims c and the take_no `clear` under newer ones, by direct
+    contradiction: at a position, the newer of "K p%" and "off K" decides K, the newer of
+    "no K" and a take_no decides the "no K" elements, and "K p%" contradicts "no K"."""
+    out = Claims()
+    for k, d in c.pos.items():
+        _keep(out.pos, k, d, above.positive(k) | above.off(k) | above.negative(k))
+    for k, d in c.taken.items():
+        _keep(out.taken, k, d, above.positive(k) | above.off(k))
+    for k, d in c.neg.items():
+        _keep(out.neg, k, d, above.negative(k) | above_clear.get(k, EMPTY) | above.positive(k))
+    out_clear = {}
+    for k, r in clear.items():
+        r = r - (above.negative(k) | above_clear.get(k, EMPTY))
+        if r:
+            out_clear[k] = r
+    return out, out_clear
+
+
+def _keep(out: dict, k: str, d: dict, block: Region) -> None:
+    for key, r in d.items():
+        r = r - block
+        if r:
+            out.setdefault(k, {})[key] = r
+
+
+def _add(acc: dict, more: dict) -> None:
+    for k, r in more.items():
+        acc[k] = acc.get(k, EMPTY) | r
+
+
+def _give_way(rs: RuleSet, above: Claims, older: Claims, old_line: Line, footprint: Region) -> tuple[Claims, Line]:
+    """The claims `above` (consistent) with what of `older` does not contradict them
+    through the rules (3. at the top of this file, `above` being the edit's own)."""
+    c1 = above.merged(older)
+    try:
+        return c1, solve(rs, c1.problem())
+    except (Conflict, Undetermined, IncompatiblePeriods):
+        pass
+    mand_pos = {k: above.by_value(k) for k in above.pos}
+    mand_neg = {k: above.negative(k) for k in above.neg}
+    mand_off = {k: above.off(k) for k in above.taken}
+    s = _Resolution(rs, old_line, c1, mand_pos, mand_neg, {}, footprint, mand_off).run()
+    return s.claims, s.line
+
+
+def _alone(rs: RuleSet, prob: Problem) -> Line:
+    """The line of an edit alone; raises Refused if it has none (the only reason to
+    refuse an edit)."""
+    try:
+        return solve(rs, prob)
+    except Conflict as e:
+        raise Refused(f"the edit contradicts the rules: {e}")
+    except Undetermined as e:
+        raise Refused(f"the rules do not decide the result of the edit: {e}")
+    except IncompatiblePeriods as e:
+        raise Refused(f"two results of the edit repeat with periods that cannot be compared: {e}")
+
+
+def _line_or_empty(rs: RuleSet, c: Claims) -> Line:
+    try:
+        return solve(rs, c.problem())
+    except (Conflict, Undetermined, IncompatiblePeriods):
+        return Line({})
+
+
+def _owned_by_others(c: Claims) -> Claims:
+    """The claims that are not the user's."""
+    out = Claims()
+    for k, d in c.pos.items():
+        _keep(out.pos, k, {key: r for key, r in d.items() if key[1] != USER}, EMPTY)
+    for mine, theirs in ((out.neg, c.neg), (out.taken, c.taken)):
+        for k, d in theirs.items():
+            _keep(mine, k, {o: r for o, r in d.items() if o != USER}, EMPTY)
+    return out
+
+
+def _apply(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> LineState:
+    """An edit of the generated script or of a mode rule, on the claims as they are."""
     c1 = state.claims.copy()
     mand_pos: dict[str, dict[Fraction, Region]] = {}
     mand_neg: dict[str, Region] = {}
@@ -104,28 +266,22 @@ def apply_edit(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> Line
         else:
             raise ValueError(op.action)
     own_neg = {k: mand_neg.get(k, EMPTY) | temp.get(k, EMPTY) for k in set(mand_neg) | set(temp)}
-    try:  # the edit alone: the only reason to refuse it
-        solve(rs, Problem(mand_pos, own_neg))
-    except Conflict as e:
-        raise Refused(f"the edit contradicts the rules: {e}")
-    except Undetermined as e:
-        raise Refused(f"the rules do not decide the result of the edit: {e}")
-    except IncompatiblePeriods as e:
-        raise Refused(f"two results of the edit repeat with periods that cannot be compared: {e}")
+    _alone(rs, Problem(mand_pos, own_neg))
     try:
-        return LineState(c1, solve(rs, c1.problem(temp)))
+        return LineState(c1, solve(rs, c1.problem(temp)), state.history)
     except (Conflict, Undetermined, IncompatiblePeriods):
         pass  # with the line, no result, or none computed in time: older elements give way
     footprint = union(op.region for op in ops)
-    return _Resolution(rs, state.line, c1, mand_pos, mand_neg, temp, footprint).run()
+    after = _Resolution(rs, state.line, c1, mand_pos, mand_neg, temp, footprint).run()
+    return LineState(after.claims, after.line, state.history)
 
 
 # ---------------------------------------------------------------------------------
 
 
-def _older_elements(c1: Claims, mand_pos, mand_neg) -> list[tuple[str, Region, Fraction | None]]:
-    """(name, region, percentage): the older elements, "K" or "no K", each a largest
-    interval of a claim."""
+def _older_elements(c1: Claims, mand_pos, mand_neg, mand_off) -> list[tuple[str, Region, Fraction | None]]:
+    """(name, region, percentage): the older elements, "K", "no K" or "off K", each a
+    largest interval of a claim."""
     out = []
     for k, d in c1.pos.items():
         new = union(mand_pos.get(k, {}).values())
@@ -134,15 +290,23 @@ def _older_elements(c1: Claims, mand_pos, mand_neg) -> list[tuple[str, Region, F
     for k, d in c1.neg.items():
         for reg in d.values():
             out += [("no " + k, e, None) for e in (reg - mand_neg.get(k, EMPTY)).components()]
+    for k, d in c1.taken.items():
+        for reg in d.values():
+            out += [("off " + k, e, None) for e in (reg - mand_off.get(k, EMPTY)).components()]
     return out
+
+
+def _kind(name: str) -> str:
+    return name.removeprefix("no ").removeprefix("off ")
 
 
 class _Lines:
     """The line of some claims as far as region algebra computes it (the kinds that no
     "or" choice changes), with each conflict and the two requirements behind it:
     (region, side, side). A side is ("rule", i, lit): element rule i applied there;
-    ("claim", K, v): the claims of K at v%; ("no", K): the "no K" claims; ("taken", K):
-    the edit takes K off there; ("present", K): K present there."""
+    ("claim", K, v): the claims of K at v%; ("no", K): the "no K" claims; ("off", K):
+    the "off K" claims; ("taken", K): the edit takes K off there; ("present", K): K
+    present there."""
 
     def __init__(self, rs: RuleSet, c: Claims, temp: dict) -> None:
         self.rs = rs
@@ -175,9 +339,10 @@ class _Lines:
                     if p.value is not None and p.value != o.value:
                         self._add(t & u, ("rule", i, o), ("rule", j, p))
         pres = {k: union(d.values()) for k, d in self.vals.items()}
-        for K in set(c.neg) | set(temp):
+        for K in set(c.neg) | set(temp) | set(c.taken):
             if K not in self.kinds_in:
                 self._add(pres.get(K, EMPTY) & c.negative(K), ("no", K), ("present", K))
+                self._add(pres.get(K, EMPTY) & c.off(K), ("off", K), ("present", K))
                 self._add(pres.get(K, EMPTY) & temp.get(K, EMPTY), ("taken", K), ("present", K))
         for i in self.static:
             for it in rs.element[i].rhs:
@@ -224,10 +389,10 @@ class _Resolution:
     are consistent again (see the top of this file). What is removed: {element index:
     the part of it removed}; a combination is a frozenset of (index, part)."""
 
-    def __init__(self, rs: RuleSet, old_line: Line, c1: Claims, mand_pos, mand_neg, temp, footprint: Region) -> None:
+    def __init__(self, rs: RuleSet, old_line: Line, c1: Claims, mand_pos, mand_neg, temp, footprint: Region, mand_off=None) -> None:
         self.rs, self.old_line, self.c1, self.temp = rs, old_line, c1, temp
-        self.mand_pos, self.mand_neg = mand_pos, mand_neg
-        self.older = _older_elements(c1, mand_pos, mand_neg)
+        self.mand_pos, self.mand_neg, self.mand_off = mand_pos, mand_neg, mand_off or {}
+        self.older = _older_elements(c1, mand_pos, mand_neg, self.mand_off)
         R = (len(rs.order) + 1) * rs.reach + 1
         self.near = footprint.dilate(Interval.closed(-R, R))
         self.max_steps = 4 * len(self.older) + 16  # beyond: whole elements (fast)
@@ -294,7 +459,7 @@ class _Resolution:
             works.append((opt, after))
         best = None
         for opt, after in works:
-            lost = _lost(self.old_line, after.line(), Region.universe()) + sum(1 for i, _ in opt if self.older[i][0].startswith("no "))
+            lost = _lost(self.old_line, after.line(), Region.universe()) + sum(1 for i, _ in opt if _kind(self.older[i][0]) != self.older[i][0])
             cand = (lost, _dropped([(self.older[i][0], reg) for i, reg in opt]))
             if best is None or _better(cand, best[0], self.rs):
                 best = (cand, opt)
@@ -318,6 +483,12 @@ class _Resolution:
             if self.mand_neg.get(K, EMPTY) & X:
                 return []
             s = self.pieces(removed, "no " + K, X)
+            return [s] if s else []
+        if side[0] == "off":
+            K = side[1]
+            if self.mand_off.get(K, EMPTY) & X:
+                return []
+            s = self.pieces(removed, "off " + K, X)
             return [s] if s else []
         if side[0] == "present":
             return self.absent(lines, side[1], X, removed)
@@ -365,7 +536,7 @@ class _Resolution:
         first, then from left to right, until the claims are consistent (with none left,
         only the edit stays, which is consistent: step 2). Then each of them is put back
         as it was if the claims stay consistent, the last removed first."""
-        rank = lambda i: self.rs.rank.get(self.older[i][0].removeprefix("no "), 10 ** 6)
+        rank = lambda i: self.rs.rank.get(_kind(self.older[i][0]), 10 ** 6)
         order = sorted((i for i in range(len(self.older)) if self.older[i][1] - removed.get(i, EMPTY)),
                        key=lambda i: (not (self.older[i][1] & self.near), self.older[i][1].inf(), rank(i)))
         cur, added = dict(removed), []
@@ -454,6 +625,8 @@ def _without(c1: Claims, drop) -> Claims:
     for name, reg in _dropped(drop).items():
         if name.startswith("no "):
             c.remove_neg(name[3:], reg)
+        elif name.startswith("off "):
+            c.remove_taken(name[4:], reg)
         else:
             c.remove_pos(name, reg)
     return c
@@ -500,7 +673,7 @@ def _keeps_leftmost(da: dict, db: dict, rs) -> bool:
     for k in set(da) | set(db):
         for diff, a_drops in ((da.get(k, EMPTY) - db.get(k, EMPTY), True), (db.get(k, EMPTY) - da.get(k, EMPTY), False)):
             if diff:
-                key = (diff.inf(), rs.rank.get(k.removeprefix("no "), 10 ** 6))
+                key = (diff.inf(), rs.rank.get(_kind(k), 10 ** 6))
                 if first is None or key < first[0]:
                     first = (key, a_drops)
     return first is not None and not first[1]

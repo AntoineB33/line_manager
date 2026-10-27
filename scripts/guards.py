@@ -2,7 +2,9 @@
 
 N1  change the left side of the chip or what is at the chip's position: the line and
     the claims on (-inf, chip] are unchanged;
-N2  remove (or change) an element added by the user: the user's claims are unchanged.
+N2  remove (or change) an element added by the user: the user's claims (their
+    removals included) are unchanged. An edit of the script never makes one give way
+    (resolve.py refuses it), and the user's edits always come before the script's.
 
 The script also carries out the mode rules (script.ModeRulesAction, mode_rules.py).
 Each of their edits acts at the chip's position x only, so N1 becomes:
@@ -33,10 +35,11 @@ def claims_on(c: Claims, region: Region) -> dict:
         for key, r in d.items():
             if r & region:
                 out[("pos", k, key)] = r & region
-    for k, d in c.neg.items():
-        for key, r in d.items():
-            if r & region:
-                out[("neg", k, key)] = r & region
+    for store, d0 in (("neg", c.neg), ("off", c.taken)):
+        for k, d in d0.items():
+            for key, r in d.items():
+                if r & region:
+                    out[(store, k, key)] = r & region
     return out
 
 
@@ -46,9 +49,10 @@ def user_claims(c: Claims) -> dict:
         for (v, o), r in d.items():
             if o == USER and r:
                 out[("pos", k, v)] = r
-    for k, d in c.neg.items():
-        if d.get(USER):
-            out[("neg", k)] = d[USER]
+    for store, d0 in (("neg", c.neg), ("off", c.taken)):
+        for k, d in d0.items():
+            if d.get(USER):
+                out[(store, k)] = d[USER]
     return out
 
 

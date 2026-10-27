@@ -41,9 +41,14 @@ positions are x + kε (below); ±∞ appears only as an open endpoint.
 
 ## 2. The state of the line (`line.py`, `solver.py`)
 
-- **Claims.** A *claim* is an element placed by an edit. It is either "K at p%"
-  on a region (p ∈ (0, 100]) or a "no K" element on a region. Each claim has an
-  owner: the user, the generated script, or a mode rule.
+- **Claims.** A *claim* is an element placed by an edit. It is "K at p%" on a
+  region (p ∈ (0, 100]), a "no K" element on a region, or a removal of the user,
+  "off K" on a region (K absent there). Each claim has an owner: the user, the
+  generated script, or a mode rule.
+- **The user's edits are kept.** The state keeps all the user's edits, in order
+  (`LineState.history`). The claims are what applies of them now, recomputed at
+  each edit of the user (§6), together with the claims of the script and the mode
+  rules.
 - **The line.** The *line* is computed from the claims. For each kind it maps a
   percentage to a region. These regions are disjoint, so a kind is present at
   most once at each position (`rules_hold` checks this in every test).
@@ -321,7 +326,55 @@ An edit is a list of operations:
 - take K off a region (K must then be absent there);
 - take the "no K" elements off a region.
 
-The result of an edit is determined as follows:
+A later operation of an edit wins over an earlier one where both act.
+
+**The user's edits, newest first.** The line is computed from all the user's edits,
+kept in the order they were made. At each edit of the user, the claims are computed
+again from all of them:
+
+- The newest edit applies whole. If it has no result alone, it is refused (step 2
+  below), and it is not kept.
+- Each older edit, from the newest to the oldest, then applies except where it
+  contradicts the newer ones as they apply:
+  - **directly:** at a position, the newer of "K p%" and "off K" decides K; the
+    newer of "no K" and a take of the "no K" elements decides the "no K" elements;
+    "K p%" and "no K" contradict each other;
+  - **through the rules:** its parts that conflict with the newer ones give way by
+    step 3 below, the newer ones being "the edit's own", and the lost elements
+    counted on the line of that older edit alone (so the result depends only on
+    the edits, not on the line before).
+- So an older edit gives way only where, and as long as, it contradicts newer
+  ones: when what it contradicted goes, it applies again. With "A and B → C", A and
+  B at x, then "no C" at x, B gives way; when "no C" is taken off, B is back
+  (`test_comes_back`).
+- **A removal is an edit** like an addition (requirement option (a)). With `Y → A`
+  and Y at 0, taking A off at 0 makes Y give way; putting A back at 0 brings Y back
+  (`test_a_removal_is_an_edit`). A removal also gives way to a newer edit that needs
+  the kind (`test_a_removal_gives_way`).
+- **"Contradicts newer ones" is taken literally:** only the newer edits count. With
+  `X & not A → no B` and the edits A (oldest), X, then B (newest), X gives way: with
+  B, it contradicts. A would make X harmless, but A is older
+  (`test_contradicts_newer_ones_literally`).
+- **The newer edit wins even when that loses more.** "Fewest lost" (step 3) chooses
+  among the parts of one edit. Between two edits, the older one gives way: A in an
+  older edit than B goes, even where removing B would lose fewer elements
+  (`test_many_elements_in_conflict`).
+- **The script's and the mode rules' elements** come after every edit of the user:
+  they give way to them by step 3, against the line before the edit. They are not
+  kept as edits: what gives way of them is gone, and the generator places again
+  what it needs at its next run, which every edit of the user triggers
+  (`test_the_scripts_elements_are_not_kept`). Their own edits are resolved against
+  the claims as they are, by the steps below, and refused if a claim of the user
+  would change (N2, §7).
+
+The requirement's examples (`test_requirement_examples`) all come out as written.
+`HistoryTest.test_matches_brute_force` compares the result of random histories of
+two to four edits with a brute-force fold: each older edit loses a minimal set of
+its elements, the fewest lost, the leftmost kept on a tie. A fold from the oldest
+first, or one that forgets the older edits, fails it.
+
+The result of one edit against the claims (for the user's, one step of the fold
+above) is determined as follows:
 
 1. **Direct effects.** The edit's own operations apply. A put replaces what was
    claimed of that kind on its region.
@@ -333,7 +386,7 @@ The result of an edit is determined as follows:
    with them, parts of older elements are removed, nothing more than necessary,
    one conflict after the other, from left to right.
    - **What an element is.** An element is a largest interval of one claim
-     ("K p%" or "no K", with one owner). Only the part of it that has to go is
+     ("K p%", "no K" or "off K", with one owner). Only the part of it that has to go is
      removed.
    - **A conflict** is two requirements that contradict on a region X: K present
      and "no K", or two percentages of K. Each requirement comes from a claim or
@@ -353,14 +406,15 @@ The result of an edit is determined as follows:
      rule places rests on that rule's left side, and so on, since there is no
      cycle. A term that holds where a kind is absent (`not`, `K 0%`, `K < p%`)
      cannot be made false by removing. A requirement from an older claim gives
-     way by removing that claim on X. The edit's own requirements never give way.
+     way by removing that claim on X ("no K" and "off K" alike). The edit's own
+     requirements never give way.
    - **Criteria, in order,** among the combinations that remove the conflict
      from X:
      - Only what is necessary: no combination may remove everything that
        another working combination removes, and more.
      - The combination that loses the fewest elements. A lost element is either
        an element of the line (a largest interval of one kind and percentage)
-       that does not stay whole, or a "no K" element that loses a part.
+       that does not stay whole, or a "no K" or "off K" element that loses a part.
      - On a tie, the combination that keeps the leftmost elements: at the
        leftmost position where two combinations differ, the one that keeps the
        element there. Kinds at the same position are ordered by their first
@@ -387,8 +441,9 @@ The result of an edit is determined as follows:
      consistent and decided (step 2), so this ends. Each element removed that way
      is then put back as it was if the claims stay consistent and decided with
      it.
-4. **Removed elements are gone for good.** Removing the newer element later does
-   not bring them back (`test_gone_for_good`).
+4. **Removed, for this computation only.** For the user's edits, the parts removed
+   give way only in this computation: the next edit of the user computes the claims
+   again from all the edits.
 
 **Removing parts.** "Nothing more than necessary" removes parts of elements, not
 whole elements. In positions x + kε a smallest part exists where the reals have
@@ -426,7 +481,10 @@ out at the chip (`ModeRulesAction`).
   applied, would break either of these:
   - **N1.** It would change the line or the claims on (−∞, chip], that is, the
     left side of the chip or the chip's position (chip + ε is on its right).
-  - **N2.** It would remove or change a claim of the user.
+  - **N2.** It would remove or change a claim of the user, removals included.
+    `resolve.py` already refuses such an edit, and the user's edits always come
+    before the script's elements, so a later computation never gives the script
+    the upper hand either.
 - **Mode rules** act at the chip as it moves, while the script carries them out
   (every script carries them when there are mode rules). `mode_rules.py`.
   - The chip's position is a single point x. When the chip is at x, the mode

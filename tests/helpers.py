@@ -75,6 +75,8 @@ def rules_hold(rs, line, claims=None) -> list[str]:
                     bad.append(f"claim {k} {v}% not on the line")
             if claims.negative(k) & pres.get(k, EMPTY):
                 bad.append(f"claim no {k} violated")
+            if claims.off(k) & pres.get(k, EMPTY):
+                bad.append(f"claim off {k} violated")
     return bad
 
 

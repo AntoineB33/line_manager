@@ -8,7 +8,7 @@ from fractions import Fraction as F
 
 from helpers import rand_interval, rules_hold
 from intervals import EPS, INF, Interval, IntervalSet, Pos
-from line import USER, LineState, Op
+from line import GEN, USER, LineState, Op
 from region import Region
 from resolve import Refused, apply_edit, initial_state
 from rules import RuleError, parse_rules
@@ -674,12 +674,14 @@ class ResolutionTest(unittest.TestCase):
         with self.assertRaises(Refused):
             apply_edit(rs, LineState.empty(), [Op.put("C", Interval.point(8)), Op.put("D", Interval.point(8))], USER)
 
-    def test_gone_for_good(self):
+    def test_comes_back(self):
+        """B gave way to "no C" only as long as "no C" was there."""
         rs = parse_rules(["A and B → C"])
         s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.point(3)), Op.put("B", Interval.point(3))], USER)
         s = apply_edit(rs, s, [Op.put_no("C", Interval.point(3))], USER)
+        self.assertEqual(s.line.kinds(), ["A"])
         s = apply_edit(rs, s, [Op.take_no("C", Interval.point(3))], USER)
-        self.assertEqual(s.line.kinds(), ["A"])  # B does not come back
+        self.assertEqual(s.line.kinds(), ["A", "B", "C"])
 
     def test_consequence_relative_to_l(self):
         """B on [l, l + 1] reaches 7/2 from the left edge 3: A goes on [3, 7/2], the left
@@ -691,12 +693,12 @@ class ResolutionTest(unittest.TestCase):
         self.assertEqual(s.line.presence("B"), Region.of(IntervalSet.of(Interval(Pos(F(7, 2), 1), Pos(F(9, 2), 1)), Interval.closed(8, 9))))
 
     def test_fewest_elements_not_measure(self):
-        """Removing A on [1, 2] and [3, 4] loses A and two C; removing the two B loses
-        them and two C: A loses those parts, although it is longer."""
+        """A and B in one edit: removing A on [1, 2] and [3, 4] loses A and two C;
+        removing the two B loses them and two C: A loses those parts, although it is
+        longer."""
         rs = parse_rules(["A & B → C"])
-        s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, 10))], USER)
         bs = IntervalSet.of(Interval.closed(1, 2), Interval.closed(3, 4))
-        s = apply_edit(rs, s, [Op.put("B", bs)], USER)
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, 10)), Op.put("B", bs)], USER)
         s = apply_edit(rs, s, [Op.put_no("C", Interval.closed(0, 5))], USER)
         self.assertEqual(s.line.presence("A"), Region.of(Interval.closed(0, 10)) - Region.of(bs))
         self.assertEqual(s.line.presence("B"), Region.of(bs))
@@ -716,10 +718,15 @@ class ResolutionTest(unittest.TestCase):
         self.assertEqual(s.line.presence("A"), Region.of(Interval.closed(0, 100)) - Region.of(bs))
         self.assertEqual(s.line.presence("B"), Region.of(bs))
         rs = parse_rules(["A & B → C", "A → D"])
-        s = apply_edit(rs, LineState.empty(), [Op.put("A", IntervalSet(Interval.point(3 * i) for i in range(100)))], USER)
-        s = apply_edit(rs, s, [Op.put("B", IntervalSet(Interval.point(3 * i) for i in range(100)))], USER)
+        points = IntervalSet(Interval.point(3 * i) for i in range(100))
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", points), Op.put("B", points)], USER)
         s = apply_edit(rs, s, [Op.put_no("C", Interval.closed(0, 300))], USER)
-        self.assertEqual(sorted(s.line.kinds()), ["A", "D"])  # removing A would also lose D
+        self.assertEqual(sorted(s.line.kinds()), ["A", "D"])  # one edit: removing A would also lose D
+        self.assertFalse(rules_hold(rs, s.line, s.claims))
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", points)], USER)
+        s = apply_edit(rs, s, [Op.put("B", points)], USER)
+        s = apply_edit(rs, s, [Op.put_no("C", Interval.closed(0, 300))], USER)
+        self.assertEqual(sorted(s.line.kinds()), ["B"])  # two edits: A, the older, gives way
         self.assertFalse(rules_hold(rs, s.line, s.claims))
 
     def test_undecided_with_the_line_gives_way(self):
@@ -764,6 +771,140 @@ class ResolutionTest(unittest.TestCase):
             self.assertEqual(as_points(got.line, "ABCDE"), expect, ([str(r) for r in rs.rules], old, ops))
             checked += 1
         self.assertGreater(checked, 60)
+
+
+
+# ------------------------------------------------------------------- the user's edits kept
+
+def bf_history(rs, edits):
+    """edits: the user's edits, oldest first, each [(action, kind, x)] on distinct (kind, x).
+    The line, or None if the newest edit is refused. By definition: the newest edit
+    first, then each older one, without what newer ones decide directly, and without a
+    minimal set of its elements, the fewest elements lost (of its own line), the
+    leftmost kept on a tie, so that it contradicts none of them through the rules."""
+    recs = []
+    for ops in edits:
+        r = {a: {(k, x) for b, k, x in ops if b == a} for a in ("put", "put_no", "take", "take_no")}
+        if bf_line(rs, r["put"], r["put_no"] | r["take"]) is None:
+            if ops is edits[-1]:
+                return None
+            continue
+        recs.append(r)
+    P, N, O, Cl = set(), set(), set(), set()
+    for r in reversed(recs):
+        pos = r["put"] - P - O - N
+        off = r["take"] - P - O
+        neg = r["put_no"] - N - Cl - P
+        Cl |= r["take_no"] - N - Cl
+        own = bf_line(rs, pos, neg | off) or set()
+        cands = sorted([("pos", k, x) for k, x in pos] + [("neg", k, x) for k, x in neg] + [("off", k, x) for k, x in off],
+                       key=lambda c: (c[2], rs.rank.get(c[1], 99)))
+        best, minimal = None, []
+        for n in range(len(cands) + 1):
+            for sub in itertools.combinations(cands, n):
+                t = set(sub)
+                if any(m <= t for m in minimal):
+                    continue
+                gone = lambda kind: {(k, x) for c, k, x in t if c == kind}
+                line = bf_line(rs, P | (pos - gone("pos")), N | O | (neg - gone("neg")) | (off - gone("off")))
+                if line is None:
+                    continue
+                minimal.append(t)
+                loss = len(own - line) + sum(1 for c in t if c[0] != "pos")
+                if best is None or loss < best[0] or (loss == best[0] and _keeps_leftmost(t, best[1], rs)):
+                    best = (loss, t)
+        gone = lambda kind: {(k, x) for c, k, x in best[1] if c == kind}
+        P, N, O = P | (pos - gone("pos")), N | (neg - gone("neg")), O | (off - gone("off"))
+    return bf_line(rs, P, N | O)
+
+
+class HistoryTest(unittest.TestCase):
+    """The line is computed from all the user's edits, kept in order: the newer wins, and an
+    older edit gives way only where, and as long as, it contradicts newer ones."""
+
+    def steps(self, rs, edits, state=None):
+        s, out = state or LineState.empty(), []
+        for ops in edits:
+            s = apply_edit(rs, s, ops, USER)
+            out.append({k: s.line.presence(k) for k in s.line.kinds()})
+        return s, out
+
+    def test_requirement_examples(self):
+        x = Interval.point(0)
+        X = Region.point(0)
+        rs = parse_rules(["A and B and C → D", "A and B → C"])
+        _, got = self.steps(rs, [[Op.put("A", x)], [Op.put("B", x)], [Op.take("A", x)], [Op.take("B", x)]])
+        self.assertEqual(got, [{"A": X}, {"A": X, "B": X, "C": X, "D": X}, {"B": X}, {}])
+        rs = parse_rules(["A and B and C → D", "X → no D", "A and B → C"])
+        _, got = self.steps(rs, [[Op.put("A", x), Op.put("B", x)], [Op.put("X", x)], [Op.take("A", x)], [Op.take("X", x)],
+                                 [Op.put("A", x)]])
+        self.assertEqual(got, [{"A": X, "B": X, "C": X, "D": X}, {"A": X, "X": X}, {"B": X, "X": X}, {"B": X},
+                               {"A": X, "B": X, "C": X, "D": X}])
+        rs = parse_rules(["A → B and C", "B → no D"])
+        everywhere = Interval(-INF, INF, False, False)
+        _, got = self.steps(rs, [[Op.put("D", everywhere)], [Op.put("A", x)], [Op.take("A", x)], [Op.put("A", x)],
+                                 [Op.take("D", everywhere)], [Op.take("A", x)]])
+        D, hole = Region.universe(), Region.universe() - X
+        self.assertEqual(got, [{"D": D}, {"A": X, "B": X, "C": X, "D": hole}, {"D": D}, {"A": X, "B": X, "C": X, "D": hole},
+                               {"A": X, "B": X, "C": X}, {}])
+
+    def test_a_removal_is_an_edit(self):
+        """Removing A, a consequence of Y, makes Y give way; putting A back brings Y back."""
+        rs = parse_rules(["Y → A"])
+        x = Interval.point(0)
+        s, got = self.steps(rs, [[Op.put("Y", x)], [Op.take("A", x)], [Op.put("A", x)]])
+        self.assertEqual([sorted(g) for g in got], [["A", "Y"], [], ["A", "Y"]])
+        self.assertEqual(len(s.history), 3)
+
+    def test_a_removal_gives_way(self):
+        """B removed at 1, then X, which needs B there: the newer X wins."""
+        rs = parse_rules(["X → B 1 unit on the right"])
+        _, got = self.steps(rs, [[Op.take("B", Interval.point(1))], [Op.put("X", Interval.point(0))]])
+        self.assertEqual(sorted(got[-1]), ["B", "X"])
+
+    def test_contradicts_newer_ones_literally(self):
+        """A (oldest), X, B (newest): with B alone, X contradicts it (X & not A → no B), so X
+        gives way, although with A it would not; A, older, does not count."""
+        rs = parse_rules(["X & not A → no B"])
+        x = Interval.point(0)
+        _, got = self.steps(rs, [[Op.put("A", x)], [Op.put("X", x)], [Op.put("B", x)]])
+        self.assertEqual(sorted(got[-1]), ["A", "B"])
+
+    def test_the_scripts_elements_are_not_kept(self):
+        """The generated C gives way to the user's X, and does not come back."""
+        rs = parse_rules(["X → no C"])
+        s = apply_edit(rs, LineState.empty(), [Op.put("C", Interval.closed(0, 2))], GEN)
+        s, got = self.steps(rs, [[Op.put("X", Interval.point(1))], [Op.take("X", Interval.point(1))]], s)
+        self.assertEqual(got[0]["C"], Region.of(Interval.closed(0, 2)) - Region.point(1))
+        self.assertEqual(got[1]["C"], Region.of(Interval.closed(0, 2)) - Region.point(1))
+
+    def test_matches_brute_force(self):
+        rng = random.Random(7)
+        checked = 0
+        for _ in range(150):
+            rs = sample_rules(rng, 3)
+            edits = []
+            for _ in range(rng.randint(2, 4)):
+                ops = [(rng.choice(["put", "put", "put_no", "take", "take_no"]), rng.choice("ABCDE"), F(rng.randint(-2, 2)))
+                       for _ in range(rng.randint(1, 2))]
+                if len({(k, x) for _, k, x in ops}) == len(ops):
+                    edits.append(ops)
+            s, refused = LineState.empty(), False
+            for ops in edits:
+                try:
+                    s = apply_edit(rs, s, [getattr(Op, a)(k, Interval.point(x)) for a, k, x in ops], USER)
+                    refused = False
+                except Refused:
+                    refused = True
+            expect = bf_history(rs, edits)
+            if refused:
+                self.assertIsNone(expect, ([str(r) for r in rs.rules], edits))
+                continue
+            self.assertIsNotNone(expect, ([str(r) for r in rs.rules], edits))
+            self.assertEqual(as_points(s.line, "ABCDE"), expect, ([str(r) for r in rs.rules], edits))
+            self.assertFalse(rules_hold(rs, s.line, s.claims))
+            checked += 1
+        self.assertGreater(checked, 80)
 
 
 if __name__ == "__main__":

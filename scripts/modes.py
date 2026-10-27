@@ -32,6 +32,19 @@ class ModeTimeline:
                 raise ValueError(f"transition at {t} does not change the mode")
             prev_t, prev_m = t, m
 
+    def replace(self, initial_mode: str, transitions: list[tuple[object, str]]) -> None:
+        """New modes, given externally: (position, mode) sorted by position, all after the
+        start; a transition that does not change the mode is dropped."""
+        out, prev = [], initial_mode
+        for t, m in transitions:
+            if Fraction(t) <= self.start:
+                raise ValueError("transitions are after the start")
+            if m != prev:
+                out.append((Fraction(t), m))
+                prev = m
+        self.initial_mode = initial_mode
+        self.transitions[:] = out
+
     def mode_at(self, x: Num) -> str:
         if x < self.start:
             raise ValueError(f"no mode before the start {self.start}")

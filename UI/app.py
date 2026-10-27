@@ -52,6 +52,9 @@ Edits of the user (several in one edit: separate them with ";")
   decimals, -inf and inf, e.g.  on [0, 1/2) U (3, inf)
   undo                     cancel the last edit, as if it had never been made
   clear                    cancel every edit (the rules stay)
+The modes (given externally: by MODES in the script, or by you)
+  mode <name>              the mode is <name> from the chip on (the mode buttons do it too),
+                           until the next transition MODES plans
 Information
   line                     the line, exactly
   claims                   what applies of the edits now, and who made it
@@ -82,8 +85,11 @@ class Session:
             if x > x0 and m != prev:
                 transitions.append((x, m))
                 prev = m
+        self.mode_names = sorted({m for _, m in modes} | {r.mode for r in self.rs.mode_rules})
         self.chip = Chip([(0, x0)])
         self.modes = ModeTimeline(x0, initial, transitions)
+        self.planned = (initial, list(self.modes.transitions))  # by MODES
+        self.changes: dict[F, str] = {}  # by the user: the mode from each position on
         self.sim = Simulation(LineState.empty(), self.generator(self.rs), self.chip, self.modes)
         self.edits: list[str] = []  # the user's edits, as typed, oldest first
         self.seen = (0, 0)  # refusals and generator runs already reported
@@ -168,6 +174,7 @@ class Session:
             return self.edit(cmd)
         handler = {"help": lambda: HELP, "rule": lambda: self.add_rule(rest), "rules": self.show_rules,
                    "unrule": lambda: self.remove_rule(rest), "undo": self.undo, "clear": self.clear,
+                   "mode": lambda: self.set_mode(rest),
                    "line": lambda: str(self.sim.state.line), "claims": lambda: str(self.sim.state.claims),
                    "history": self.show_history, "status": self.status}.get(word)
         return handler() if handler else f"unknown command {word!r}: type help"
@@ -191,7 +198,28 @@ class Session:
             self.sim.set_generator(self.generator(self.rs))
             return f"refused: with these rules the edits have no result ({e})"
         self.texts, self.rs = texts, rs
+        self.mode_names = sorted(set(self.mode_names) | {r.mode for r in rs.mode_rules})
         return self.show_rules()
+
+    def set_mode(self, m: str) -> str:
+        """The mode is m from the chip's position on (given externally, by the user),
+        until the next transition MODES plans: those still apply when the chip gets
+        there."""
+        if not m or not re.fullmatch(r"\w+", m):
+            return "usage: mode <name>"
+        x = self.position
+        if self.modes.mode_at(x) == m:
+            return f"the mode is already {m}"
+        self.changes[x] = m
+        initial, planned = self.planned
+        initial = self.changes.get(self.modes.start, initial)
+        events = dict(planned)
+        events.update((p, mm) for p, mm in self.changes.items() if p > self.modes.start)  # the user's win at one position
+        self.modes.replace(initial, sorted(events.items()))
+        if m not in self.mode_names:
+            self.mode_names = sorted(self.mode_names + [m])
+        self.sim.modes_changed()
+        return f"mode {m} from {x} on"
 
     def edit(self, text: str) -> str:
         try:

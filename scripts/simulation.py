@@ -18,7 +18,8 @@ offset.
 A simulation can also go step by step (the interactive program, UI/app.py):
 `advance(t)` runs it up to time t, the chip's trajectory being extended as it goes
 (`Chip.extend`), and `edit_now`, `undo_now`, `clear_now` and `set_generator` act at
-the current time, as a user edit at that instant would.
+the current time, as a user edit at that instant would; `modes_changed` after the
+modes from the chip on were changed (ModeTimeline.replace).
 """
 
 from __future__ import annotations
@@ -193,6 +194,11 @@ class Simulation:
             return False
         self._replace(self.state.history[:-1])
         return True
+
+    def modes_changed(self) -> None:
+        """The modes changed from the chip's position on (given externally): revealed
+        now, and the script's triggers see them."""
+        self._after_edits(self.t, False, False, "user edit")
 
     def clear_now(self) -> None:
         """Cancel all the user's edits."""

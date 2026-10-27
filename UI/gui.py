@@ -2,7 +2,7 @@
 
 The line around the chip, one row per kind, with the revealed modes above it. The chip
 moves smoothly at its speed; Pause stops it, Slower and Faster halve and double its
-speed. Dashed blue lines show where the generator runs again (its script's rerun
+speed, and the mode buttons change the mode from the chip on. Dashed blue lines show where the generator runs again (its script's rerun
 triggers), blue ticks where it ran. "Generated script" opens the current script in a
 text file. Rules and edits are typed in the command box (type help).
 
@@ -70,6 +70,11 @@ class App:
         tk.Button(bar, text="Zoom out", command=lambda: self.zoom(F(2))).pack(side="left", padx=(8, 0))
         tk.Button(bar, text="Zoom in", command=lambda: self.zoom(F(1, 2))).pack(side="left")
         tk.Button(bar, text="Generated script", command=self.open_script).pack(side="left", padx=(16, 0))
+        tk.Label(bar, text="Mode:").pack(side="left", padx=(16, 0))
+        self.mode_bar = tk.Frame(bar)
+        self.mode_bar.pack(side="left")
+        self.mode_buttons: dict[str, tk.Button] = {}
+        self.button_color = self.play.cget("background")
         self.status = tk.Label(r, anchor="w", justify="left")
         self.status.pack(fill="x", padx=8)
         self.canvas = tk.Canvas(r, background="white", height=320, highlightthickness=0)
@@ -96,6 +101,21 @@ class App:
         def change():
             self.s.speed *= factor
         self.post(change)
+
+    def set_mode(self, m: str) -> None:
+        self.post(lambda: self.s.set_mode(m))
+
+    def _mode_buttons(self, names: list[str], current: str) -> None:
+        if list(self.mode_buttons) != names:
+            for b in self.mode_buttons.values():
+                b.destroy()
+            self.mode_buttons = {}
+            for m in names:
+                b = tk.Button(self.mode_bar, text=m, width=3, command=lambda m=m: self.set_mode(m))
+                b.pack(side="left")
+                self.mode_buttons[m] = b
+        for m, b in self.mode_buttons.items():
+            b.configure(relief="sunken" if m == current else "raised", background="#ffeaa7" if m == current else self.button_color)
 
     def zoom(self, factor: F) -> None:
         self.span = min(max(self.span * factor, F(3)), F(768))
@@ -181,7 +201,8 @@ class App:
             self.out.put(msg)
         self.snap = {"t": s.sim.t, "x": s.position, "mode": s.mode(), "speed": s.speed, "line": s.sim.state.line,
                      "claims": s.sim.state.claims, "kinds": s.kinds(), "reruns": reruns, "other": other,
-                     "past": s.past_runs(), "modes": s.known_modes(), "script": s.script_text()}
+                     "past": s.past_runs(), "modes": s.known_modes(), "script": s.script_text(),
+                     "mode_names": list(s.mode_names)}
 
     # ------------------------------------------------------------ drawing (the window's thread)
 
@@ -215,6 +236,7 @@ class App:
         X = lambda p: LEFT + float((p - left) / span) * (w - LEFT - RIGHT)
         kinds = sn["kinds"]
         bottom = TOP + MODE_H + 8 + ROW_H * len(kinds)
+        self._mode_buttons(sn["mode_names"], sn["mode"])
         self.speed_label.configure(text=f"speed: {_num(sn['speed'])} per second")
         when = [f"chip at {_num(p)}" for p in sn["reruns"]] + sn["other"]
         self.status.configure(text=f"time {float(sn['t']):.2f} s    chip at {float(x):.3f}    mode {sn['mode']}    "

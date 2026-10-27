@@ -59,3 +59,6 @@ Edits from the user win over what is on the line. Nothing more than necessary is
 A and B at [1, 2]
 user edit: remove B at 1.5
 Now A at [1, 2], B at [1, 1.5)U(1.5, 2] and C at 1.5.
+
+
+The line is computed from all the user's edits, kept in the order they were made. Each edit adds or removes elements on intervals. Where edits contradict each other, directly or through the rules, the newer one wins. An older edit gives way only where, and as long as, it contradicts newer ones: when that contradiction disappears, it applies again.

@@ -4,8 +4,8 @@ This document maps each part of `../requirement.md` to its formal definition,
 the code that implements it, and the test that checks it.
 
 - Run the tests: `python -m unittest discover -s tests` (standard library only).
-- Define rules, edit the line and move the chip interactively: `python UI/app.py`
-  (type `help`), or run an example script of `UI/examples/`. A script defines the
+- Watch the chip move in a window, define rules and edit the line: `python UI/app.py`
+  (type `help` in its command box), or run an example script of `UI/examples/`. A script defines the
   rules, the modes, the chip's start and speed, the initial state of the line and
   the generator's problems; copy one to make your own.
 

@@ -1,6 +1,6 @@
 """The user's edits are kept: an older edit gives way only where, and as long as, it
 contradicts newer ones. No modes and no optimization problem: only the rules and the
-edits. Try:
+edits. Type in the command box:
     add X at 0          A and B are at 0: B gives way to X (D would contradict it)
     remove A at 0       B comes back
     remove X at 0

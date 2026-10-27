@@ -1,12 +1,10 @@
 """The chip moves through alternating modes; the generator aims at presence ratios
-and minimum lengths, the mode rules act at the chip. Try:
-    run 4               the time runs for 4: the chip moves 4 * speed
-    status              the time, the chip, its mode, the problems
-    script              what the generator decided
-    speed 1/2           slower
-    move 20             until the chip is at 20
+and minimum lengths, the mode rules act at the chip. Press Play, then try Faster and
+Slower, and "Generated script". The dashed blue line is where the generator runs
+again. Type in the command box, for example:
     add A 50% on [24, 26]
     claims              who placed what
+    status
 
 Copy this file to make your own session, change the definitions, and run it:
     python UI/examples/modes_and_targets.py
@@ -31,7 +29,7 @@ RULES = [
 # externally: the generator only knows those the chip has reached.
 MODES = [(2 * i, "1" if i % 2 == 0 else "2") for i in range(40)]
 
-# The chip: where it starts, and its speed (> 0, positions per unit of time).
+# The chip: where it starts, and its speed (> 0, positions per second).
 CHIP = 0
 SPEED = 1
 

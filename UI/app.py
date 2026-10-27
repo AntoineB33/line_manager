@@ -1,22 +1,24 @@
-"""Interactive line manager: define the rules, edit the line, move the chip.
+"""Line manager: define the rules, edit the line, watch the chip move.
 
-    python UI/app.py                   an empty session (then type "help")
+    python UI/app.py                   an empty session
     python UI/examples/<example>.py    a session defined by a script (copy one to start yours)
 
 An example script defines the rules, the modes, the chip's start and speed, the
-initial state of the line and the generator's problems, then calls start(...).
+initial state of the line and the generator's problems, then calls start(...), which
+opens the window (gui.py).
 
 Everything is exact (fractions). The user's edits are kept, in order: the line is
 computed from all of them (resolve.py), so changing the rules recomputes it, and
 "undo" gives the line as if the last edit had never been made. The initial state of
-the line is the user's first edit. The chip only moves when asked ("run", "move"),
-at its speed; as it moves, the modes are revealed, the generator runs and its script
-acts, the mode rules included (simulation.py).
+the line is the user's first edit. As the chip moves, the modes are revealed, the
+generator runs and its script acts, the mode rules included (simulation.py).
+
+This file is the session the window drives: the definitions, the commands typed in
+the window (`Session.command`), and the chip's motion (`Session.tick`).
 """
 
 from __future__ import annotations
 
-import math
 import os
 import re
 import sys
@@ -26,13 +28,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from generator import RulesGenerator  # noqa: E402
 from intervals import INF, Interval, IntervalSet  # noqa: E402
-from line import Op  # noqa: E402
+from line import LineState, Op  # noqa: E402
 from modes import ModeTimeline  # noqa: E402
 from problems import MinimumLengthProblem, PresenceRatioProblem  # noqa: E402,F401 (for the example scripts)
 from region import Region  # noqa: E402
-from rules import RuleError, parse_rules  # noqa: E402
+from rules import RuleError, is_hidden, parse_rules  # noqa: E402
+from script import ChipIn, RerunAction, TransitionCount  # noqa: E402
 from simulation import Chip, Simulation  # noqa: E402
-from solver import Line  # noqa: E402
 
 HELP = """\
 Rules
@@ -50,20 +52,12 @@ Edits of the user (several in one edit: separate them with ";")
   decimals, -inf and inf, e.g.  on [0, 1/2) U (3, inf)
   undo                     cancel the last edit, as if it had never been made
   clear                    cancel every edit (the rules stay)
-The chip
-  speed <v>                the chip's speed, v > 0 (positions per unit of time)
-  run <d>                  let the time run for d: the chip moves d * speed
-  move <x>                 let the time run until the chip is at x
-  status                   the time, the chip, its mode and speed, the problems
-  script                   the generated script now
-Display
-  show                     the line, exactly, and a strip (^ is the chip)
+Information
+  line                     the line, exactly
   claims                   what applies of the edits now, and who made it
   history                  the user's edits, oldest first
-  view <a> <b> [step]      the stretch the strip shows; "view chip" follows the chip
-Other
-  load <file>              run the commands of a file
-  help, quit"""
+  status                   the time, the chip, its mode and speed, the problems
+  help"""
 
 KIND = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
 RESERVED = {"no", "at", "on", "everywhere", "mode"}
@@ -73,7 +67,7 @@ class Session:
     def __init__(self, rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=0.5) -> None:
         self.texts = list(rules)
         self.rs = parse_rules(self.texts)
-        self.problems = list(problems)
+        self.problems = [(p, F(w)) for p, w in problems]
         self.q = q
         self.speed = F(speed)
         if self.speed <= 0:
@@ -90,227 +84,150 @@ class Session:
                 prev = m
         self.chip = Chip([(0, x0)])
         self.modes = ModeTimeline(x0, initial, transitions)
-        self.sim = Simulation(_empty(), self.generator(self.rs), self.chip, self.modes)
+        self.sim = Simulation(LineState.empty(), self.generator(self.rs), self.chip, self.modes)
         self.edits: list[str] = []  # the user's edits, as typed, oldest first
-        self.view: tuple | None = None  # None: follow the chip
-        self.seen = (0, 0, 0)  # changes, refusals and generator runs already reported
+        self.seen = (0, 0)  # refusals and generator runs already reported
         ops = [op for text in line for op in parse_op(text)]
-        why = self.sim.edit_now(ops) if ops else (self.sim.start([]) or None)
-        if ops and why:
-            print(f"the initial state is refused: {why}")
-        elif ops:
+        self.initial_refused = self.sim.edit_now(ops) if ops else self.sim.start([])
+        if ops and not self.initial_refused:
             self.edits.append("; ".join(line))
-        self.seen = self.counts()
 
     def generator(self, rs) -> RulesGenerator:
         return RulesGenerator(rs, self.problems, self.q)
 
-    def counts(self) -> tuple:
+    # ------------------------------------------------------------ the chip
+
+    @property
+    def position(self) -> F:
+        return self.chip.position(self.sim.t)
+
+    def mode(self) -> str:
+        return self.modes.mode_at(self.position)
+
+    def tick(self, dt: F) -> None:
+        """Let the time run for dt: the chip moves dt * speed."""
+        t0 = self.sim.t
+        self.chip.extend(t0 + dt, self.position + self.speed * dt)
+        self.sim.advance(t0 + dt)
+
+    def reruns(self) -> tuple[list[F], list[str]]:
+        """When the generator runs again: the positions the chip will reach, and the
+        other conditions, as text."""
+        at, other = [], []
+        for trig in self.sim.script.rerun_triggers():
+            if isinstance(trig, ChipIn):
+                at.append(F(trig.lo))
+            elif isinstance(trig, TransitionCount):
+                left = trig.k - self.sim._since_install
+                other.append(f"after {left} more mode transition{'s' if left != 1 else ''}")
+        return at, other
+
+    def past_runs(self) -> list[F]:
+        return [c for _, c, _, _, _ in self.sim.log.runs]
+
+    def known_modes(self) -> list[tuple[F, F, str]]:
+        return self.modes.known(self.position).segments()
+
+    def kinds(self) -> list[str]:
+        """The kinds to show: those of the rules, then the others on the line."""
+        out = [k for k in self.rs.order if not is_hidden(k)]
+        return out + [k for k in self.sim.state.line.kinds() if k not in out]
+
+    def script_text(self) -> str:
+        runs = self.sim.log.runs
+        head = [f"Generated script at time {self.sim.t}, chip at {self.position} (mode {self.mode()})."]
+        if runs:
+            t, c, why, _, stats = runs[-1]
+            head.append(f"Last generator run: at time {t}, chip at {c} ({why}); it chose {stats.chosen}.")
+        return "\n".join(head) + "\n\n" + (self.sim.script.text() or "(empty script)") + "\n"
+
+    def news(self) -> list[str]:
+        """What happened since the last call: generator runs that edit, refusals."""
         log = self.sim.log
-        return len(log.changes), len(log.refused), len(log.runs)
+        refused, runs = self.seen
+        out = []
+        for t, c, why, _, stats in log.runs[runs:]:
+            if stats.chosen != "no-op":
+                out.append(f"generator at chip {c} ({why}): {stats.chosen}")
+        for t, src, why in log.refused[refused:]:
+            if src != "user":
+                out.append(f"refused at time {t} ({src}): {why}")
+        self.seen = (len(log.refused), len(log.runs))
+        return out
 
     # ------------------------------------------------------------ commands
 
-    def run(self, cmd: str) -> bool:
-        """Carry out one command; False to quit."""
+    def command(self, cmd: str) -> str:
+        """Carry out one typed command; what to show."""
         cmd = cmd.strip()
-        if not cmd or cmd.startswith("#"):
-            return True
+        if not cmd:
+            return ""
         word, _, rest = cmd.partition(" ")
         rest = rest.strip()
-        if word in ("quit", "exit"):
-            return False
-        handler = {"help": lambda: print(HELP), "rule": lambda: self.add_rule(rest), "rules": self.show_rules,
+        if word in ("add", "no", "remove"):
+            return self.edit(cmd)
+        handler = {"help": lambda: HELP, "rule": lambda: self.add_rule(rest), "rules": self.show_rules,
                    "unrule": lambda: self.remove_rule(rest), "undo": self.undo, "clear": self.clear,
-                   "speed": lambda: self.set_speed(rest), "run": lambda: self.run_for(rest), "move": lambda: self.move(rest),
-                   "status": self.status, "script": self.show_script, "show": self.show, "claims": self.show_claims,
-                   "history": self.show_history, "view": lambda: self.set_view(rest), "load": lambda: self.load(rest)}.get(word)
-        if handler is None:
-            if word in ("add", "no", "remove"):
-                self.edit(cmd)
-            else:
-                print(f"unknown command {word!r}: type help")
-            return True
-        handler()
-        return True
+                   "line": lambda: str(self.sim.state.line), "claims": lambda: str(self.sim.state.claims),
+                   "history": self.show_history, "status": self.status}.get(word)
+        return handler() if handler else f"unknown command {word!r}: type help"
 
-    def add_rule(self, text: str) -> None:
-        if not text:
-            return print("usage: rule <rule>")
-        self.set_rules(self.texts + [text])
+    def add_rule(self, text: str) -> str:
+        return self.set_rules(self.texts + [text]) if text else "usage: rule <rule>"
 
-    def remove_rule(self, n: str) -> None:
+    def remove_rule(self, n: str) -> str:
         if not n.isdigit() or not 1 <= int(n) <= len(self.texts):
-            return print(f"usage: unrule <n>, n from 1 to {len(self.texts)}")
-        self.set_rules(self.texts[:int(n) - 1] + self.texts[int(n):])
+            return f"usage: unrule <n>, n from 1 to {len(self.texts)}"
+        return self.set_rules(self.texts[:int(n) - 1] + self.texts[int(n):])
 
-    def set_rules(self, texts: list[str]) -> None:
+    def set_rules(self, texts: list[str]) -> str:
         try:
             rs = parse_rules(texts)
         except (RuleError, ValueError) as e:
-            return print(f"refused: {e}")
+            return f"refused: {e}"
         try:
             self.sim.set_generator(self.generator(rs))
         except Exception as e:  # the edits have no result with these rules
             self.sim.set_generator(self.generator(self.rs))
-            return print(f"refused: with these rules the edits have no result ({e})")
+            return f"refused: with these rules the edits have no result ({e})"
         self.texts, self.rs = texts, rs
-        self.show_rules()
-        self.report()
+        return self.show_rules()
 
-    def edit(self, text: str) -> None:
+    def edit(self, text: str) -> str:
         try:
             ops = [op for part in text.split(";") if part.strip() for op in parse_op(part)]
         except ValueError as e:
-            return print(f"not understood: {e}")
+            return f"not understood: {e}"
         why = self.sim.edit_now(ops)
         if why:
-            self.seen = self.counts()
-            return print(f"refused: {why}")
+            return f"refused: {why}"
         self.edits.append(text)
-        self.report()
+        return f"done: {text}"
 
-    def undo(self) -> None:
+    def undo(self) -> str:
         if not self.edits:
-            return print("no edit to undo")
+            return "no edit to undo"
         self.sim.undo_now()
-        print(f"undone: {self.edits.pop()}")
-        self.report()
+        return f"undone: {self.edits.pop()}"
 
-    def clear(self) -> None:
+    def clear(self) -> str:
         self.sim.clear_now()
         self.edits = []
-        print("no edit left")
-        self.report()
+        return "no edit left"
 
-    def set_speed(self, rest: str) -> None:
-        try:
-            v = number(rest)
-        except ValueError:
-            v = F(0)
-        if v <= 0:
-            return print("usage: speed <v>, v > 0")
-        self.speed = v
-        print(f"speed {v}")
+    def show_rules(self) -> str:
+        return "\n".join(f"{i}. {r}" for i, r in enumerate(self.rs.rules, 1)) or "no rule"
 
-    def run_for(self, rest: str) -> None:
-        try:
-            d = number(rest)
-        except ValueError:
-            d = F(0)
-        if d <= 0:
-            return print("usage: run <d>, d > 0")
-        self.advance(d)
+    def show_history(self) -> str:
+        return "\n".join(f"{i}. {e}" for i, e in enumerate(self.edits, 1)) or "no edit"
 
-    def move(self, rest: str) -> None:
-        try:
-            x = number(rest)
-        except ValueError:
-            return print("usage: move <x>")
-        here = self.chip.position(self.sim.t)
-        if x <= here:
-            return print(f"the chip is at {here} and only moves to the right")
-        self.advance((x - here) / self.speed)
-
-    def advance(self, d: F) -> None:
-        t0 = self.sim.t
-        x0 = self.chip.position(t0)
-        self.chip.extend(t0 + d, x0 + self.speed * d)
-        self.sim.advance(t0 + d)
-        print(f"time {self.sim.t}, chip at {self.chip.position(self.sim.t)}, mode {self.mode()}")
-        self.report()
-
-    def set_view(self, rest: str) -> None:
-        if rest == "chip":
-            self.view = None
-            return self.show()
-        try:
-            parts = [number(p) for p in rest.split()]
-            a, b = parts[0], parts[1]
-            step = parts[2] if len(parts) > 2 else F(1, 2)
-            if not a < b or step <= 0:
-                raise ValueError
-        except (ValueError, IndexError):
-            return print('usage: view <a> <b> [step], with a < b and step > 0, or "view chip"')
-        self.view = (a, b, step)
-        self.show()
-
-    def load(self, path: str) -> bool:
-        try:
-            with open(path, encoding="utf-8") as f:
-                lines = f.read().splitlines()
-        except OSError as e:
-            print(f"cannot read {path}: {e}")
-            return True
-        for line in lines:
-            if line.strip() and not line.strip().startswith("#"):
-                print(f"> {line.strip()}")
-            if not self.run(line):
-                return False
-        return True
-
-    # ------------------------------------------------------------ display
-
-    def mode(self) -> str:
-        return self.modes.mode_at(self.chip.position(self.sim.t))
-
-    def report(self) -> None:
-        """What happened since the last report, then the line."""
-        log = self.sim.log
-        changes, refused, runs = self.seen
-        by = {}
-        for ch in log.changes[changes:]:
-            if ch.source != "user":
-                by[ch.source] = by.get(ch.source, 0) + 1
-        if by:
-            print("changes: " + ", ".join(f"{n} by the {'generated script' if s == 'script' else 'mode rules'}" for s, n in sorted(by.items())))
-        for t, src, why in log.refused[refused:]:
-            if src != "user":
-                print(f"  refused at time {t} ({src}): {why}")
-        for t, c, why, script, stats in log.runs[runs:]:
-            if stats.chosen != "no-op":
-                print(f"  generator run at chip {c} ({why}): chose {stats.chosen}")
-        self.seen = self.counts()
-        self.show()
-
-    def show_rules(self) -> None:
-        if not self.texts:
-            return print("no rule")
-        for i, r in enumerate(self.rs.rules, 1):
-            print(f"  {i}. {r}")
-
-    def show(self) -> None:
-        line = self.sim.state.line
-        print(line)
-        chip = self.chip.position(self.sim.t)
-        view = self.view or (F(math.floor(chip)) - 2, F(math.floor(chip)) + 14, F(1, 2))
-        print(strip(line, *view, chip=chip))
-
-    def show_claims(self) -> None:
-        print(self.sim.state.claims)
-
-    def show_history(self) -> None:
-        if not self.edits:
-            return print("no edit")
-        for i, e in enumerate(self.edits, 1):
-            print(f"  {i}. {e}")
-
-    def status(self) -> None:
-        print(f"time {self.sim.t}, chip at {self.chip.position(self.sim.t)}, mode {self.mode()}, speed {self.speed}")
-        if not self.problems:
-            print("no optimization problem")
-        for p, w in self.problems:
-            targets = getattr(p, "targets", None) or getattr(p, "lengths", {})
-            print(f"  {p.name}, weight {w}, horizon {p.horizon}: " + ", ".join(f"{k} {v}" for k, v in sorted(targets.items())))
-        print(f"  allocated resources quantity {self.q}, {len(self.sim.log.runs)} generator runs")
-
-    def show_script(self) -> None:
-        print(self.sim.script.text() or "(empty script)")
-
-
-def _empty():
-    from line import LineState
-    return LineState.empty()
+    def status(self) -> str:
+        out = [f"time {self.sim.t}, chip at {self.position}, mode {self.mode()}, speed {self.speed}"]
+        out += [f"{p.name}, weight {w}, horizon {p.horizon}: "
+                + ", ".join(f"{k} {v}" for k, v in sorted((getattr(p, 'targets', None) or getattr(p, 'lengths', {})).items()))
+                for p, w in self.problems] or ["no optimization problem"]
+        out.append(f"allocated resources quantity {self.q}, {len(self.sim.log.runs)} generator runs")
+        return "\n".join(out)
 
 
 def parse_op(text: str) -> list[Op]:
@@ -378,57 +295,24 @@ def number(text: str, infinite: bool = False):
         raise ValueError(f"a number is expected, not {s!r}")
 
 
-def strip(line: Line, lo: F, hi: F, step: F, chip=None) -> str:
-    """One row per kind: # present at 100% on the whole cell, + partly present or at
-    another percentage, . absent; a cell is [x, x + step). ^ marks the chip's cell."""
-    n = int((hi - lo) / step)
-    cells = [Region.of(Interval(lo + i * step, lo + (i + 1) * step, True, False)) for i in range(n)]
-    kinds = line.kinds()
-    width = max([len(k) for k in kinds] + [4]) + 1
-    axis = ""
-    for i in range(n):
-        x = lo + i * step
-        if len(axis) <= i:
-            axis += str(x) if x % (4 * step) == 0 else " "
-    rows = [" " * width + axis[:n]]
-    for k in kinds:
-        pres, full = line.presence(k), line.vals[k].get(F(100), Region.empty())
-        rows.append(k.ljust(width) + "".join("." if not (pres & c) else "#" if c.issubset(full) else "+" for c in cells))
-    if chip is not None and lo <= chip < hi:
-        rows.append("chip".ljust(width) + " " * int((chip - lo) / step) + "^")
-    return "\n".join(rows)
-
-
 def start(rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=0.5) -> None:
-    """Open the interactive program on these definitions.
+    """Open the window on these definitions.
     rules:    the rules, as text
     modes:    [(position, mode)]: the mode from each position on (the first one at or
               before the chip's start); revealed as the chip reaches them
-    chip:     where the chip starts (at time 0)
-    speed:    its speed, > 0
+    chip:     where the chip starts
+    speed:    its speed, > 0, in positions per second
     line:     the initial state of the line, as edits ("A on [1, 3)", "A 50% at 2")
     problems: [(problem, weight)]: PresenceRatioProblem, MinimumLengthProblem
     q:        the allocated resources quantity, in (0, 1)"""
+    import gui
     try:
-        s = Session(rules, modes, chip, speed, [f"add {t}" if not t.split()[0] in ("no", "remove") else t for t in line],
+        s = Session(rules, modes, chip, speed, [t if t.split()[0] in ("no", "remove") else f"add {t}" for t in line],
                     problems, q)
     except (RuleError, ValueError) as e:
         print(f"the definitions are refused: {e}")
         return
-    print('Line manager. Type "help" for the commands.')
-    s.show_rules()
-    s.status()
-    s.show()
-    while True:
-        try:
-            cmd = input("> ")
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return
-        if not sys.stdin.isatty():
-            print(cmd)
-        if not s.run(cmd):
-            return
+    gui.run(s)
 
 
 if __name__ == "__main__":

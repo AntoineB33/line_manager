@@ -21,13 +21,6 @@ Examples:
 
 If there is a "or" in the right side of the element rule, the leftmost operand (leftmost in the expression) that can be chosen is chosen.
 
-A set of element rules can't have a cycle.
-
-Example:
-This set of element rules is impossible:
-- if A → B 1% 1 unit on the right of l
-- if B → A 10%
-
 A "mode rule" is the same as an element rule, but can add or remove elements only at the position of the chip.
 
 Example:

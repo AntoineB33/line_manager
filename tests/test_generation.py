@@ -6,11 +6,12 @@ import unittest
 from fractions import Fraction as F
 
 from helpers import check_log, rand_interval, rules_hold
-from generator import PresenceRatioProblem, RulesGenerator, budget, rerun_distance, rerun_transitions
+from generator import PresenceRatioProblem, RulesGenerator, _Context, budget, rerun_distance, rerun_transitions
 from intervals import INF, Interval, IntervalSet
 from line import GEN, MODE, USER, LineState, Op
 from modes import ModeTimeline
 from probability import ProbabilityFinder
+from problems import MinimumLengthProblem, shortfalls
 from region import Region
 from resolve import apply_edit
 from rules import parse_rules
@@ -277,6 +278,84 @@ class ProbabilityFinderTest(unittest.TestCase):
             err[use] = abs(sim.state.line.integral("D", window) / 40 - F(3, 4))
         self.assertLess(err[True], err[False])
         self.assertEqual(err[True], 0)
+
+
+
+class ProblemsTest(unittest.TestCase):
+    """The optimization problems (problems.py) and their weights."""
+
+    def short(self, *ivs, L=10):
+        return [d for _, d in shortfalls(Region.of(IntervalSet(ivs)), F(L), F(-50), F(100))]
+
+    def test_minimum_length(self):
+        self.assertEqual(self.short(Interval.closed(0, 10)), [0])
+        # a hole of 1: each piece falls short by more than the hole
+        a, b = self.short(Interval.closed(0, F(9, 2)), Interval.closed(F(11, 2), 10))
+        self.assertTrue(a > 1 and b > 1)
+        # a bit on the edge going away: its shortfall grows up to the full length minus its own
+        far = [self.short(Interval.closed(0, F(19, 2)), Interval.closed(F(19, 2) + g, 10 + g))[1] for g in (1, 4, 8, 10, 20)]
+        self.assertEqual(far, sorted(far))
+        self.assertEqual(far[-2:], [F(19, 2), F(19, 2)])
+
+    def run_once(self, rs, state, problems):
+        script, stats = RulesGenerator(rs, problems, 0.5).run(state, F(0), ModeTimeline(0, "1").known(0))
+        ops = [op for ev in script.events for a in ev.actions if isinstance(a, EditAction) for op in a.ops]
+        return (apply_edit(rs, state, ops, GEN) if ops else state), stats
+
+    def test_the_generator_reaches_minimum_lengths(self):
+        """A short interval of the user grows after the chip; the user's own stays."""
+        rs = parse_rules([])
+        state = apply_edit(rs, LineState.empty(), [Op.put("A", IntervalSet.of(Interval.closed(2, 4), Interval.closed(30, 31)))], USER)
+        problem = MinimumLengthProblem({"A": 10}, 40)
+        after, stats = self.run_once(rs, state, [(problem, 1)])
+        ctx = _Context(RulesGenerator(rs, [(problem, 1)], 0.5), after, F(0), ModeTimeline(0, "1").known(0))
+        self.assertEqual(problem.error(ctx, after), 0, stats.chosen)
+        self.assertTrue(Region.of(IntervalSet.of(Interval.closed(2, 4), Interval.closed(30, 31))).issubset(after.claims.owned("A", USER)))
+
+    def test_weights(self):
+        """2 units of A in (0, 20], or none since an interval of A should be 10 long: the
+        heavier problem decides."""
+        rs = parse_rules([])
+        ratio, length = PresenceRatioProblem({"A": F(1, 10)}, 20), MinimumLengthProblem({"A": 10}, 20)
+        after, _ = self.run_once(rs, LineState.empty(), [(ratio, 10), (length, 1)])
+        self.assertTrue(after.line.presence("A"))
+        after, _ = self.run_once(rs, LineState.empty(), [(ratio, 1), (length, 10)])
+        self.assertFalse(after.line.presence("A"))
+
+
+class StepByStepTest(unittest.TestCase):
+    """A simulation run step by step (the interactive program) is the simulation run at once."""
+
+    def test_same_as_at_once(self):
+        rs = parse_rules(["A → B or C", "B → no C 1 unit on the right", "mode 1 → E", "mode 2 → no E"])
+        problem = PresenceRatioProblem({"A": F(1, 4)}, F(6))
+        modes = ModeTimeline(0, "1", [(F(3), "2"), (F(7), "1")])
+        edit = [Op.put("A", Interval.closed(9, 10))]
+        whole = Simulation(LineState.empty(), RulesGenerator(rs, problem, 0.5), Chip([(0, 0), (4, 4), (12, 8)]), modes,
+                           [UserEdit(F(4), edit)])
+        whole.run(12)
+        chip = Chip([(0, 0)])
+        steps = Simulation(LineState.empty(), RulesGenerator(rs, problem, 0.5), chip, modes)
+        chip.extend(4, 4)
+        steps.advance(4)
+        self.assertIsNone(steps.edit_now(edit))
+        chip.extend(12, 8)
+        steps.advance(12)
+        self.assertEqual(steps.state.line, whole.state.line)
+        self.assertEqual(steps.state.claims.same(whole.state.claims), True)
+        check_log(steps.log, rs)
+
+    def test_undo_and_rules(self):
+        rs = parse_rules(["A → B"])
+        chip = Chip([(0, 0)])
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 4), 0.5), chip, ModeTimeline(0, "1"))
+        self.assertIsNone(sim.edit_now([Op.put("A", Interval.closed(2, 3))]))
+        self.assertEqual(sim.state.line.kinds(), ["A", "B"])
+        sim.set_generator(RulesGenerator(parse_rules(["A → C"]), PresenceRatioProblem({}, 4), 0.5))
+        self.assertEqual(sim.state.line.kinds(), ["A", "C"])
+        self.assertTrue(sim.undo_now())
+        self.assertEqual(sim.state.line.kinds(), [])
+        self.assertIsNotNone(sim.edit_now([Op.put("A", Interval.point(1)), Op.put_no("C", Interval.point(1))]))
 
 
 if __name__ == "__main__":

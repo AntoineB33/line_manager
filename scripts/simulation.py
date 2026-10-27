@@ -14,6 +14,11 @@ Between two instants the chip goes through the positions chip([t0, t1)), all wit
 one mode; they are logged as continuous changes, each changing its positions as the
 chip goes through them. Sweeps are cut at the multiples of half the smallest rule
 offset.
+
+A simulation can also go step by step (the interactive program, UI/app.py):
+`advance(t)` runs it up to time t, the chip's trajectory being extended as it goes
+(`Chip.extend`), and `edit_now`, `undo_now`, `clear_now` and `set_generator` act at
+the current time, as a user edit at that instant would.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ from intervals import EPS, INF, Num, Pos
 from line import GEN, USER, LineState, Op
 from modes import ModeTimeline
 from region import Region
-from resolve import Refused, apply_edit
+from resolve import Refused, owned_by_others, apply_edit, rebuild
 from script import ChipIn, EditAction, RerunAction, Script, TransitionCount
 from mode_rules import ModeRules, Run
 
@@ -45,6 +50,13 @@ class Chip:
                 raise ValueError("times must increase")
             if x1 < x0:
                 raise ValueError("the chip never moves left")
+
+    def extend(self, t, x) -> None:
+        """The trajectory goes on to (t, x): t after the last time, x not to the left."""
+        t, x = Fraction(t), Fraction(x)
+        if not t > self.points[-1][0] or x < self.points[-1][1]:
+            raise ValueError("the chip goes on later, and never to the left")
+        self.points.append((t, x))
 
     def position(self, t: Fraction) -> Fraction:
         pts = self.points
@@ -105,6 +117,8 @@ class Simulation:
         self._since_install = 0
         self._was_true: list[bool] = []
         self._fired: list[bool] = []
+        self.t = Fraction(0)
+        self.started = False
         h = self.rules.smallest_offset
         self.grid = h / 2 if h else None
 
@@ -144,15 +158,64 @@ class Simulation:
         return True
 
     def run(self, end_time) -> Log:
-        end = Fraction(end_time)
-        t = Fraction(0)
-        self._instant(t, first=True)
-        while t < end:
-            t1 = min(self._next_instant(t), end)
-            self._sweep(t, t1)
-            t = t1
-            self._instant(t)
+        self.advance(end_time)
         return self.log
+
+    def advance(self, end_time) -> None:
+        """Run the simulation from its current time up to end_time."""
+        end = Fraction(end_time)
+        if not self.started:
+            self.start()
+        while self.t < end:
+            t1 = min(self._next_instant(self.t), end)
+            self._sweep(self.t, t1)
+            self.t = t1
+            self._instant(self.t)
+
+    def start(self, edits: list[list[Op]] | None = None) -> None:
+        """The first instant, with these edits of the user (else those scheduled at 0)."""
+        self.started = True
+        self._instant(self.t, first=True, edits=edits)
+
+    def edit_now(self, ops: list[Op]) -> str | None:
+        """An edit of the user at the current time: None, or why it is refused."""
+        n = len(self.log.refused)
+        if not self.started:
+            self.start([ops])
+        else:
+            self._instant(self.t, edits=[ops])
+        refused = [why for _, src, why in self.log.refused[n:] if src == "user"]
+        return refused[0] if refused else None
+
+    def undo_now(self) -> bool:
+        """Cancel the user's last edit, as if it had never been made."""
+        if not self.state.history:
+            return False
+        self._replace(self.state.history[:-1])
+        return True
+
+    def clear_now(self) -> None:
+        """Cancel all the user's edits."""
+        self._replace(())
+
+    def set_generator(self, generator: RulesGenerator) -> None:
+        """New rules or problems: the line is computed again from the user's edits, and the
+        generator runs again."""
+        self.gen, self.rules = generator, generator.rules
+        h = self.rules.smallest_offset
+        self.grid = h / 2 if h else None
+        self._replace(self.state.history, why="rules or problems changed")
+
+    def _replace(self, history: tuple, why: str = "user edit") -> None:
+        before = self.state
+        after = rebuild(self.rules, history, owned_by_others(before.claims), before.line)
+        self.log.changes.append(Change(self.t, self.chip.position(self.t), "user", before, after))
+        self.state = after
+        if not self.started:
+            self.started = True
+            self._instant(self.t, first=True, edits=[])
+        else:
+            self._after_edits(self.t, False, True, why)
 
     def _next_instant(self, t: Fraction) -> Num:
         c = self.chip.position(t)
@@ -170,11 +233,13 @@ class Simulation:
         later = [x for x in cands if x > t]
         return min(later, default=INF)
 
-    def _instant(self, t: Fraction, first: bool = False) -> None:
+    def _instant(self, t: Fraction, first: bool = False, edits: list[list[Op]] | None = None) -> None:
         edited = False
-        for e in self.user_edits:
-            if e.time == t:
-                edited |= self._edit(t, e.ops, USER, "user")
+        for ops in ([e.ops for e in self.user_edits if e.time == t] if edits is None else edits):
+            edited |= self._edit(t, ops, USER, "user")
+        self._after_edits(t, first, edited, "user edit")
+
+    def _after_edits(self, t: Fraction, first: bool, edited: bool, why: str) -> None:
         c = self.chip.position(t)
         revealed = sum(1 for p, _ in self.modes.transitions if p <= c)
         self._since_install += revealed - self.revealed
@@ -182,7 +247,7 @@ class Simulation:
         if first:
             self._install(t, "start")
         elif edited:
-            self._install(t, "user edit")
+            self._install(t, why)
         for _ in range(3):
             rerun = False
             for i, ev in enumerate(self.script.events):

@@ -36,7 +36,6 @@ choice can change are computed with region algebra. For the others, two solvers:
 
 from __future__ import annotations
 
-import bisect
 import itertools
 import math
 import sys
@@ -529,12 +528,13 @@ class Lattice:
         self.kmin = -int((T + r) // g)
         self.kmax = int((T - r) // g)
         self.R2 = 3 * lp.spec.rho + 1
+        self._pats = lp.patterns(r, self.kmin - 1, self.kmax + 1)
 
     def x(self, k: int) -> Fraction:
         return self.r + k * self.lp.g
 
     def pat(self, k: int) -> tuple:
-        return self.lp.pattern_at(self.x(min(max(k, self.kmin - 1), self.kmax + 1)))  # constant beyond the core
+        return self._pats[min(max(k, self.kmin - 1), self.kmax + 1) - self.kmin + 1]  # constant beyond the core
 
     def solve(self) -> bool:
         spec = self.lp.spec
@@ -648,12 +648,9 @@ class LatticeProblem:
                             self.residues.add((e + base) % self.g)
             self.residues |= {reg.lo % self.g, reg.hi % self.g}
         self.T = max(abs(b) for b in bounds) + (2 * self.W + 2 * self.spec.rho + 4) * self.g
-        self._cache: dict[Fraction, tuple] = {}
-        # membership tests on the window that matters, by binary search
+        # the intervals of each region on the window that matters
         a, b = -self.T - 4 * self.g, self.T + 4 * self.g
-        self._fast: dict[int, _Fast] = {}
-        for reg in all_regions:
-            self._fast[id(reg)] = _Fast(reg.on(a, b), reg, a, b)
+        self._ivs = {id(reg): reg.on(a, b).intervals for reg in all_regions}
 
     def pieces(self) -> list[tuple[IntervalSet, Pos]]:
         """(residues, representative) covering [0, g)."""
@@ -667,23 +664,36 @@ class LatticeProblem:
                 out.append((IntervalSet.of(Interval.open(a, b)), rep))
         return out
 
-    def pattern_at(self, x: Pos) -> tuple:
-        if x in self._cache:
-            return self._cache[x]
-        row = []
+    def patterns(self, r: Pos, k0: int, k1: int) -> list[tuple]:
+        """The patterns at r + k g for k = k0..k1: for each kind, its claim, whether it is
+        fixed, its exact values, whether it is forbidden. Computed interval by interval:
+        the k of an interval [lo, hi] are those with lo <= r + k g <= hi."""
+        g, n = self.g, k1 - k0 + 1
+
+        def where(reg):
+            for iv in self._ivs[id(reg)]:
+                a = max(_first_k(iv.lo, r, g, k0), k0)
+                b = min(_last_k(iv.hi, r, g, k1), k1)
+                yield from range(a - k0, b - k0 + 1)
+
+        cols = []
         for k in self.kinds:
             d = self.regions.get(k, {})
-            claim = None
-            has = lambda reg: self._fast[id(reg)].contains(x) if id(reg) in self._fast else reg.contains(x)
+            claim, fixed, exacts, forb = [None] * n, [False] * n, [frozenset()] * n, [False] * n
             for v, reg in d.get("claims", {}).items():
-                if has(reg):
-                    claim = v
-            fixed = has(d["fixed"]) if "fixed" in d else False
-            exacts = frozenset(v for v, reg in d.get("exact", {}).items() if has(reg))
-            forb = has(d["forbidden"]) if "forbidden" in d else False
-            row.append(KP(claim, fixed or bool(exacts), exacts, forb))
-        self._cache[x] = tuple(row)
-        return self._cache[x]
+                for i in where(reg):
+                    claim[i] = v
+            if "fixed" in d:
+                for i in where(d["fixed"]):
+                    fixed[i] = True
+            for v, reg in d.get("exact", {}).items():
+                for i in where(reg):
+                    exacts[i] = exacts[i] | {v}
+            if "forbidden" in d:
+                for i in where(d["forbidden"]):
+                    forb[i] = True
+            cols.append((claim, fixed, exacts, forb))
+        return [tuple(KP(c[i], f[i] or bool(e[i]), e[i], b[i]) for c, f, e, b in cols) for i in range(n)]
 
     def solve(self) -> dict[str, dict[Fraction, Region]]:
         """Regions of the kinds of kinds_in; raises Conflict."""
@@ -724,19 +734,20 @@ class LatticeProblem:
         return res
 
 
-class _Fast:
-    """x in a region, by binary search on its intervals within [a, b)."""
+def _first_k(lo, r: Pos, g: Fraction, default: int) -> int:
+    """The least k with r + k g >= lo."""
+    if type(lo) is not Pos:
+        return default
+    k = math.ceil((lo.x - r.x) / g)
+    return k + 1 if r.x + k * g == lo.x and r.k < lo.k else k
 
-    def __init__(self, s: IntervalSet, reg: Region, a, b):
-        self.ivs = s.intervals
-        self.los = [iv.lo for iv in self.ivs]
-        self.reg, self.a, self.b = reg, a, b
 
-    def contains(self, x) -> bool:
-        if not self.a <= x < self.b:
-            return self.reg.contains(x)
-        i = bisect.bisect_right(self.los, x) - 1
-        return i >= 0 and self.ivs[i].contains(x)
+def _last_k(hi, r: Pos, g: Fraction, default: int) -> int:
+    """The greatest k with r + k g <= hi."""
+    if type(hi) is not Pos:
+        return default
+    k = math.floor((hi.x - r.x) / g)
+    return k - 1 if r.x + k * g == hi.x and r.k > hi.k else k
 
 
 # ====================================================================== entry point

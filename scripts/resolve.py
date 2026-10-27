@@ -112,7 +112,7 @@ def apply_edit(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> Line
         return after
     rec = Record.of(ops)
     _alone(rs, rec.claims.problem())
-    return rebuild(rs, state.history + (rec,), _owned_by_others(state.claims), state.line)
+    return rebuild(rs, state.history + (rec,), owned_by_others(state.claims), state.line)
 
 
 @dataclass
@@ -229,7 +229,7 @@ def _line_or_empty(rs: RuleSet, c: Claims) -> Line:
         return Line({})
 
 
-def _owned_by_others(c: Claims) -> Claims:
+def owned_by_others(c: Claims) -> Claims:
     """The claims that are not the user's."""
     out = Claims()
     for k, d in c.pos.items():

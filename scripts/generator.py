@@ -1,20 +1,25 @@
 """The rules generator.
 
 A run takes the state of the line, the chip's position c and the revealed modes, and
-returns a script. It plans the window W = (c, c + H] (H: the problem's horizon).
+returns a script. It is given optimization problems, each with a weight (problems.py),
+and plans the window W = (c, c + H], H the longest horizon of its problems.
 
 1. It builds candidate edits in a fixed order that does not depend on the
-   hyperparameter q: the no-op first, then one edit per (prediction, placement):
+   hyperparameter q: the no-op first, then for each (prediction, placement) the
+   edits all the problems propose together, then (with several problems) each
+   problem's alone, then the other edits of each problem; an edit already built
+   is skipped:
    - prediction: how much of each kind the mode rules will add or remove in W when
      the chip goes through it: from the most probable scenario of the probability
      finder ("scenario"), every mode equally likely ("uniform"), or ignored ("none");
-   - placement: where to put the missing amount of each kind for its presence ratio
-     target (or which generated elements to remove when there is too much).
+   - placement: where to put what is missing (or which generated elements to remove
+     when there is too much).
 2. It evaluates the first B(q) candidates: each is resolved like any edit
    (resolve.py); it is valid if it is not refused and respects N1 and N2 (guards.py).
-   The best valid one minimises the expected error of the presence ratios, the
-   expectation taken over the probability finder's scenarios (or uniform modes); the
-   earliest wins ties, so the no-op wins when nothing is better.
+   The best valid one minimises the weighted sum of the errors of the problems,
+   expected over the probability finder's scenarios (or uniform modes) where a
+   problem predicts the mode rules; the earliest wins ties, so the no-op wins when
+   nothing is better.
 3. The script applies the best edit at once and schedules the next run. When there
    are mode rules, it also carries them out at the chip (script.ModeRulesAction).
 
@@ -31,10 +36,11 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 
 from guards import check_script_edit
-from intervals import EMPTY as IEMPTY, INF, Interval, IntervalSet
+from intervals import INF, Interval, IntervalSet
 from line import GEN, LineState, Op
 from modes import ModeKnowledge
 from probability import ProbabilityFinder, Scenario
+from problems import MinimumLengthProblem, PresenceRatioProblem  # noqa: F401 (the problems, for the callers)
 from region import Region
 from resolve import Refused, apply_edit
 from rules import RuleSet
@@ -43,19 +49,6 @@ from solver import lhs_region
 
 PREDICTIONS = ("scenario", "uniform", "none")
 STRATEGIES = ("spread4", "left", "right", "spread2", "spread8", "spread16")
-
-
-@dataclass
-class PresenceRatioProblem:
-    """Targets r_K in [0, 1] for the presence ratio (1/H) ∫_W s_K(x)/100 dx of each kind."""
-    targets: dict[str, Fraction]
-    horizon: Fraction
-
-    def __post_init__(self) -> None:
-        self.targets = {t: Fraction(r) for t, r in self.targets.items()}
-        self.horizon = Fraction(self.horizon)
-        if self.horizon <= 0 or any(not 0 <= r <= 1 for r in self.targets.values()):
-            raise ValueError("horizon > 0 and targets in [0, 1]")
 
 
 @dataclass
@@ -84,27 +77,34 @@ def rerun_transitions(q: float) -> int:
 class RulesGenerator:
     MAX_SCENARIOS = 8
 
-    def __init__(self, rules: RuleSet, problem: PresenceRatioProblem, q: float, use_probability: bool = True) -> None:
+    def __init__(self, rules: RuleSet, problems, q: float, use_probability: bool = True) -> None:
+        """problems: a problem, or [(problem, weight)] with weights >= 0."""
         if not 0 < q < 1:
             raise ValueError("the allocated resources quantity must be in (0, 1)")
         self.rules = rules
-        self.problem = problem
+        self.problems = [(problems, Fraction(1))] if hasattr(problems, "error") else [(p, Fraction(w)) for p, w in problems]
+        if any(w < 0 for _, w in self.problems):
+            raise ValueError("the weights of the problems are >= 0")
+        self.horizon = max((p.horizon for p, _ in self.problems), default=Fraction(1))
         self.q = q
         self.use_probability = use_probability
 
     def run(self, state: LineState, chip, known: ModeKnowledge) -> tuple[Script, RunStats]:
         c = Fraction(chip)
-        H = self.problem.horizon
+        H = self.horizon
         ctx = _Context(self, state, c, known)
         stats = RunStats(budget=budget(self.q), probability_rules=ctx.probability_rules)
         best_ops, best_key, best_label = (), ctx.score(state), "no-op"
         stats.work, stats.valid = 1, 1
+        seen = {""}
         for label, ops in ctx.candidates():
+            key = " ; ".join(map(str, ops))
+            if key in seen:
+                continue  # the no-op, or an edit already built
+            seen.add(key)
             if stats.work >= stats.budget:
                 break
             stats.work += 1
-            if not ops:
-                continue
             try:
                 after = apply_edit(self.rules, state, list(ops), GEN)
             except Refused:
@@ -131,7 +131,7 @@ class RulesGenerator:
         - there is nothing to optimise (no target, no rule); or
         - the line is empty, no mode rule exists and this run does nothing: every later
           run, until a user edit, sees the same problem translated."""
-        if not self.problem.targets and not self.rules.rules:
+        if not any(p.has_targets() for p, _ in self.problems) and not self.rules.rules:
             return True
         empty = not state.claims.kinds() and not state.line.kinds()
         return empty and not self.rules.mode_rules and not ops
@@ -140,7 +140,7 @@ class RulesGenerator:
 class _Context:
     def __init__(self, gen: RulesGenerator, state: LineState, c: Fraction, known: ModeKnowledge) -> None:
         self.gen, self.state, self.c, self.known = gen, state, c, known
-        H = gen.problem.horizon
+        H = gen.horizon
         self.Wset = IntervalSet.of(Interval(c, c + H, False, True))
         self.W = Region.of(self.Wset)
         modes = set(known.modes_seen()) | {r.mode for r in gen.rules.mode_rules}
@@ -168,9 +168,10 @@ class _Context:
         self.weights_best = ([(m, Region.of(best.mode_region(m)) & unknown, Fraction(1)) for m in self.modes]
                              + [(m, Region.of(best.uncovered) & unknown, u) for m in self.modes]) if best else None
 
-    # expected integral of a kind on W, with what the mode rules will do there
-    def expected(self, s: LineState, kind: str, weights) -> Fraction:
-        base = s.line.integral(kind, self.Wset)
+    # expected integral of a kind on Wset (W by default), with what the mode rules will do there
+    def expected(self, s: LineState, kind: str, weights, Wset: IntervalSet | None = None) -> Fraction:
+        Wset = self.Wset if Wset is None else Wset
+        base = s.line.integral(kind, Wset)
         if not weights:
             return base
         pres = s.line.presence(kind)
@@ -188,55 +189,24 @@ class _Context:
                         continue
                     if o.negated:
                         for v, reg in s.line.vals.get(kind, {}).items():
-                            adj -= w * v / 100 * (reg & met).measure_on(self.Wset)
+                            adj -= w * v / 100 * (reg & met).measure_on(Wset)
                     else:
-                        adj += w * ((met - pres).measure_on(self.Wset))
+                        adj += w * ((met - pres).measure_on(Wset))
         return base + adj
 
     def score(self, s: LineState) -> tuple:
-        H = self.gen.problem.horizon
-        err = Fraction(0)
-        for k, target in self.gen.problem.targets.items():
-            err += abs(self.expected(s, k, self.weights_full) / H - target)
-        return (err,)
+        return (sum((w * p.error(self, s) for p, w in self.gen.problems if w), Fraction(0)),)
 
     def candidates(self):
         preds = [p for p in PREDICTIONS if p != "scenario" or self.weights_best]
+        problems = [p for p, w in self.gen.problems if w]
         for pred in preds:
             for strategy in STRATEGIES:
-                yield f"prediction={pred}, placement={strategy}", self.build(pred, strategy)
-
-    def build(self, pred: str, strategy: str) -> tuple[Op, ...]:
-        weights = {"scenario": self.weights_best, "uniform": self.weights_uniform, "none": None}[pred]
-        H = self.gen.problem.horizon
-        ops = []
-        s = self.state
-        for kind, target in sorted(self.gen.problem.targets.items()):
-            need = target * H - self.expected(s, kind, weights)
-            if need > 0:
-                free = (self.W - s.line.presence(kind)).on(self.c, self.c + H + 1) & self.Wset
-                place = _place(free, need, strategy, self.c, H)
-                if place:
-                    ops.append(Op.put(kind, Region.of(place)))
-            elif need < 0:
-                mine = (s.claims.owned(kind, GEN) & self.W).on(self.c, self.c + H + 1) & self.Wset
-                cut = mine.take(-need, from_right=strategy != "right")
-                if cut:
-                    ops.append(Op.take(kind, Region.of(cut)))
-        return tuple(ops)
-
-
-def _place(free: IntervalSet, amount: Fraction, strategy: str, c: Fraction, H: Fraction) -> IntervalSet:
-    if strategy == "left":
-        return free.take(amount)
-    if strategy == "right":
-        return free.take(amount, from_right=True)
-    k = int(strategy.removeprefix("spread"))
-    out = IEMPTY
-    carry = Fraction(0)
-    for i in range(k):
-        part = IntervalSet.of(Interval(c + H * i / k, c + H * (i + 1) / k, False, True)) & free
-        got = part.take(amount / k + carry)
-        carry = amount / k + carry - got.measure()
-        out = out | got
-    return out
+                label = f"prediction={pred}, placement={strategy}"
+                parts = [p.proposals(self, pred, strategy) for p in problems]
+                yield label, tuple(op for ops in parts for op in ops)
+                if len(problems) > 1:
+                    for p, ops in zip(problems, parts):
+                        yield f"{p.name} alone, {label}", ops
+        for p in problems:
+            yield from p.extra(self)

@@ -4,7 +4,10 @@ This document maps each part of `../requirement.md` to its formal definition,
 the code that implements it, and the test that checks it.
 
 - Run the tests: `python -m unittest discover -s tests` (standard library only).
-- Run the demo: `python UI/demo.py`.
+- Define rules, edit the line and move the chip interactively: `python UI/app.py`
+  (type `help`), or run an example script of `UI/examples/`. A script defines the
+  rules, the modes, the chip's start and speed, the initial state of the line and
+  the generator's problems; copy one to make your own.
 
 All arithmetic is exact. Times, percentages and probabilities are `Fraction`s;
 positions are x + kε (below); ±∞ appears only as an open endpoint.
@@ -550,18 +553,43 @@ returns a script made of events.
 - `ModeRulesAction`: while its trigger holds, the mode rules act at the chip
   (§7). A run adds it, with `ChipIn(c, ∞)`, whenever there are mode rules.
 
-### What a run optimizes
+### What a run optimizes (`problems.py`)
 
-- **Problem.** The implemented problem is presence-ratio targets r_K on the
-  window W = (c, c + H].
+- **Problems and weights.** A generator is given optimization problems, each with
+  a weight ≥ 0, and minimizes the weighted sum of their errors. Each problem has a
+  horizon H and looks at the window (c, c + H]; the generator plans the window W of
+  the longest one. Two problems are implemented:
+  - **Presence ratio.** A target r_K ∈ [0, 1] for each kind: the error is the sum of
+    |(1/H) ∫ s_K/100 − r_K| over the kinds, with what the mode rules are expected to
+    add or remove in the window.
+  - **Minimum length.** A minimum length L_K for each kind: ideally each interval of
+    K is at least L long. An interval i of length ℓ_i is supported by
+    S_i = Σ_j ℓ_j · max(0, 1 − d_ij / L), d_ij its gap to the interval j (0 for i
+    itself), and falls short by max(0, L − S_i). The error is the sum of the
+    shortfalls of the intervals that meet the window, divided by L. One interval of
+    length L: none. Cut by a small hole h: each piece falls short by a bit more
+    than h, so making up for it takes more than the hole. A piece further than L
+    from every other one needs the full L on its own (`ProblemsTest`). The mode
+    rules are not predicted for this one: it reads the line as it is.
 - **Candidates.** Candidate edits are built in a fixed order:
   1. the no-op first;
-  2. then each combination of a prediction of what mode rules will do in W and
-     a placement strategy.
+  2. then, for each combination of a prediction of what mode rules will do in W and
+     a placement strategy, the edits all the problems propose together, then (with
+     several problems) each problem's alone;
+  3. then the other edits of each problem (for the minimum length: removing the
+     short generated intervals).
+
+  An edit already built is skipped, and does not count in the budget B(q).
+  Presence ratio places what is missing (or removes generated elements when there
+  is too much). Minimum length grows each interval that falls short by its
+  shortfall, on the free positions after the chip: not where the kind is, nor where
+  a claim removes or forbids it.
 - **Validity.** A candidate is valid if its resolution is accepted and it
   respects N1 and N2.
-- **Choice.** The best valid candidate minimizes the expected ratio error. The
-  expectation is taken over the probability finder's scenarios.
+- **Choice.** The best valid candidate minimizes the weighted sum of the errors,
+  expected over the probability finder's scenarios where a problem predicts the
+  mode rules. The earliest wins ties, so the no-op wins when nothing is better
+  (`test_weights`: the heavier problem decides).
 - **Futility.** A run concludes that later runs would do nothing until the user
   edits in two cases:
   - there is nothing to optimize; or

@@ -593,6 +593,200 @@ class RightSideTest(unittest.TestCase):
         self.assertEqual((line.presence("D"), line.presence("E")), (Region.of(Interval.closed_open(0, 1)), Region.point(1)))
 
 
+# ------------------------------------------------------------------- cycles
+
+# kinds that place each other, both ways, under "not" too
+CYCLE_POOL = ["A → B 1 unit on the right", "B → A 1 unit on the right", "B → C", "C → A 2 units on the left",
+              "A & not C → D", "D → B 1 unit on the left", "C & not D → C 1 unit on the right", "B → no D 2 units on the right",
+              "A & not B → B 1 unit on the right", "D → A", "C → no A 3 units on the right", "not A & D → C 1 unit on the left",
+              "A → A 2 units on the right", "D & not B → D 1 unit on the left"]
+
+
+def bf_cycles(rs, claims: set, lo=-40, hi=40):
+    """Points only, single positions relative to p, no "or" (as in CYCLE_POOL), on the
+    integers of [lo, hi]. The well-founded fixpoint, by sets: the least fixpoint with the
+    absences read from a fixed set, alternated from an overestimate and an underestimate
+    until both stop. Returns ("undetermined", None), ("conflict", None) or ("line", set)."""
+    xs = range(lo, hi + 1)
+
+    def least(absent_from):
+        have = set(claims)
+        while True:
+            new = set(have)
+            for r in rs.element:
+                for x in xs:
+                    if _three(r.lhs, x, have, absent_from):
+                        for it in r.rhs:
+                            o = it.options[0]
+                            if not o.negated and lo <= x + o.rel.x <= hi:
+                                new.add((o.kind, x + o.rel.x))
+            if new == have:
+                return have
+            have = new
+
+    under, over = None, least(set())
+    while True:
+        nxt = least(over)
+        if nxt == over:
+            break
+        if nxt == under:
+            return "undetermined", None
+        under, over = nxt, least(nxt)
+    for r in rs.element:
+        for x in xs:
+            if _three(r.lhs, x, over, over):
+                for it in r.rhs:
+                    o = it.options[0]
+                    if o.negated and (o.kind, x + o.rel.x) in over:
+                        return "conflict", None
+    return "line", over
+
+
+def _three(f, x, have, absent_from):
+    """The left side f at x: kinds read as present from `have`, as absent from `absent_from`."""
+    from rules import And, Atom, Not
+    if isinstance(f, Atom):
+        return (f.kind, x) in have
+    if isinstance(f, Not):
+        return not _three(f.f, x, absent_from, have)
+    if isinstance(f, And):
+        return all(_three(p, x, have, absent_from) for p in f.parts)
+    return any(_three(p, x, have, absent_from) for p in f.parts)
+
+
+class CycleTest(unittest.TestCase):
+    """Rules that place each other in a cycle (requirement.md no longer forbids them): the
+    line is the least state containing the claims and closed under the rules; through a
+    "not", the well-founded one, and the edit is refused when it does not decide."""
+
+    def line(self, rules, entries, neg=None):
+        rs = parse_rules(rules)
+        pos = {}
+        for k, iv, *v in entries:
+            pos.setdefault(k, {})[F(v[0]) if v else F(100)] = Region.of(iv)
+        line = solve(rs, Problem(pos, {k: Region.of(iv) for k, iv in (neg or {}).items()}))
+        self.assertFalse(rules_hold(rs, line))
+        return line
+
+    def test_without_end(self):
+        """A at 0 and A → A 1 unit on the right: A at every n >= 0, forever."""
+        line = self.line(["A → A 1 unit on the right"], [("A", Interval.point(0))])
+        self.assertEqual(line.presence("A") & Region.of(Interval.closed(-5, 1000)),
+                         Region.of(IntervalSet(Interval.point(n) for n in range(0, 1001))))
+        self.assertFalse(line.presence("A") & Region.of(Interval.open(0, 1)))
+        self.assertTrue(line.presence("A").contains(Pos(10 ** 9)))
+        line = self.line(["A → A 1 unit on the right", "A → A 1 unit on the left"], [("A", Interval.point(0))])
+        self.assertTrue(line.presence("A").contains(Pos(-10 ** 9)) and line.presence("A").contains(Pos(10 ** 9)))
+        # the steps grow by 1/1000: the translation is seen and followed exactly
+        line = self.line(["A → A 1/1000 unit on the right"], [("A", Interval.closed(0, 1))])
+        self.assertEqual(line.presence("A"), Region.of(Interval(0, INF, True, False)))
+        line = self.line(["A → A on [0, 1] of p"], [("A", Interval.point(0))])
+        self.assertEqual(line.presence("A"), Region.of(Interval(0, INF, True, False)))
+        # two kinds that take turns
+        line = self.line(["A → B 2 units on the right", "B → A 3 units on the left"], [("A", Interval.point(0))])
+        self.assertEqual(line.presence("A") & Region.of(Interval.closed(-20, 20)),
+                         Region.of(IntervalSet(Interval.point(n) for n in range(-20, 1))))
+
+    def test_stops_where_the_rules_stop(self):
+        line = self.line(["A & X → A 1 unit on the right"], [("A", Interval.point(0)), ("X", Interval.closed(0, 10))])
+        self.assertEqual(line.presence("A"), Region.of(IntervalSet(Interval.point(n) for n in range(0, 12))))
+
+    def test_requirement_example(self):
+        """The example requirement.md used to forbid: A → B 1% 1 unit on the right of l, B →
+        A 10%. A at 0 makes B 1% at 1, so A 10% at 1, which is its own largest interval: B
+        1% at 2, and so on. A on [0, 1] makes B 1% at 1, where A is 100%: a conflict."""
+        rules = ["if A → B 1% 1 unit on the right of l", "if B → A 10%"]
+        line = self.line(rules, [("A", Interval.point(0))])
+        after = Region.of(IntervalSet(Interval.point(n) for n in range(1, 50)))
+        self.assertEqual(line.vals["A"][F(10)] & Region.of(Interval.closed(-5, 49)), after)
+        self.assertEqual(line.vals["B"][F(1)] & Region.of(Interval.closed(-5, 49)), after)
+        self.assertEqual(line.vals["A"][F(100)], Region.point(0))
+        with self.assertRaises(Conflict):
+            self.line(rules, [("A", Interval.closed(0, 1))])
+        rs = parse_rules(rules)
+        with self.assertRaises(Refused):
+            apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, 1))], USER)
+
+    def test_at_one_position(self):
+        line = self.line(["A → B", "B → A"], [("A", Interval.closed(0, 1))])
+        self.assertEqual(line.presence("B"), Region.of(Interval.closed(0, 1)))
+
+    def test_through_not(self):
+        """Decided: B where C is and A is not, A one unit after a B. Not decided: B is
+        needed exactly where it is absent, or B and C each need the other absent (two
+        results): the edit is refused."""
+        line = self.line(["not A & C → B", "B → A 1 unit on the right"], [("C", Interval.closed(0, 3))])
+        self.assertEqual(line.presence("B"), Region.of(IntervalSet.of(Interval.closed_open(0, 1), Interval.closed_open(2, 3))))
+        for rules in (["X & not B → B"], ["X & not C → B", "X & not B → C"]):
+            with self.assertRaises(Undetermined, msg=rules):
+                self.line(rules, [("X", Interval.point(0))])
+            with self.assertRaises(Refused, msg=rules):
+                apply_edit(parse_rules(rules), LineState.empty(), [Op.put("X", Interval.point(0))], USER)
+        # "no B" is an element of kind B: B → no B 1 unit on the right is a constraint
+        line = self.line(["B → no B 1 unit on the right", "A → B"], [("A", Interval.closed(0, F(1, 2)))])
+        self.assertEqual(line.presence("B"), Region.of(Interval.closed(0, F(1, 2))))
+        with self.assertRaises(Conflict):
+            self.line(["B → no B 1 unit on the right", "A → B"], [("A", Interval.closed(0, 1))])
+
+    def test_or(self):
+        """Cycles through what an "or" chooses: on lattices when they stay at one position,
+        by the sweep when they move it."""
+        line = self.line(["A → B or C", "B → D", "D → B", "D → no C"], [("A", Interval.closed(0, 2)), ("C", Interval.point(1))])
+        self.assertEqual(line.presence("C"), Region.point(1))
+        self.assertTrue(parse_rules(["A → B or C", "B → D", "D → B"]).lattice)
+        rules = ["A → B or C", "B → E 1 unit on the right", "E → B 1 unit on the right"]
+        self.assertFalse(parse_rules(rules).lattice)
+        # B at x places E at x + 1, x + 3, ...: B at 0 would put E at 7
+        line = self.line(rules, [("A", Interval.closed(0, 1))], {"E": Interval.point(7)})
+        self.assertEqual(line.presence("C"), Region.point(0))
+        self.assertEqual(line.presence("B") & Region.of(Interval.closed(0, 5)),
+                         Region.of(IntervalSet.of(Interval.open_closed(0, 1), Interval.open_closed(2, 3), Interval.open_closed(4, 5))))
+        line = self.line(["A → B or C", "B → B on [0, 1] of p"], [("A", Interval.point(0))], {"B": Interval.point(3)})
+        self.assertEqual(line.presence("C"), Region.point(0))
+
+    def test_an_older_edit_gives_way_through_a_cycle(self):
+        """A on [0, 1/2] repeats every unit; "no A" at 3, newer, removes only A at 0 (the one
+        that reaches 3), and what it placed."""
+        rs = parse_rules(["A → A 1 unit on the right"])
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, F(1, 2)))], USER)
+        s = apply_edit(rs, s, [Op.put_no("A", Interval.point(3))], USER)
+        self.assertFalse(rules_hold(rs, s.line, s.claims))
+        self.assertEqual(s.line.presence("A") & Region.of(Interval.closed(-1, 4)),
+                         Region.of(IntervalSet(Interval.open_closed(n, n + F(1, 2)) for n in range(0, 4))))
+        self.assertEqual(s.claims.by_value("A")[F(100)], Region.of(Interval.open_closed(0, F(1, 2))))
+
+    def test_matches_brute_force(self):
+        rng = random.Random(23)
+        seen = {"line": 0, "conflict": 0, "undetermined": 0}
+        for _ in range(60):
+            rs = parse_rules(rng.sample(CYCLE_POOL, rng.randint(2, 6)))
+            claims = {(rng.choice("ABCD"), rng.randint(-3, 3)) for _ in range(rng.randint(1, 3))}
+            want, have = bf_cycles(rs, claims)
+            pos = {}
+            for k, x in claims:
+                pos.setdefault(k, {}).setdefault(F(100), EMPTY_R)
+                pos[k][F(100)] = pos[k][F(100)] | Region.point(x)
+            try:
+                line = solve(rs, Problem(pos))
+                got = "line"
+            except Conflict:
+                got = "conflict"
+            except Undetermined:
+                got = "undetermined"
+            self.assertEqual(got, want, (rs.rules, claims))
+            seen[got] += 1
+            if got == "line":
+                self.assertFalse(rules_hold(rs, line))
+                for x in range(-6, 7):
+                    for k in "ABCD":
+                        self.assertEqual(line.presence(k).contains(Pos(x)), (k, x) in have, (rs.rules, claims, k, x))
+                        self.assertFalse(line.presence(k).contains(Pos(F(2 * x + 1, 2))))
+        self.assertTrue(all(seen.values()), seen)
+
+
+EMPTY_R = Region.empty()
+
+
 # ------------------------------------------------------------------- resolution
 
 def bf_resolve(rs, old_claims: dict, old_neg: set, ops):

@@ -40,8 +40,10 @@ they are, by 1-3 below, and refused if an element of the user would change (N2).
      A on [0, 10] and "no B" at 1/2, A goes on [0, 1/2], the left edge is 1/2+ε and
      B is on (1/2, 3/2]). The combinations are the parts of the elements its terms
      rest on there (a kind that a rule places rests on that rule's left side, and so
-     on). A requirement that comes from an older claim gives way by removing the
-     claim on X ("no K" and "off K" alike). The edit's own never gives way.
+     on; through a cycle, back to what is already going, which then needs nothing
+     more: the line is the least one). A requirement that comes from an older claim
+     gives way by removing the claim on X ("no K" and "off K" alike). The edit's own
+     never gives way.
    - Among the combinations that remove the conflict from X: only what is necessary
      (none removes everything another one that works removes, and more), the one
      that loses the fewest elements (the elements of the line, the largest
@@ -82,9 +84,10 @@ from intervals import INF, Interval, IntervalSet
 from line import USER, Claims, LineState, Op
 from region import IncompatiblePeriods, Region
 from rules import And, Atom, Not, Or, RuleSet, is_hidden
-from solver import EMPTY, Conflict, Line, Problem, Undetermined, _values, kinds_of, lhs_region, solve, target, union
+from solver import EMPTY, Conflict, Line, Problem, Undetermined, close, kinds_of, lhs_region, solve, target, union
 
 MAX_OPTIONS = 64  # combinations kept per requirement (the smallest first)
+MAX_DEPTH = 400  # rules followed back from one requirement; beyond: whole elements (fast)
 
 
 class Refused(Exception):
@@ -313,22 +316,14 @@ class _Lines:
         prob = c.problem(temp)
         self.kinds_in = set(rs.choice_dependent) if rs.or_items else set()
         self.static = [i for i, r in enumerate(rs.element) if not set(r.lhs.kinds()) & self.kinds_in]
-        self.vals: dict[str, dict[Fraction, Region]] = {}
         self._met: dict[int, Region] = {}
         self.conflicts: list[tuple[Region, tuple, tuple]] = []
-        for K in kinds_of(rs, prob):
-            if K in self.kinds_in:
-                continue
+        out = [K for K in kinds_of(rs, prob) if K not in self.kinds_in]
+        lits = [(i, o) for K in out for i, o in self.placing(K)]
+        self.vals = close(rs, out, lits, prob.pos, {}, {}, check=False, met=self._met)
+        for K in out:
             claims = prob.pos.get(K, {})
-            plain, exact, srcs = EMPTY, {}, []
-            for i, o in self.placing(K):
-                t = target(o, self.met(i))
-                srcs.append((i, o, t))
-                if o.value is None:
-                    plain = plain | t
-                else:
-                    exact[o.value] = exact.get(o.value, EMPTY) | t
-            self.vals[K] = _values(K, claims, plain, exact, check=False)
+            srcs = [(i, o, target(o, self.met(i))) for i, o in self.placing(K)]
             for n, (i, o, t) in enumerate(srcs):
                 if o.value is None:
                     continue
@@ -355,7 +350,7 @@ class _Lines:
             self.conflicts.append((where, a, b))
 
     def met(self, i: int) -> Region:
-        """Where the left side of element rule i is met (it only reads kinds computed before)."""
+        """Where the left side of element rule i is met."""
         if i not in self._met:
             self._met[i] = lhs_region(self.rs.element[i].lhs, self.vals)
         return self._met[i]
@@ -407,7 +402,7 @@ class _Resolution:
                 try:
                     lines = _Lines(self.rs, self.claims(removed), self.temp)
                     step = self.step(lines, removed) if lines.conflicts else None
-                except IncompatiblePeriods:
+                except (IncompatiblePeriods, Undetermined):
                     step = None
             if not step:
                 removed = self.fallback(removed)
@@ -453,7 +448,10 @@ class _Resolution:
         for opt in _cap(opts):
             if any(_within(w, opt) for w, _ in works):
                 continue  # only what is necessary
-            after = _Lines(self.rs, self.claims(_merge(removed, opt)), self.temp)
+            try:
+                after = _Lines(self.rs, self.claims(_merge(removed, opt)), self.temp)
+            except (IncompatiblePeriods, Undetermined):
+                continue
             if any(w & X and {a2, b2} == {a, b} for w, a2, b2 in after.conflicts):
                 continue
             works.append((opt, after))
@@ -494,38 +492,48 @@ class _Resolution:
             return self.absent(lines, side[1], X, removed)
         return []  # "taken": the edit's own
 
-    def absent(self, lines: _Lines, K: str, Q: Region, removed: dict) -> list[frozenset]:
+    def absent(self, lines: _Lines, K: str, Q: Region, removed: dict, going=None, depth=0) -> list[frozenset]:
         """Combinations that make K absent on Q: its older claims on Q go, and each rule
-        that places K on Q stops applying there."""
+        that places K on Q stops applying there. Through a cycle the rules come back to
+        what is already being made absent (`going`, kind -> region): that part needs
+        nothing more (the line is the least one: what only a cycle places goes with the
+        rest)."""
         if K in lines.kinds_in or any(reg & Q for reg in self.mand_pos.get(K, {}).values()):
             return []
+        going = dict(going or {})
+        Q = Q - going.get(K, EMPTY)
+        if not Q:
+            return [frozenset()]
+        if depth > MAX_DEPTH:
+            return []  # too deep: whole elements instead (the fallback)
+        going[K] = going.get(K, EMPTY) | Q
         choices = [[self.pieces(removed, K, Q)]]
         for i, o in lines.placing(K):
             S = lines.stop(i, o, Q)
             if S:
-                sub = self.falsify(lines, self.rs.element[i].lhs, S, removed)
+                sub = self.falsify(lines, self.rs.element[i].lhs, S, removed, going, depth + 1)
                 if not sub:
                     return []
                 choices.append(sub)
         return _combine(choices)
 
-    def falsify(self, lines: _Lines, f, Q: Region, removed) -> list[frozenset]:
+    def falsify(self, lines: _Lines, f, Q: Region, removed, going=None, depth=0) -> list[frozenset]:
         """Combinations that make the left side f false on Q, by removing elements only:
         a term that holds where a kind is absent (not, K 0%, K < p%) cannot be made false."""
         if isinstance(f, Atom):
             if f.test(Fraction(0)) or f.kind in lines.kinds_in:
                 return []
             true = Q & f.region(lines.vals, Region.universe(), EMPTY)
-            return self.absent(lines, f.kind, true, removed) if true else [frozenset()]
+            return self.absent(lines, f.kind, true, removed, going, depth) if true else [frozenset()]
         if isinstance(f, Not):
             return []
         if isinstance(f, Or):
-            return _combine([self.falsify(lines, p, Q, removed) for p in f.parts])
+            return _combine([self.falsify(lines, p, Q, removed, going, depth) for p in f.parts])
         if isinstance(f, And):  # one term or more made false: the combinations of the requirement
             out = []
             for n in range(1, len(f.parts) + 1):
                 for some in itertools.combinations(f.parts, n):
-                    out += _combine([self.falsify(lines, p, Q, removed) for p in some])
+                    out += _combine([self.falsify(lines, p, Q, removed, going, depth) for p in some])
             return _cap(out)
         return []
 

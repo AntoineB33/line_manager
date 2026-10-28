@@ -19,6 +19,8 @@ line then have fixed ends, and ends that move with x, at x + d (d a sum of rule
 distances along the rules). Whether the decision at x is the same changes only where
 a moving end crosses a fixed one: at e - d + jε, e an end of the state or m, d a
 multiple of g (the gcd of the rule distances) with |d| <= 2 * depth * reach, |j| <= 2.
+With a cycle that moves positions (rules.py), what is placed at x goes on without end:
+d then goes as far as the ends of the state, and a period of its repeating parts.
 The run is checked at each of those positions and at the first, middle and last
 position between two of them; a check that fails between them refuses the rest of
 the positions rather than guessing.
@@ -62,7 +64,9 @@ class ModeRules:
             if d:
                 g = d if g is None else _fgcd(g, d)
         self.g = g
-        self.span = 2 * (len(rs.order) + 1) * rs.reach  # how far a moving end can be from x
+        # how far a moving end can be from x; with a cycle that moves positions, what is
+        # placed at x can go on without end: as far as the ends of the state (`candidates`)
+        self.span = None if rs.moving else 2 * (len(rs.order) + 1) * rs.reach
 
     # ------------------------------------------------------------ one position
 
@@ -118,12 +122,16 @@ class ModeRules:
 
     def candidates(self, state: LineState, m: Pos, lo: Pos, hi: Pos) -> list[Pos]:
         """The positions of [lo, hi] where a run started at m can change its decision."""
-        a, b = lo.x - self.span - 1, hi.x + self.span + 1
-        ends = {m}
         regions = [r for d in state.claims.pos.values() for r in d.values()]
         regions += [r for d in state.claims.neg.values() for r in d.values()]
         regions += [r for d in state.claims.taken.values() for r in d.values()]
         regions += [r for d in state.line.vals.values() for r in d.values()]
+        span = self.span
+        if span is None:  # every end of the state, and a period of each repeating part
+            far = [abs(e.x) for r in regions if r for e in (r.lo, r.hi)] + [abs(lo.x), abs(hi.x)]
+            span = 2 * max(far) + 2 * max([r.pl.x for r in regions] + [r.pr.x for r in regions] + [Fraction(0)]) + 2 * self.rs.reach
+        a, b = lo.x - span - 1, hi.x + span + 1
+        ends = {m}
         for reg in regions:
             for iv in reg.on(a, b).intervals:
                 ends.update(e for e in (iv.lo, iv.hi) if type(e) is Pos)
@@ -132,7 +140,7 @@ class ModeRules:
             if self.g is None:
                 ks = [0]
             else:
-                n = int(self.span // self.g)
+                n = int(span // self.g)
                 ks = range(max(-n, math.ceil((e.x - hi.x - 1) / self.g)), min(n, math.floor((e.x - lo.x + 1) / self.g)) + 1)
             for k in ks:
                 base = e - (k * self.g if self.g else 0)

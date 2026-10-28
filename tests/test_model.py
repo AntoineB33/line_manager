@@ -182,16 +182,28 @@ class RulesTest(unittest.TestCase):
                 v = lambda k: next((p for p, r in vals.get(k, {}).items() if r.contains(x)), F(0))
                 self.assertEqual(region.contains(x), f.holds(v), x)
 
-    def test_no_cycle(self):
-        with self.assertRaises(RuleError):  # the requirement's example
-            parse_rules(["if A → B 1% 1 unit on the right of l", "if B → A 10%"])
-        with self.assertRaises(RuleError):  # A depends on itself
-            parse_rules(["A → A 1 unit on the left"])
-        with self.assertRaises(RuleError):  # "no B" is a consequence on B too
-            parse_rules(["B → no B 1 unit on the right"])
-        with self.assertRaises(RuleError):  # a kind read under "not" counts
-            parse_rules(["not A & C → B", "B → A 1 unit on the right"])
-        parse_rules(["A → B or C", "B → D", "B → no D 1 unit on the right"])
+    def test_cycles(self):
+        """Rules may place each other in a cycle: the kinds are grouped (each group after
+        those it reads), and a cycle that moves positions is told apart."""
+        rs = parse_rules(["if A → B 1% 1 unit on the right of l", "if B → A 10%", "B → C", "C & D → E"])
+        self.assertEqual(rs.blocks, [("A", "B"), ("C",), ("D",), ("E",)])
+        self.assertEqual((rs.cyclic, rs.moving), ({"A", "B"}, {"A", "B"}))
+        rs = parse_rules(["A → A 1 unit on the left"])
+        self.assertEqual((rs.cyclic, rs.moving), ({"A"}, {"A"}))
+        rs = parse_rules(["A → B", "B → A", "A → C 1 unit on the right"])  # at one position
+        self.assertEqual((rs.cyclic, rs.moving), ({"A", "B"}, set()))
+        # "no B" places no B: a constraint, no cycle to compute
+        self.assertEqual(parse_rules(["B → no B 1 unit on the right"]).cyclic, set())
+        parse_rules(["not A & C → B", "B → A 1 unit on the right"])
+        # two "or"s that place what the other reads: decided in rule order at one position
+        rs = parse_rules(["A → B or C", "B → A or D 1 unit on the right"])
+        self.assertEqual(rs.or_items, [(0, 0), (1, 0)])
+        # a cycle through what an "or" changes: on lattices if it stays at one position
+        # and reads it as present, else by the sweep (with the sweep's conditions)
+        self.assertTrue(parse_rules(["A → B or C", "B → D", "D → B"]).lattice)
+        self.assertFalse(parse_rules(["A → B or C", "B → D 1 unit on the right", "D → B"]).lattice)
+        with self.assertRaises(RuleError):
+            parse_rules(["A → B or C", "B → D", "D & not C → B"])
 
     def test_restrictions(self):
         for bad in (["mode 1 → D 1 unit on the right"],  # mode rules act at the chip only
@@ -209,9 +221,8 @@ class RulesTest(unittest.TestCase):
         for absent in (["A → B or C", "not B → E"], ["A → B or C", "B 0% → E"], ["A → B or C", "A & not B → no C 1 unit on the right"]):
             self.assertTrue(parse_rules(absent).lattice, absent)
         # a mode rule acts once, at the chip: no cycle through it
-        parse_rules(["mode 1 & not X → D", "D → X 1 unit on the right"])
-        with self.assertRaises(RuleError):
-            parse_rules(["mode 1 → D", "D → X", "X → D"])  # the element rules alone have one
+        self.assertEqual(parse_rules(["mode 1 & not X → D", "D → X 1 unit on the right"]).cyclic, set())
+        self.assertEqual(parse_rules(["mode 1 → D", "D → X", "X → D"]).cyclic, {"D", "X"})
         parse_rules(["A → B on [0, 2] of p"])  # an interval relative to p
         for sweep in (["A → B or no C"], ["A → B or C", "B → E", "B → no E on (0, 1]"], ["A → B or C", "B → E at 1 of l"],
                       ["A → B or C", "B | X → E"], ["A → B or C on [0, 1] of p"], ["A → B or C", "B >= 50% → E on [0, 1)"]):

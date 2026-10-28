@@ -57,6 +57,14 @@ rules hold changes only when a moving end crosses a fixed one. So the changes ar
 at e - d + jε (e the end of a region, j small), and between two such positions the
 decision is the same: the sweep looks only there (and checks a position in between).
 
+Cycles. Chosen kinds may place each other in a cycle: the line of given choices is
+then a fixpoint (solver.close). If the cycle moves positions, what a choice places
+goes on without end, to the right only (a chosen kind a left side reads is placed at
+an offset >= 0): the moving ends are looked for up to every end of the data, and the
+probe, which takes the past to place nothing far after P, is not used. Nothing else
+changes: what the past placed after P follows, through the rules, from what it placed
+within their reach of P, which the remembered situations hold.
+
 Beyond the elements and claims everything is invariant by translation; when the
 choices of the last stretch (as long as the rules reach) repeat, translated, the
 choices repeat forever, possibly with an ε part in the period (1+ε). On the left of
@@ -72,7 +80,7 @@ from fractions import Fraction
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from region import ZERO, Region, _constant
 from rules import _fgcd
-from solver import EMPTY, Conflict, Undetermined, _values, kinds_of, lhs_region, unbound_reach, union
+from solver import EMPTY, Conflict, Undetermined, close, kinds_of, lhs_region, unbound_reach, union
 
 MAX_EVENTS = 3000
 MAX_CALLS = 3000
@@ -140,6 +148,7 @@ class Sweep:
                     self.neg_lits.append((i, o))
                 else:
                     self.pos_lits[o.kind].append((i, o))
+        self.lits = [x for k in self.kin for x in self.pos_lits[k]]
         self.op_pos = {k: [] for k in self.kin}
         self.op_neg = []
         for ii, item in enumerate(self.items):
@@ -149,6 +158,8 @@ class Sweep:
                 else:
                     self.op_pos[o.kind].append((ii, oi, o))
         self.none = [[EMPTY] * len(it.ops) for it in self.items]
+        self.moving = bool(set(self.kin) & rs.moving)
+        self._far = {}
         self.deltas = self._deltas()
         self.R = max((abs(d.x) for d in self.deltas), default=Fraction(0)) + 1
         self.reach = self.fwd + self.back + 1
@@ -176,32 +187,15 @@ class Sweep:
         relative to l of the rules that read chosen kinds count for the left edges up to
         `horizon` (those that can no longer change). Raises Conflict (if check). With
         `forbids`: (values, where each kind is forbidden), without checking."""
-        vals = dict(self.vals0)
         anchors: dict[int, Region] = {}
         cut = None if horizon == INF else (EMPTY if horizon == -INF else _upto(horizon))
-
-        def base(i, o):
-            if i not in anchors:
-                anchors[i] = lhs_region(self.rs.element[i].lhs, vals)
-            a = anchors[i]
-            if o.anchor == "p":
-                return a
-            e = a.left_edges()
-            if self.probe is not None:
-                e = e & self.edges_after
-            return e if cut is None else e & cut
-
+        mask = self.edges_after if self.probe is not None else None
+        if cut is not None:
+            mask = cut if mask is None else mask & cut
+        extra = {}
         for K in self.kin:
             plain, exact = self.fixed.get(K, (EMPTY, {}))
             exact = dict(exact)
-            for i, o in self.pos_lits[K]:
-                t = _target(o, base(i, o))
-                if unbound_reach(o, anchors[i]):
-                    t = Region.universe()
-                if o.value is None:
-                    plain = plain | t
-                else:
-                    exact[o.value] = exact.get(o.value, EMPTY) | t
             for ii, oi, o in self.op_pos[K]:
                 b = ch[ii][oi]
                 if b:
@@ -210,7 +204,20 @@ class Sweep:
                         plain = plain | t
                     else:
                         exact[o.value] = exact.get(o.value, EMPTY) | t
-            vals[K] = _values(K, self.claims[K], plain, exact, check and not forbids)
+            extra[K] = (plain, exact)
+        # the kinds the choices change, group after group (with a cycle: a fixpoint)
+        vals = dict(self.vals0)
+        vals.update(close(self.rs, self.kin, self.lits, self.claims, self.vals0, extra, check and not forbids, mask, anchors))
+
+        def base(i, o):
+            if i not in anchors:
+                anchors[i] = lhs_region(self.rs.element[i].lhs, vals)
+            a = anchors[i]
+            if o.anchor == "p":
+                return a
+            e = a.left_edges()
+            return e if mask is None else e & mask
+
         if not check and not forbids:
             return vals
         forbid = dict(self.forbid0)
@@ -463,6 +470,8 @@ class Sweep:
         (a choice only adds consequences, and being present at P - ε is the same), so
         if it has no completion, neither has the real one. Its result depends only on
         its key, and is shared."""
+        if self.moving:
+            return None  # the past places things without end after P: its left edges there are not known
         vals = self.closure(ch, P - EPS, check=False)
         atoms = tuple(sorted((k, v) for k in self.kin for v, reg in vals[k].items() if reg.contains(P - EPS)))
         after = Region.of(Interval(P, P + self.fwd))
@@ -603,36 +612,62 @@ class Sweep:
         return end, with_run(end - EPS)
 
     def _deltas(self) -> set:
-        """Offsets from a decided position to the ends of the regions it changes."""
+        """Offsets from a decided position to the ends of the regions it changes, the
+        differences of two of them."""
+        out = self._offsets((len(self.kin) + 1) * self.rs.reach)
+        # how far a choice acts on the right of it, and on the left
+        self.fwd = max([d.x for d in out] + [Fraction(0)])
+        self.back = max([-d.x for d in out] + [Fraction(0)])
+        return {a - b for a in out for b in out}
+
+    def _far_deltas(self, cap) -> set:
+        """With a cycle that moves positions, what a choice places goes on without end:
+        the differences of its offsets up to cap."""
+        if cap not in self._far:
+            out = sorted(self._offsets(cap))
+            self._far = {cap: {a - b for a in out for b in out if abs((a - b).x) <= cap}}
+        return self._far[cap]
+
+    def _offsets(self, cap) -> set:
+        """Offsets from a decided position to the ends of the regions it changes, along
+        the rules, up to cap (a path through each kind once stays within the reach of the
+        rules times the number of kinds: without a cycle, all of them)."""
         off = {k: set() for k in self.kin}
         out = {ZERO}
         for ii, oi, o in [(a, b, c) for k in self.kin for a, b, c in self.op_pos[k]]:
             off[o.kind] |= {o.where.lo, o.where.hi}
         for _, _, o in self.op_neg:
             out |= {o.where.lo, o.where.hi}
-        for K in self.kin:
-            for i, r in enumerate(self.rs.element):
-                if K not in r.lhs.kinds():
-                    continue
-                for it in r.rhs:
-                    if it.is_or:
+        n = len(self.kin) + 1
+        keep = lambda x: type(x) is not Pos or (abs(x.x) <= cap and abs(x.k) <= n + 2)
+        changed = True
+        while changed:
+            changed = False
+            for K in self.kin:
+                for i, r in enumerate(self.rs.element):
+                    if K not in r.lhs.kinds():
                         continue
-                    o = it.options[0]
-                    new = {d + e for d in off[K] for e in (o.where.lo, o.where.hi)}
-                    if o.negated or o.kind not in off:
-                        out |= new
-                    else:
-                        off[o.kind] |= new
+                    for it in r.rhs:
+                        if it.is_or:
+                            continue
+                        o = it.options[0]
+                        new = {x for d in off[K] for e in (o.where.lo, o.where.hi) for x in [d + e] if keep(x)}
+                        if o.negated or o.kind not in off:
+                            out |= new
+                        elif not new <= off[o.kind]:
+                            off[o.kind] |= new
+                            changed = True
         for s in off.values():
             out |= s
-        # how far a choice acts on the right of it, and on the left
-        self.fwd = max([d.x for d in out] + [Fraction(0)])
-        self.back = max([-d.x for d in out] + [Fraction(0)])
-        return {a - b for a in out for b in out}
+        return out
 
     def _candidates(self, lo, hi, vals, ch) -> list:
         """The positions in (lo, hi) where the decision may change."""
         a, b = lo - self.R, hi + self.R if hi != INF else lo + 70 * self.R
+        deltas = self.deltas
+        if self.moving:  # what the run places goes on: up to every end of the data
+            b = max(b, Pos(self.T + self.R))
+            deltas = self._far_deltas(math.ceil((b - a).x / self.R + 1) * self.R)
         ends = {lo} | {e for e in self.static_ends if a <= e <= b}
         for d in vals.values():
             for reg in d.values():
@@ -642,7 +677,7 @@ class Sweep:
                 ends |= {e for e in _ends(reg, a, b) if type(e) is Pos}
         out = set()
         for e in ends:
-            for d in self.deltas:
+            for d in deltas:
                 x = e + d
                 for j in (-2, -1, 0, 1, 2):
                     y = Pos(x.x, x.k + j)

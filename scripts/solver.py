@@ -3,7 +3,11 @@
 Given claims (elements placed, with percentages; "no K" elements) the line is:
 - every claimed element;
 - closed under the rules: where a left side is met, its literals hold; for an
-  ordered "or", an operand is chosen;
+  ordered "or", an operand is chosen; and nothing more: it is the least such state.
+  Rules may place each other in a cycle (A at 0 and A → A 1 unit on the right: A at
+  every n >= 0). Through a "not", the least state is the well-founded one; if it does
+  not decide every element (A & not B → B; or A & not C → B with A & not B → C, which
+  have two results), the rules do not decide the line (`Undetermined`);
 - the operands are chosen position by position, from left to right (at one position,
   an "or" whose left side reads what another one places comes after it, else the
   rules in written order): each position takes the leftmost operand that can be
@@ -15,7 +19,10 @@ If no choice satisfies the rules (an element where it must not be, two different
 percentages required, ...), the claims are in conflict (`Conflict`).
 
 Positions are x + kε (intervals.py). How it is computed exactly. Kinds that no "or"
-choice can change are computed with region algebra. For the others, two solvers:
+choice can change are computed with region algebra, group after group of kinds that
+place each other (`close`): one step for a group without a cycle, a fixpoint for one
+with a cycle, whose steps that repeat by a translation are followed to the end
+exactly. For the others, two solvers:
 - the lattices (here), when the rules that read chosen kinds only place single
   positions relative to p. Every relative offset is a multiple of g (their gcd), and
   keeps the ε part, so a rule only relates the points of one lattice r + gZ. The
@@ -43,8 +50,8 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 
 from intervals import EPS, INF, Interval, IntervalSet, Pos
-from region import ZERO, Region
-from rules import RuleSet, is_hidden, lattice_step
+from region import ZERO, IncompatiblePeriods, Region
+from rules import Atom, Not, RuleSet, is_hidden, lattice_step
 
 sys.setrecursionlimit(20000)
 
@@ -145,43 +152,36 @@ def kinds_of(rs: RuleSet, prob: Problem) -> list[str]:
 
 
 def region_stage(rs: RuleSet, prob: Problem, kinds_in: set[str], check: bool = True):
-    """Kinds outside kinds_in are computed here, in the order of the rules (no cycle:
-    a left side only reads kinds already computed). Returns (values of out kinds,
-    fixed contributions to in kinds, forbidden regions of in kinds)."""
-    vals: dict[str, dict[Fraction, Region]] = {}
-    fixed: dict[str, tuple[Region, dict[Fraction, Region]]] = {}
-    static = [r for r in rs.element if not set(r.lhs.kinds()) & kinds_in]
+    """Kinds outside kinds_in are computed here, group after group (`close`). Returns
+    (values of out kinds, fixed contributions to in kinds, forbidden regions of in
+    kinds)."""
+    static = [i for i, r in enumerate(rs.element) if not set(r.lhs.kinds()) & kinds_in]
+    lits = [(i, it.options[0]) for i in static for it in rs.element[i].rhs if not it.is_or and not it.options[0].negated]
+    out = [k for k in kinds_of(rs, prob) if k not in kinds_in]
+    vals = close(rs, out, [(i, o) for i, o in lits if o.kind not in kinds_in], prob.pos, {}, {}, check)
     anchors: dict[int, Region] = {}
 
-    def met(r) -> Region:
-        if id(r) not in anchors:
-            anchors[id(r)] = lhs_region(r.lhs, vals)
-        return anchors[id(r)]
+    def met(i) -> Region:
+        if i not in anchors:
+            anchors[i] = lhs_region(rs.element[i].lhs, vals)
+        return anchors[i]
 
-    for K in kinds_of(rs, prob):
-        claims = prob.pos.get(K, {})
-        plain, exact = EMPTY, {}
-        for r in static:
-            for it in r.rhs:
-                o = it.options[0]
-                if it.is_or or o.negated or o.kind != K:
-                    continue
-                t = target(o, met(r))
-                if o.value is None:
-                    plain = plain | t
-                else:
-                    exact[o.value] = exact.get(o.value, EMPTY) | t
-        if K in kinds_in:
-            fixed[K] = (plain, exact)
-            continue
-        vals[K] = _values(K, claims, plain, exact, check)
+    fixed: dict[str, tuple[Region, dict[Fraction, Region]]] = {k: (EMPTY, {}) for k in kinds_of(rs, prob) if k in kinds_in}
+    for i, o in lits:
+        if o.kind in kinds_in:
+            plain, exact = fixed[o.kind]
+            t = target(o, met(i))
+            if o.value is None:
+                fixed[o.kind] = (plain | t, exact)
+            else:
+                exact[o.value] = exact.get(o.value, EMPTY) | t
     pres = {k: union(d.values()) for k, d in vals.items()}
     forbid = {k: r for k, r in prob.neg.items()}
-    for r in static:
-        for it in r.rhs:
+    for i in static:
+        for it in rs.element[i].rhs:
             o = it.options[0]
             if not it.is_or and o.negated:
-                forbid[o.kind] = forbid.get(o.kind, EMPTY) | target(o, met(r))
+                forbid[o.kind] = forbid.get(o.kind, EMPTY) | target(o, met(i))
     for k, f in forbid.items():
         if check and k not in kinds_in and (pres.get(k, EMPTY) & f):
             raise Conflict(f"{k} is required to be absent on {pres[k] & f}")
@@ -205,6 +205,377 @@ def _values(K, claims: dict[Fraction, Region], plain: Region, exact: dict[Fracti
     return out
 
 
+# ====================================================================== cycles
+
+MAX_STEPS = 300  # steps of one least fixpoint; beyond, the edit is refused (Undetermined)
+MAX_ROUNDS = 40  # rounds of the alternating fixpoint
+MAX_LAG = 4  # steps over which what a cycle places is looked at for a translation
+
+
+def close(rs: RuleSet, kinds: list[str], lits, claims: dict, base: dict, extra: dict, check: bool = True,
+          mask: Region | None = None, met: dict | None = None) -> dict[str, dict[Fraction, Region]]:
+    """The values of `kinds` (closed under the rules' groups: rs.blocks): the least state
+    that contains their claims and their `extra` contributions (kind -> (plain, exact)),
+    and where each literal of `lits` ((element rule index, positive literal placing one of
+    these kinds)) holds wherever its left side is met. Other kinds are read from `base`.
+    The left edges of the anchors relative to l are kept within `mask`, if given. `met`,
+    if given, receives where the left sides of the rules of groups without a cycle are
+    met (rule index -> region), which is final.
+
+    A group without a cycle only reads kinds computed before it: one step. A group with a
+    cycle is a fixpoint: where its left sides read its own kinds only as present, the
+    least one, reached step after step from nothing (`_Group.least`); otherwise ("not",
+    "K < p%", or a left edge, which needs the position before it absent) the alternating
+    fixpoint: the least fixpoint with the absences read from an overestimate gives an
+    underestimate, and the other way round, until both stop changing. If they then
+    differ, the rules do not decide the line (A & not B → B; or "A & not C → B" with
+    "A & not B → C", which has two results): `Undetermined`. Raises Conflict (if check)."""
+    vals = dict(base)
+    pres = _Presence(vals)
+    by_kind: dict[str, list] = {}
+    for i, o in lits:
+        by_kind.setdefault(o.kind, []).append((i, o))
+    want = set(kinds)
+    blocks = [b for b in rs.blocks if b[0] in want] + [(k,) for k in kinds if k not in rs.block_of]
+    for block in blocks:
+        g = _Group(rs, block, [x for K in block for x in by_kind.get(K, ())], claims, vals, pres, extra, mask,
+                   met if met is not None else {})
+        state = g.solve()
+        for K in block:
+            plain, exact = state[K]
+            vals[K] = _values(K, claims.get(K, {}), plain, exact, check)
+    return {k: vals[k] for k in kinds}
+
+
+class _Presence(dict):
+    """kind -> where it is present, computed from the values when first read."""
+
+    def __init__(self, vals: dict) -> None:
+        super().__init__()
+        self.vals = vals
+
+    def get(self, k, default=None):
+        if not dict.__contains__(self, k):
+            if k not in self.vals:
+                return default
+            self[k] = union(self.vals[k].values())
+        return dict.get(self, k)
+
+
+class _Group:
+    """One group of kinds that place each other. A state is kind -> (plain, exact): where
+    the rules (and `extra`) require it present, and at exact percentages."""
+
+    def __init__(self, rs, block, lits, claims, vals, pres, extra, mask, met) -> None:
+        self.rs, self.block, self.lits, self.vals, self.pres, self.extra, self.mask = rs, block, lits, vals, pres, extra, mask
+        self.met = met
+        self.claims = {K: claims.get(K, {}) for K in block}
+        self.cyclic = any(K in rs.cyclic for K in block)
+        if not self.cyclic:
+            return
+        self.claimed = {K: union(self.claims[K].values()) for K in block}
+        mine = set(block)
+        reads = [(i, o) for i, o in lits if set(rs.element[i].lhs.kinds()) & mine]
+        # the absences of its own kinds matter: "not", "K < p%", "K p%" (a plain K is
+        # 100% only where no exact percentage is required), and left edges
+        self.positive = all(o.anchor == "p" and _plainly(rs.element[i].lhs, mine) for i, o in reads)
+        self.read = {k for i, _ in lits for k in rs.element[i].lhs.kinds() if k not in mine}
+
+    def empty(self) -> dict:
+        return {K: (EMPTY, {}) for K in self.block}
+
+    def solve(self) -> dict:
+        if not self.cyclic:
+            return self.step(self.empty(), self.empty())
+        if self.positive:
+            return self.least(self.empty())
+        under, over = self.empty(), self.least(self.empty())
+        unders, overs = [under], [over]
+        for _ in range(MAX_ROUNDS):
+            nxt = self.least(over)
+            if _same(nxt, over):
+                return nxt
+            if _same(nxt, under):
+                raise Undetermined("the rules do not decide the line: a cycle reads as absent what it places "
+                                   f"({', '.join(self.block)})")
+            under = nxt
+            over = self.least(under)
+            unders, overs = unders[-2 * MAX_LAG:] + [under], overs[-2 * MAX_LAG:] + [over]
+            lim = self._meet(unders, overs)
+            if lim is not None:
+                return lim
+        raise Undetermined(f"a cycle of the rules ({', '.join(self.block)}) is not decided in {MAX_ROUNDS} rounds")
+
+    def _meet(self, unders, overs):
+        """Each round may decide only a few more positions (a "not" read one position
+        before what it places: B at x + 1 where B is not at x). When the rounds add to the
+        underestimate, and take from the overestimate, layers that move by a translation,
+        both are followed to their ends. If they meet there, and the result is its own
+        least fixpoint with the absences read from itself (the rules hold, and each
+        element is placed by them from the claims), it is the result. That the rounds go on
+        as they started is the one assumption made here (unlike `_jump`, a round is not
+        local: it is a whole least fixpoint)."""
+        for lag in range(1, MAX_LAG + 1):
+            if len(unders) > 2 * lag:
+                u = self._extrapolate(unders[-1 - 2 * lag], unders[-1 - lag], unders[-1], True)
+                o = u and self._extrapolate(overs[-1 - 2 * lag], overs[-1 - lag], overs[-1], False)
+                if u and o and _same(u, o):
+                    try:
+                        if _same(self.least(u), u):
+                            return u
+                    except Undetermined:
+                        pass
+        return None
+
+    def _keys(self, *states) -> list:
+        """(kind, None) for the plain elements of a kind, (kind, value) for its exact ones."""
+        return [(K, v) for K in self.block for v in [None] + sorted(set().union(*(a[K][1] for a in states)))]
+
+    def _extrapolate(self, a0, a1, a2, grow: bool):
+        """a2 with every next layer, if a0 ⊆ a1 ⊆ a2 (grow) grow by layers that move by a
+        translation (or a0 ⊇ a1 ⊇ a2 shrink by them): the layers go on forever."""
+        keys = self._keys(a0, a1, a2)
+        if grow:
+            d1 = {k: _get(a1, k) - _get(a0, k) for k in keys}
+            d2 = {k: _get(a2, k) - _get(a1, k) for k in keys}
+        else:
+            d1 = {k: _get(a0, k) - _get(a1, k) for k in keys}
+            d2 = {k: _get(a1, k) - _get(a2, k) for k in keys}
+        try:
+            sides = _moves(d1, d2, keys)
+            if sides is None:
+                return None
+            lim = {K: (a2[K][0], dict(a2[K][1])) for K in self.block}
+            for cut, t in sides:
+                for k in keys:
+                    layer = _part(d2[k], cut, t)
+                    if layer:
+                        r = _ray(layer, t)
+                        if r is None:
+                            return None
+                        _put(lim, k, (_get(lim, k) | r) if grow else (_get(lim, k) - r))
+        except IncompatiblePeriods:
+            return None
+        return lim
+
+    # ------------------------------------------------------------ one step
+    def view(self, a: dict, b: dict) -> tuple[dict, dict]:
+        """(values, presence) of every kind, the group's from the state a, its plain
+        elements 100% except where b requires an exact percentage: grows with a, shrinks
+        with b."""
+        vals = dict(self.vals)
+        pres = _Presence(vals)
+        for K in self.block:
+            plain, exact = a[K]
+            d = dict(self.claims[K])
+            for v, r in exact.items():
+                d[v] = d.get(v, EMPTY) | (r - self.claimed[K])
+            rest = plain - self.claimed[K] - union(b[K][1].values())
+            if rest:
+                d[Fraction(100)] = d.get(Fraction(100), EMPTY) | rest
+            vals[K] = d
+            pres[K] = self.claimed[K] | plain | union(exact.values())
+        return vals, pres
+
+    def step(self, a: dict, b: dict) -> dict:
+        """The state the rules require from the state a, absences read from b."""
+        U = Region.universe()
+        pos, neg = (self.view(a, b), self.view(b, a)) if self.cyclic else ((self.vals, self.pres),) * 2
+        out = {K: (self.extra.get(K, (EMPTY, {}))[0], dict(self.extra.get(K, (EMPTY, {}))[1])) for K in self.block}
+        met: dict[int, Region] = self.met if not self.cyclic else {}
+        for i, o in self.lits:
+            lhs = self.rs.element[i].lhs
+            if i not in met:
+                met[i] = lhs.region2(pos, neg, U, EMPTY)
+            m = met[i]
+            if o.anchor == "l" and not unbound_reach(o, m):
+                # a left edge: met there, and not just before (left_edges, read in two views)
+                edges = m & (U - lhs.region2(neg, pos, U, EMPTY)).shift(EPS) if self.cyclic else m.left_edges()
+                if self.mask is not None:
+                    edges = edges & self.mask
+                t = edges.shift(o.rel) if o.is_point else edges.dilate(o.where)
+            else:
+                t = target(o, m)
+            plain, exact = out[o.kind]
+            if o.value is None:
+                out[o.kind] = (plain | t, exact)
+            else:
+                exact[o.value] = exact.get(o.value, EMPTY) | t
+        return out
+
+    # ------------------------------------------------------------ the least fixpoint
+    def least(self, b: dict) -> dict:
+        """The least state a with step(a, b) = a: the steps from nothing, which only grow.
+        When a step repeats the one before, translated, the rest of the steps is that
+        translation repeated (`_jump`)."""
+        hist = [self.empty()]
+        for _ in range(MAX_STEPS):
+            a = self.step(hist[-1], b)
+            if _same(a, hist[-1]):
+                return a
+            hist = hist[-2 * MAX_LAG:] + [a]
+            for lag in range(1, MAX_LAG + 1):
+                if len(hist) > 2 * lag:
+                    lim = self._jump(hist[-1 - 2 * lag], hist[-1 - lag], a, b, lag)
+                    if lim is _NO:
+                        break  # the shortest lag that shows a translation is the one to follow
+                    if lim is not None:
+                        return lim
+        raise Undetermined(f"what a cycle of the rules ({', '.join(self.block)}) places does not settle after {MAX_STEPS} "
+                           "steps, nor repeat by a translation")
+
+    def _jump(self, a0, a1, a2, b, lag):
+        """The limit of the steps, if a0 ⊆ a1 ⊆ a2 (`lag` steps apart: kinds may take turns)
+        grow by layers that move by a translation t, on one side or both, and are proven
+        to go on doing so:
+        - what a2 has on a half-line near the layer is what a1 has there, translated by t,
+          and so is everything else the steps read (claims, other kinds, b, the mask);
+        - a step only reads positions within the reach of the rules (a left edge: the
+          position before it too).
+        Then by induction each next layer is the last one translated, and it is placed by
+        the steps (each position from positions within reach, which look the same). The
+        candidate is also checked to be closed (a step adds nothing): it is the least
+        fixpoint. Returns it, None if the layers do not move by a translation, or _NO if
+        they do but are not proven to go on."""
+        keys = self._keys(a1, a2)
+        get = _get
+        d1 = {key: get(a1, key) - get(a0, key) for key in keys}
+        d2 = {key: get(a2, key) - get(a1, key) for key in keys}
+        sides = _moves(d1, d2, keys)
+        if sides is None:
+            return None
+        lim = self._follow(a1, a2, b, lag, keys, d2, sides)
+        return _NO if lim is None else lim
+
+    def _follow(self, a1, a2, b, lag, keys, d2, sides):
+        """`_jump` once the layers are seen to move: the checks, and the limit."""
+        get = _get
+        reach = lag * (self.rs.reach + 1)
+        # what a step reads: the views of the group's kinds, the other kinds, the mask
+        vs = {K: sorted(set(self.claims[K]) | set(a1[K][1]) | set(a2[K][1]) | set(b[K][1]) | {Fraction(100)}) for K in self.block}
+        seen = lambda a: [r for v in ((self.view(a, b),) if self.positive else (self.view(a, b), self.view(b, a))) for K in self.block
+                          for r in [v[0][K].get(p, EMPTY) for p in vs[K]] + [v[1][K]]]
+        read = [r for k in self.read for r in self.vals.get(k, {}).values()] + ([self.mask] if self.mask is not None else [])
+        # what turns a layer into a view: the claims and b
+        into = [r for K in self.block for r in list(self.claims[K].values()) + [b[K][0]] + list(b[K][1].values())]
+        lim = {K: (a2[K][0], dict(a2[K][1])) for K in self.block}
+        for cut, t in sides:
+            layer = {k: _part(d2[k], cut, t) for k in keys}
+            u = union(layer.values())
+            if not u:
+                continue
+            if t.x > 0:
+                edge = u.inf()
+                half = lambda z: Region.of(Interval(z, INF, True, False))
+            else:
+                edge = u.sup()
+                half = lambda z: Region.of(Interval(-INF, z, False, True))
+            y = edge - reach if t.x > 0 else edge + reach
+            moved = lambda r, z: (r & half(z)) == (r & half(z - t)).shift(t)
+            try:
+                if not all((r2 & half(y)) == (r1 & half(y - t)).shift(t) for r1, r2 in zip(seen(a1), seen(a2))):
+                    return None
+                if not all(moved(r, y) for r in read) or not all(moved(r, edge) for r in into):
+                    return None
+            except IncompatiblePeriods:
+                return None
+            for k in keys:
+                if layer[k]:
+                    r = _ray(layer[k], t)
+                    if r is None:
+                        return None
+                    _put(lim, k, _get(lim, k) | r)
+        try:
+            again = self.step(lim, b)
+            if not all(get(again, k).issubset(get(lim, k)) for k in keys) or \
+                    any(set(again[K][1]) - set(lim[K][1]) for K in self.block):
+                return None
+        except IncompatiblePeriods:
+            return None
+        return lim
+
+
+_NO = object()  # a translation is seen, but not proven to go on
+
+
+def _get(a: dict, key) -> Region:
+    return a[key[0]][0] if key[1] is None else a[key[0]][1].get(key[1], EMPTY)
+
+
+def _put(a: dict, key, r: Region) -> None:
+    plain, exact = a[key[0]]
+    if key[1] is None:
+        a[key[0]] = (r, exact)
+    else:
+        exact[key[1]] = r
+
+
+def _moves(d1: dict, d2: dict, keys):
+    """How the layers d1 then d2 (key -> bounded region) move: [(cut, t)], the positions
+    < cut by the first t and >= cut by the second (cut None: all by t), or None."""
+    if not all(r.is_bounded() for r in list(d1.values()) + list(d2.values())):
+        return None
+    u1, u2 = union(d1.values()), union(d2.values())
+    if not u1 or not u2:
+        return None
+    tl, tr = u2.inf() - u1.inf(), u2.sup() - u1.sup()
+    if tl == tr and tl.x != 0:
+        return [(None, tl)] if all(d2[k] == d1[k].shift(tl) for k in keys) else None
+    if tl.x < 0 < tr.x:
+        ivs = u1.core.intervals
+        for n in range(1, len(ivs)):
+            c = ivs[n].lo
+            lo, hi = Region.of(Interval(-INF, c, False, False)), Region.of(Interval(c, INF, True, False))
+            if all(d2[k] == ((d1[k] & lo).shift(tl) | (d1[k] & hi).shift(tr)) for k in keys):
+                return [(c, tl), (c, tr)]
+    return None
+
+
+def _part(r: Region, cut, t) -> Region:
+    """The part of a layer that moves by t (`_moves`)."""
+    if cut is None:
+        return r
+    return r & (Region.of(Interval(-INF, cut, False, False)) if t.x < 0 else Region.of(Interval(cut, INF, True, False)))
+
+
+def _ray(p: Region, t) -> Region | None:
+    """The union of p + j t for j = 1, 2, ... (p bounded): periodic beyond p + t."""
+    if t.x == 0:
+        return None  # a period with no real part: not a Region
+    a, b = p.inf(), p.sup()
+    s = t if t.x > 0 else -t
+    n = (b - a) // s + 3
+    full = union(p.shift(t * j) for j in range(1, n + 1))
+    if t.x > 0:
+        lo, hi = a + t, b + t + EPS  # from b + t on, every j that fits is >= 1
+        return Region(lo, hi, full.on(lo, hi), s, IntervalSet(), s, full.on(hi, hi + s).shift(-hi))._compact()
+    lo, hi = a - s + EPS, b - s + EPS  # up to a - s, every j that fits is >= 1
+    return Region(lo, hi, full.on(lo, hi), s, full.on(lo - s, lo).shift(-(lo - s)), s, IntervalSet())._compact()
+
+
+def _same(a: dict, b: dict) -> bool:
+    try:
+        for K in a:
+            if a[K][0] != b[K][0]:
+                return False
+            ea, eb = a[K][1], b[K][1]
+            for v in set(ea) | set(eb):
+                if ea.get(v, EMPTY) != eb.get(v, EMPTY):
+                    return False
+    except IncompatiblePeriods:
+        return False
+    return True
+
+
+def _plainly(f, kinds: set) -> bool:
+    """f reads these kinds only as present (K), never under "not" nor with a percentage."""
+    if isinstance(f, Atom):
+        return f.kind not in kinds or f.op == "present"
+    if isinstance(f, Not):
+        return not set(f.kinds()) & kinds
+    return all(_plainly(p, kinds) for p in f.parts)
+
+
 # ====================================================================== lattice stage
 
 
@@ -222,10 +593,13 @@ class Spec:
     presence makes the left side, item) for the "or" items and the items of the rules
     that read chosen kinds. A name "!K" is K read as absent ("not K"); in a left side it
     is ~index. With such names the choices no longer only add consequences: atoms are
-    then evaluated with three values (`_evaluate3`)."""
+    then evaluated with three values (`_evaluate3`). With a cycle among the kinds (it
+    stays at one position, rules.py), the kinds are gone through again until nothing
+    changes (`passes`)."""
 
-    def __init__(self, kinds: list[str], kinds_in: set[str], g: Fraction, lrules, mirror=False):
+    def __init__(self, kinds: list[str], kinds_in: set[str], g: Fraction, lrules, mirror=False, cyclic=False):
         sgn = -1 if mirror else 1
+        self.passes = len(kinds_in) + 1 if cyclic else 1
         self.kinds = kinds
         self.idx = {k: i for i, k in enumerate(kinds)}
         self.in_order = [k for k in kinds if k in kinds_in]
@@ -243,15 +617,16 @@ class Spec:
         # dist[K]: how far (in steps) an atom of K can be from the choices it depends on
         dist = [0] * len(kinds)
         far = lambda lhs: max((dist[l if l >= 0 else ~l] for l in lhs), default=0)
-        for k in self.in_order:
-            ki = self.idx[k]
-            for lhs, kk, d, _ in self.defs:
-                if kk == ki:
-                    dist[ki] = max(dist[ki], far(lhs) + abs(d))
-            for lhs, os in self.ors:
-                for kk, d, _ in os:
+        for _ in range(self.passes):
+            for k in self.in_order:
+                ki = self.idx[k]
+                for lhs, kk, d, _ in self.defs:
                     if kk == ki:
                         dist[ki] = max(dist[ki], far(lhs) + abs(d))
+                for lhs, os in self.ors:
+                    for kk, d, _ in os:
+                        if kk == ki:
+                            dist[ki] = max(dist[ki], far(lhs) + abs(d))
         D = max(dist, default=0)
         # rho: the choices involved in one violation lie within rho + 1 consecutive points
         spans = [2 * D] + [far(lhs) + abs(d) + dist[kk] for lhs, kk, d in self.negs]
@@ -271,21 +646,22 @@ class Spec:
             return False
         inset = set(self.in_idx)
         none = [(frozenset(), None)]
-        prods = {}
-        for ki in self.in_idx:
-            out = set(none)
-            for lhs, kk, d, v in self.defs:
-                if kk == ki:
-                    for combo in itertools.product(*[prods[l] if l in inset else none for l in lhs]):
-                        out.add((frozenset(d + t for pat, _ in combo for t in pat), v))
-            for lhs, os in self.ors:
-                for kk, d, v in os:
+        prods = {ki: set(none) for ki in self.in_idx}
+        for _ in range(self.passes):
+            for ki in self.in_idx:
+                out = set(none)
+                for lhs, kk, d, v in self.defs:
                     if kk == ki:
                         for combo in itertools.product(*[prods[l] if l in inset else none for l in lhs]):
-                            out.add((frozenset([d]) | frozenset(d + t for pat, _ in combo for t in pat), v))
-            if len(out) > 64:
-                return False
-            prods[ki] = out
+                            out.add((frozenset(d + t for pat, _ in combo for t in pat), v))
+                for lhs, os in self.ors:
+                    for kk, d, v in os:
+                        if kk == ki:
+                            for combo in itertools.product(*[prods[l] if l in inset else none for l in lhs]):
+                                out.add((frozenset([d]) | frozenset(d + t for pat, _ in combo for t in pat), v))
+                if len(out) > 64:
+                    return False
+                prods[ki] = out
         for ps in prods.values():
             if any(len(pat) > 1 for pat, _ in ps):
                 return False
@@ -312,28 +688,34 @@ class Spec:
         P = [pat(a + i) for i in range(n)]
         present = [[kp.fixed or kp.claim is not None for kp in p] for p in P]
         exs: dict[tuple[int, int], set] = {}
-        for ki in self.in_idx:
-            defs = self.by_kind_defs[ki]
-            ors = self.by_kind_ors[ki]
-            for i in range(n):
-                kp = P[i][ki]
-                pr = kp.fixed or kp.claim is not None
-                ex = set(kp.exacts)
-                for lhs, _, d, v in defs:
-                    j = i - d
-                    if 0 <= j < n and all(present[j][l] for l in lhs):
-                        pr = True
-                        if v is not None:
-                            ex.add(v)
-                for oi, t, d, v in ors:
-                    j = i - d
-                    if 0 <= j < n and all(present[j][l] for l in self.ors[oi][0]) and (optimistic or choose(a + j, oi) == t):
-                        pr = True
-                        if v is not None:
-                            ex.add(v)
-                present[i][ki] = pr
-                if ex:
-                    exs[(i, ki)] = ex
+        for _ in range(self.passes):
+            changed = False
+            for ki in self.in_idx:
+                defs = self.by_kind_defs[ki]
+                ors = self.by_kind_ors[ki]
+                for i in range(n):
+                    kp = P[i][ki]
+                    pr = kp.fixed or kp.claim is not None
+                    ex = set(kp.exacts)
+                    for lhs, _, d, v in defs:
+                        j = i - d
+                        if 0 <= j < n and all(present[j][l] for l in lhs):
+                            pr = True
+                            if v is not None:
+                                ex.add(v)
+                    for oi, t, d, v in ors:
+                        j = i - d
+                        if 0 <= j < n and all(present[j][l] for l in self.ors[oi][0]) and (optimistic or choose(a + j, oi) == t):
+                            pr = True
+                            if v is not None:
+                                ex.add(v)
+                    if pr != present[i][ki] or ex != exs.get((i, ki), set()):
+                        changed = True
+                    present[i][ki] = pr
+                    if ex:
+                        exs[(i, ki)] = ex
+            if not changed:
+                break
         bad = False
         for i in range(max(0, ca - a), min(n, cb - a + 1)):
             p, row = P[i], present[i]
@@ -618,13 +1000,13 @@ class Lattice:
 class LatticeProblem:
     """The kinds of kinds_in, on every lattice, given the rest as region patterns."""
 
-    def __init__(self, kinds: list[str], kinds_in: set[str], regions: dict[str, dict], lrules):
+    def __init__(self, kinds: list[str], kinds_in: set[str], regions: dict[str, dict], lrules, cyclic=False):
         """regions[kind] holds Regions under keys: 'claims' {value: Region}, 'fixed',
         'exact' {value: Region}, 'forbidden'."""
         self.kinds, self.kinds_in, self.regions = kinds, kinds_in, regions
         self.g = lattice_step(o for _, it, _ in lrules for o in it.options) or Fraction(1)
-        self.spec = Spec(kinds, kinds_in, self.g, lrules)
-        self.mirror_spec = Spec(kinds, kinds_in, self.g, lrules, mirror=True)
+        self.spec = Spec(kinds, kinds_in, self.g, lrules, cyclic=cyclic)
+        self.mirror_spec = Spec(kinds, kinds_in, self.g, lrules, mirror=True, cyclic=cyclic)
         self.W = self.spec.rho + 1  # history a ray state keeps
         all_regions = [r for d in regions.values() for v in d.values() for r in (v.values() if isinstance(v, dict) else [v])]
         bounds = [Fraction(0)]
@@ -788,6 +1170,7 @@ def solve(rs: RuleSet, prob: Problem) -> Line:
         if k in kinds_in:
             plain, exact = fixed.get(k, (EMPTY, {}))
             regions[k] = {"claims": prob.pos.get(k, {}), "fixed": plain, "exact": exact, "forbidden": forbid.get(k, EMPTY)}
-    lp = LatticeProblem(kinds + sorted(n for n in regions if n.startswith("#")), kinds_in, regions, lrules)
+    lp = LatticeProblem(kinds + sorted(n for n in regions if n.startswith("#")), kinds_in, regions, lrules,
+                        cyclic=bool(kinds_in & rs.cyclic))
     vals.update(lp.solve())
     return Line(vals)

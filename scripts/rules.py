@@ -20,10 +20,14 @@ A mode rule is  mode m [& L] → R : the same, met at the chip's position when i
 is m; it can add or remove elements only at the chip's position, so all its locations
 are "at 0 of p".
 
+Kinds may place each other in a cycle (A → A 1 unit on the right). RuleSet groups the
+kinds that do (strongly connected through "a left side reads K, its rule places K'
+present"), each group after the groups it reads: solver.py computes a group with a
+cycle as a fixpoint. A "no K" places nothing, so it makes no cycle; nor does a mode
+rule, which acts once, at the chip, and is not kept true. A cycle "moves" when one of
+its literals is not "at 0 of p": then what it places can go on without end.
+
 Restrictions, checked by RuleSet:
-- no cycle between kinds: the graph "kind read by L → kind of R" of the element rules
-  ("no K" included) has no cycle, not even K → K (mode rules act once, at the chip:
-  they are not kept true, so they make no cycle);
 - the operands of an "or" are all relative to p or all relative to l;
 - a kind is "chosen" if it is a present operand of an "or" or is placed by a rule whose
   left side reads a chosen kind. A left side reads chosen kinds only as "present"
@@ -31,7 +35,9 @@ Restrictions, checked by RuleSet:
   a consequence. Then:
   - if those rules read chosen kinds in a conjunction  K1 & ... & Kn & L'  and place
     single positions relative to p, and the operands of the "or"s are present elements
-    at single positions, the choices are solved on lattices (solver.py, `lattice`);
+    at single positions, the choices are solved on lattices (solver.py, `lattice`),
+    unless chosen kinds place each other in a cycle that moves, or that a left side
+    reads as absent (one choice would then act without end);
   - otherwise they are solved by a sweep from left to right (sweep.py), and a chosen
     kind that a left side reads is only placed at or after the position where it is
     decided (at an offset >= 0 from p or l): what is left of the sweep never changes.
@@ -84,6 +90,18 @@ class Atom:
             out = out | (universe - pres)
         return out
 
+    def region2(self, pos, neg, universe, empty):
+        """`region` read through two views (values, presence), each kind -> ...: the
+        present part from `pos`, the absent part from `neg`. Grows with `pos`, shrinks
+        with `neg`; with the same view twice, it is `region`."""
+        out = empty
+        for v, r in pos[0].get(self.kind, {}).items():
+            if v and self.test(v):
+                out = out | r
+        if self.test(Fraction(0)):
+            out = out | (universe - neg[1].get(self.kind, empty))
+        return out
+
     def holds(self, value_of) -> bool:
         return self.test(value_of(self.kind))
 
@@ -102,6 +120,9 @@ class Not:
 
     def region(self, vals, universe, empty):
         return universe - self.f.region(vals, universe, empty)
+
+    def region2(self, pos, neg, universe, empty):
+        return universe - self.f.region2(neg, pos, universe, empty)
 
     def holds(self, value_of) -> bool:
         return not self.f.holds(value_of)
@@ -123,6 +144,12 @@ class And:
             out = out & p.region(vals, universe, empty)
         return out
 
+    def region2(self, pos, neg, universe, empty):
+        out = universe
+        for p in self.parts:
+            out = out & p.region2(pos, neg, universe, empty)
+        return out
+
     def holds(self, value_of) -> bool:
         return all(p.holds(value_of) for p in self.parts)
 
@@ -141,6 +168,12 @@ class Or:
         out = empty
         for p in self.parts:
             out = out | p.region(vals, universe, empty)
+        return out
+
+    def region2(self, pos, neg, universe, empty):
+        out = empty
+        for p in self.parts:
+            out = out | p.region2(pos, neg, universe, empty)
         return out
 
     def holds(self, value_of) -> bool:
@@ -263,14 +296,28 @@ class RuleSet:
                 raise RuleError(f"{r}: a mode rule can only act at the position of the chip")
             if not r.is_mode_rule and not r.lhs.kinds():
                 raise RuleError(f"{r}: an element rule needs a kind on its left side")
-        # no cycle between kinds, through the element rules (a mode rule acts once, at
-        # the chip, on the line as it is then: it is not kept true, so it makes no cycle)
+        # the kinds in groups that place each other (strongly connected through the element
+        # rules: a left side reads K, its rule places K' present), each group after those
+        # it reads; a group with a cycle is computed as a fixpoint (solver.py)
         edges: dict[str, set[str]] = {k: set() for k in rank}
+        places: dict[str, set[str]] = {k: set() for k in rank}
         for r in self.element:
             for k in r.lhs.kinds():
                 edges[k] |= {o.kind for o in r.lits()}
-        self.order = self._toposort(edges)
+                places[k] |= {o.kind for o in r.lits() if not o.negated}
         self.edges = edges
+        self.blocks = _groups(places)
+        self.order = [k for b in self.blocks for k in b]
+        self.block_of = {k: n for n, b in enumerate(self.blocks) for k in b}
+        self.cyclic = {k for b in self.blocks for k in b if len(b) > 1 or k in places[k]}
+        # a cycle that moves positions: one of its literals is not "at 0 of p", so what it
+        # places can go on without end (A → A 1 unit on the right)
+        self.moving = set()
+        for r in self.element:
+            for o in r.lits():
+                if not o.negated and o.kind in self.cyclic and (o.anchor != "p" or o.where != Interval.point(0)) \
+                        and any(self.block_of.get(k) == self.block_of[o.kind] for k in r.lhs.kinds()):
+                    self.moving |= set(self.blocks[self.block_of[o.kind]])
         # chosen kinds: those an "or" choice can change
         chosen = {o.kind for r in self.element for it in r.rhs if it.is_or for o in it.options if not o.negated}
         dep, todo = set(), list(chosen)
@@ -304,11 +351,17 @@ class RuleSet:
             if read and any(o.anchor != "p" or not o.is_point for o in r.lits()):
                 lattice = False
             self.split.append((tuple(dict.fromkeys(cd)), tuple(dict.fromkeys(ncd)), And(tuple(rest))))
+        # a cycle through chosen kinds: on lattices only if it stays at one position and
+        # reads them as present (a choice then places a fixed set of points); otherwise
+        # what one choice places can go on without end, and the sweep decides
+        if dep & self.cyclic and (dep & self.moving or absent_read):
+            lattice = False
         self.lattice = lattice
         if absent_read and not lattice:
             r, read = absent_read[0]
             raise RuleError(f"{r}: a kind an 'or' can change ({', '.join(sorted(read))}) can only be required present "
-                            "(not under 'not', not below a percentage) when the choices need intervals or left edges")
+                            "(not under 'not', not below a percentage) when the choices need intervals or left edges, "
+                            "or when those kinds place each other in a cycle")
         # causal: a chosen kind that a left side reads is placed at or after the position
         # where it is decided (needed by the sweep)
         read_kinds = {k for r in self.element for k in r.lhs.kinds()}
@@ -336,39 +389,73 @@ class RuleSet:
             below[(i, j)] = out
         self.or_items: list[tuple[int, int]] = []
         while len(self.or_items) < len(items):
-            for a in items:
-                if a not in self.or_items and not any(b != a and b not in self.or_items and set(self.element[a[0]].lhs.kinds()) & below[b]
-                                                      for b in items):
-                    self.or_items.append(a)
-                    break
+            rest = [a for a in items if a not in self.or_items]
+            # "or"s that place what the other reads (a cycle): the first in rule order
+            ready = [a for a in rest if not any(b != a and set(self.element[a[0]].lhs.kinds()) & below[b] and
+                                                 not set(self.element[b[0]].lhs.kinds()) & below[a] for b in rest)]
+            self.or_items.append((ready or rest)[0])
         self.or_rank = {a: n for n, a in enumerate(self.or_items)}
         ends = [abs(e.x) for r in self.rules for o in r.lits() for e in (o.where.lo, o.where.hi) if e not in (math.inf, -math.inf)]
         self.reach = max(ends, default=Fraction(0))
         sizes = [e for e in ends if e] + [o.where.length for r in self.rules for o in r.lits() if 0 < o.where.length < math.inf]
         self.smallest_offset = min(sizes, default=None)
 
-    @staticmethod
-    def _toposort(edges: dict[str, set[str]]) -> list[str]:
-        indeg = {k: 0 for k in edges}
-        for hs in edges.values():
-            for h in hs:
-                indeg[h] += 1
-        ready = sorted(k for k, d in indeg.items() if d == 0)
-        out = []
-        while ready:
-            k = ready.pop(0)
-            out.append(k)
-            for h in sorted(edges[k]):
-                indeg[h] -= 1
-                if indeg[h] == 0:
-                    ready.append(h)
-            ready.sort()
-        if len(out) != len(edges):
-            raise RuleError("there is a cycle between kinds of elements: " + ", ".join(sorted(k for k, d in indeg.items() if d > 0)))
-        return out
-
     def kinds(self) -> list[str]:
         return list(self.order)
+
+
+def _groups(edges: dict[str, set[str]]) -> list[tuple[str, ...]]:
+    """The strongly connected groups of this graph, each after the groups with an edge to
+    it, in alphabetical order when nothing else decides (Tarjan, then Kahn)."""
+    index, low, stack, on, comps = {}, {}, [], set(), []
+    for root in sorted(edges):
+        if root in index:
+            continue
+        work = [(root, iter(sorted(edges[root])))]
+        index[root] = low[root] = len(index)
+        stack.append(root)
+        on.add(root)
+        while work:
+            v, it = work[-1]
+            w = next(it, None)
+            if w is not None:
+                if w not in index:
+                    index[w] = low[w] = len(index)
+                    stack.append(w)
+                    on.add(w)
+                    work.append((w, iter(sorted(edges[w]))))
+                elif w in on:
+                    low[v] = min(low[v], index[w])
+                continue
+            work.pop()
+            if work:
+                low[work[-1][0]] = min(low[work[-1][0]], low[v])
+            if low[v] == index[v]:
+                comp = []
+                while True:
+                    w = stack.pop()
+                    on.discard(w)
+                    comp.append(w)
+                    if w == v:
+                        break
+                comps.append(tuple(sorted(comp)))
+    of = {k: c for c in comps for k in c}
+    succ = {c: {of[h] for k in c for h in edges[k]} - {c} for c in comps}
+    indeg = {c: 0 for c in comps}
+    for hs in succ.values():
+        for h in hs:
+            indeg[h] += 1
+    ready = sorted(c for c, d in indeg.items() if d == 0)
+    out = []
+    while ready:
+        c = ready.pop(0)
+        out.append(c)
+        for h in sorted(succ[c]):
+            indeg[h] -= 1
+            if indeg[h] == 0:
+                ready.append(h)
+        ready.sort()
+    return out
 
 
 def _monotone(f, kinds: set) -> bool:

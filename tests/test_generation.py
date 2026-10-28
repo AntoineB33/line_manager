@@ -139,6 +139,19 @@ class ModeRulesTest(unittest.TestCase):
             if ch.source == "mode":
                 self.assertGreaterEqual(ch.at.inf(), ch.chip)  # nothing before where the change starts
 
+    def test_through_a_cycle(self):
+        """D at the chip repeats every 3 units ahead of it (a cycle). The user's "no D" at 13
+        wins: the chip in mode 1 ([0, 5) and [7, 12)) places D everywhere but at 1, 4, 7
+        and 10, whose repeats would reach 13."""
+        rs = parse_rules(["mode 1 → D", "D → D 3 units on the right"])
+        state = apply_edit(rs, LineState.empty(), [Op.put_no("D", Interval.point(13))], USER)
+        sim, log = self.simulate(rs, state)
+        mode1 = Region.of(IntervalSet.of(Interval.closed_open(0, 5), Interval.closed_open(7, 12)))
+        placed = mode1 - Region.of(IntervalSet(Interval.point(x) for x in (1, 4, 7, 10)))
+        self.assertEqual(sim.state.line.presence("D") & mode1, placed)
+        self.assertFalse(sim.state.line.presence("D").contains(13))
+        self.assertTrue(sim.state.line.presence("D").contains(F(1000 * 3 + 1, 2)))  # 0.5 + 3n, far ahead
+
     def test_only_at_the_chip_point(self):
         """The generated X on [2, 3] is in D's way: as the chip goes through it, X goes at
         each position the chip reaches, and only there, so D can be chosen everywhere."""

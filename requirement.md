@@ -26,7 +26,7 @@ A "mode rule" is the same as an element rule, but can add or remove elements onl
 Example:
 - mode 1 → D 100% & E 100%
 
-The state of the line can be modified only by the user or the "generated script".
+The state of the line can be modified only by the user (changing the mode, adding or removing elements) and the "generated script".
 
 The "rules generator" takes the current state of the line and the chip's position and produces a "generated script" to solve optimization problems.
 This generated script has events that trigger continuous edits of the line or a new run of the rules generator.

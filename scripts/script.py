@@ -10,15 +10,27 @@ Triggers
   becomes true (at installation if it is already true).
 - TransitionCount(k): fires once, when the k-th mode transition after the
   installation of the script is revealed.
+- Edited(): fires at each edit of the user (undo and clear included).
+- Uncovered(): true while the chip is where none of the script's stretches applies,
+  within the positions the run compiled (`covered`): a mode the run did not compile
+  there, or a line other than the one it compiled.
 
 Actions
 - EditAction(ops): an edit of the line on exact intervals (continuous: any interval
   of the real line, not a grid), resolved by the fixed rules of resolve.py and applied
   only if it respects N1 and N2 (guards.py).
+- ChipEditAction(ops): an edit whose regions are written from the chip: at the instant
+  it fires, each region is shifted by the chip's position (`Future on (0, inf)` puts
+  Future on (chip, inf)); then as EditAction.
 - RerunAction(): runs the rules generator again; its new script replaces this one.
-- ModeRulesAction(): while its trigger holds, the mode rules act at the chip's
-  position (simulation.py), checked by M1 and N2 (guards.py). The line is modified
-  only by the user and the generated script, so the mode rules act through it.
+
+Compiled mode rules (`stretches`, mode_rules.Stretch): what the mode rules do as the
+chip goes through the modes the run predicted, each stretch a continuous edit at the
+chip that applies only if the chip is there in that mode on the line compiled for it
+(simulation.py). The rules are the same at every position, so when the script is put
+in place with the chip d after `origin` and the line is `base` moved by d, every
+stretch applies moved by d (the run took that long; nothing changed meanwhile). Nothing else carries out the mode rules: where the script has no
+stretch, they do nothing until a run compiles one.
 """
 
 from __future__ import annotations
@@ -59,11 +71,35 @@ class TransitionCount:
 
 
 @dataclass(frozen=True)
+class Edited:
+    def __str__(self) -> str:
+        return "the user edits the line"
+
+
+@dataclass(frozen=True)
+class Uncovered:
+    def __str__(self) -> str:
+        return "the chip is where no compiled stretch applies (another mode or another line)"
+
+
+@dataclass(frozen=True)
 class EditAction:
     ops: tuple[Op, ...]
 
     def __str__(self) -> str:
         return ", ".join(map(str, self.ops))
+
+
+@dataclass(frozen=True)
+class ChipEditAction:
+    ops: tuple[Op, ...]
+
+    def at(self, chip) -> list[Op]:
+        """The edit with the chip at `chip`."""
+        return [Op(o.action, o.kind, o.region.shift(chip), o.value) for o in self.ops]
+
+    def __str__(self) -> str:
+        return ", ".join(str(o).replace(" on ", " on chip + ", 1).replace(" off ", " off chip + ", 1) for o in self.ops)
 
 
 @dataclass(frozen=True)
@@ -75,14 +111,8 @@ class RerunAction:
 
 
 @dataclass(frozen=True)
-class ModeRulesAction:
-    def __str__(self) -> str:
-        return "apply the mode rules at the chip"
-
-
-@dataclass(frozen=True)
 class Event:
-    trigger: Start | ChipIn | TransitionCount
+    trigger: Start | ChipIn | TransitionCount | Edited | Uncovered
     actions: tuple
 
     def __str__(self) -> str:
@@ -92,6 +122,10 @@ class Event:
 @dataclass
 class Script:
     events: list[Event] = field(default_factory=list)
+    stretches: list = field(default_factory=list)  # mode_rules.Stretch, in the order of the chip
+    covered: list = field(default_factory=list)  # (lo, hi, mode): the positions and modes the run compiled
+    origin: object = None  # the chip's position the run compiled from
+    base: object = None  # the line it compiled from (line.LineState), its own edits made
 
     @staticmethod
     def initial() -> Script:
@@ -99,11 +133,7 @@ class Script:
         return Script([Event(Start(), (RerunAction(first=True),))])
 
     def text(self) -> str:
-        return "\n".join(map(str, self.events))
+        return "\n".join([str(e) for e in self.events] + [st.text() for st in self.stretches])
 
-    def rerun_triggers(self) -> list[Start | ChipIn | TransitionCount]:
+    def rerun_triggers(self) -> list[Start | ChipIn | TransitionCount | Edited | Uncovered]:
         return [e.trigger for e in self.events if any(isinstance(a, RerunAction) for a in e.actions)]
-
-    def applies_mode_rules(self, chip: Fraction, mode: str) -> bool:
-        return any(isinstance(a, ModeRulesAction) and isinstance(e.trigger, ChipIn) and e.trigger.holds(chip, mode)
-                   for e in self.events for a in e.actions)

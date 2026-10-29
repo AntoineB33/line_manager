@@ -2,8 +2,10 @@
 line's 3 modes, its periods as elements with rules. One unit is one minute, and the
 chip is the now line. The break lasts 15 minutes, comes with "no screen", starts as
 early as possible, and after 15 minutes or more of "no screen" there is no 15min break
-in the next 2 hours: an infinite pattern, a break every 135 minutes. Type in the
-command box:
+in the next 2 hours: an infinite pattern, a break every 135 minutes. The line starts
+empty: the generator's constraint keeps Future on the positions after the chip, and
+the rules place the breaks there, so they appear when its first run completes. Type in
+the command box:
     add Away on [300, 330]   30 minutes without screen: no break until 2 hours after
                              its end, the next one at 450
     add Away on [300, 310]   10 minutes only: nothing changes
@@ -19,7 +21,8 @@ Press Play to move the chip. MODES below switches to mode 2 at 200 and to mode 3
 the chip leaves it.
 
 The elements:
-- Timeline: where breaks are placed, the future.
+- Future: where breaks are placed, the positions after the chip, kept there by the
+  generated script (CONSTRAINTS).
 - Start15: where a break starts. At each position the "or" takes the leftmost operand
   that can be chosen, Start15 before no Start15: as early as the rules allow.
 - Ready15: a break may start here; a break and the 2 hours after it remove it, so do
@@ -31,7 +34,9 @@ The elements:
 - NoComputerUnlocked, NoPhoneUnlocked, NotOnComputer, NotOnPhone: the periods of the
   modes 2 and 3. "Not on a computer" can't be with "no computer unlocked", nor "not on
   a phone" with "no phone unlocked": the newer one wins.
-The generator has both optimization problems, with no target.
+The generator has both optimization problems, with no target, and one constraint:
+Future on (chip, inf). It compiles the mode rules for the modes it predicts, so the
+generated script drags the break ("Break15 on chip + ((0, 15] ...)").
 
 Not expressed:
 - A break whose start falls in a "no screen" period does not move back to the start
@@ -40,14 +45,15 @@ Not expressed:
 - A break and the Away right after it count as two "no screen" periods: if the Away
   lasts less than 15 minutes, the 2 hours count from the end of the break, up to 15
   minutes too early. A "no screen" typed as NoScreen instead of Away has no 2 hours.
+- A break removed from the past to satisfy its rules (the exception to the frozen
+  past): nothing changes left of the chip but the user's edits.
 - The 20s and 5min breaks and what only concerns them (the mode switches around a 20s
   break, the chains of 5min and 15min breaks), the tasks, and the default periods
   "sleep" and "before bed" ("Sleep → Sleep 1440 units on the right" repeats it every
   day, but each edit then takes seconds and the chip far longer).
-The mode rules compile each run ahead: the chip moves
-with no computation between the positions where their decision can change, and waits
-at those positions (here every 5 to 15 minutes) for up to a minute and a half while
-they are checked. Pause stops that check; Play computes it again.
+A generator run takes a minute or two here (it compiles the mode rules over the next 3
+hours): it goes on while the chip moves, and its script replaces the one in place when
+it completes.
 
 Copy this file to make your own session, change the definitions, and run it:
     python UI/examples/fifteen_minute_break_modes.py
@@ -61,7 +67,7 @@ from app import MinimumLengthProblem, PresenceRatioProblem, start  # noqa: E402
 
 RULES = [
     # The 15min break, as early as possible, never within 2 hours after another one.
-    "Timeline → Start15 or no Start15",
+    "Future → Start15 or no Start15",
     "Start15 → Ready15",
     "Start15 → Break15 on [0, 15] of p",
     "Start15 → no Ready15 on (0, 135] of p",
@@ -84,8 +90,9 @@ RULES = [
 MODES = [(0, "1"), (200, "2"), (240, "1"), (300, "3"), (310, "1")]
 CHIP = 0
 SPEED = 1  # minutes per second
-LINE = [
-    "Timeline on [0, inf)",
+LINE = []  # the line starts empty
+CONSTRAINTS = [
+    "Future on (0, inf)",  # from the chip: Future on (chip, inf)
 ]
 PROBLEMS = [
     (PresenceRatioProblem({}, horizon=240), 1),
@@ -93,4 +100,4 @@ PROBLEMS = [
 ]
 Q = 0.5
 
-start(rules=RULES, modes=MODES, chip=CHIP, speed=SPEED, line=LINE, problems=PROBLEMS, q=Q)
+start(rules=RULES, modes=MODES, chip=CHIP, speed=SPEED, line=LINE, problems=PROBLEMS, q=Q, constraints=CONSTRAINTS)

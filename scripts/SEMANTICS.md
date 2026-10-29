@@ -550,9 +550,9 @@ result.
 
 ## 7. Who modifies the line (`simulation.py`, `guards.py`)
 
-The line is modified only by the user and the generated script. The script makes
-two kinds of edits: its own edits, and the edits of the mode rules, which it carries
-out at the chip (`ModeRulesAction`).
+The line is modified only by the user (edits, and the mode) and the generated
+script. The script makes two kinds of edits: its own edits, and the edits of the
+mode rules, which each run compiles for the modes it predicts (`Script.stretches`).
 
 - **User edits** may change anything, anywhere, including at or left of the chip.
 - **Script edits** are refused if their *result*, after the rules have been
@@ -563,8 +563,8 @@ out at the chip (`ModeRulesAction`).
     `resolve.py` already refuses such an edit, and the user's edits always come
     before the script's elements, so a later computation never gives the script
     the upper hand either.
-- **Mode rules** act at the chip as it moves, while the script carries them out
-  (every script carries them when there are mode rules). `mode_rules.py`.
+- **Mode rules** act at the chip as it moves, from the start of the program,
+  through the script's stretches only. `mode_rules.py`.
   - The chip's position is a single point x. When the chip is at x, the mode
     rules of the mode at x are decided at x, in their order, on the line as it is
     then. Nothing ahead of the chip is decided or written.
@@ -590,22 +590,33 @@ out at the chip (`ModeRulesAction`).
     them. A check that fails between them refuses the rest of the chip's
     stretch, rather than guessing. A run is logged as one continuous change:
     each of its positions changes when the chip is there.
-  - **Compiled ahead.** A run is kept from one step of the chip to the next while
-    the line is the one it made (`mode_rules._Plan`): its positions are those of
-    the state where it was decided, and each stretch between two of them is
-    checked once, to its end, when the chip enters it. On a stretch the line's
-    ends are fixed or move with the chip (above): the first and middle checks
-    give which ones move, and the last check must be exactly that line, else the
-    steps there solve as before. A step inside a checked stretch only moves those
-    ends: a break that the chip drags in mode 1 costs nothing per step, only the
-    checks where the decision can change (`test_compiled_ahead`). The run at the
-    chip can be compiled before the chip moves (`Simulation.prepare`; the window
-    does it while paused): its decision at the chip's position happens only when
-    the chip goes through it. A compiled run is how the line is computed; it is not
-    part of the generated script.
-  - **Stopped.** A step of the simulation can be stopped from another thread
-    (`solver.STOP`, Pause in the window): the long loops raise `Interrupted`, and
-    the step is undone (`Simulation.snapshot`, `restore`).
+  - **Compiled by the generator.** Each run of the generator carries the mode
+    rules out ahead, from the line after its own edit, as the chip goes from its
+    position to the next run's position through the predicted modes
+    (`mode_rules.compile_runs`, `RulesGenerator.predicted`). A run of the mode
+    rules (`mode_rules._Plan`) has the positions of the state where it was decided,
+    and each stretch between two of them is checked once, to its end. On a stretch
+    the line's ends are fixed or move with the chip (above): the first and middle
+    checks give which ones move, and the last check must be exactly that line,
+    else the positions there are solved one by one. Each run becomes stretches of
+    the script (`mode_rules.Stretch`): "if the chip is in [a, b], mode is m and the
+    line is the one compiled there, then …", written from the chip. As the chip
+    goes through a stretch, the simulation only reads the line from it: a break
+    that the chip drags in mode 1 costs nothing per step
+    (`test_compiled_by_the_generator`). Where the modes or the line differ from
+    what a run compiled, no stretch applies and the mode rules do nothing; the
+    script's `Uncovered` event then runs the generator again
+    (`test_unpredicted_modes`).
+  - **Moved scripts.** The rules are the same at every position. A script put in
+    place with the chip d after the position its run compiled from (the run took
+    that long), on the line the run compiled from moved by d, applies its stretches
+    moved by d (`Simulation._align`, `test_late_script_moved`). Any other line,
+    for example with a user's element at a fixed position, takes the stretches as
+    they are.
+  - **Stopped.** A step of the simulation, a generator run included, can be
+    stopped from another thread (`solver.STOP`, Pause in the window): the long
+    loops raise `Interrupted`, and the step is undone (`Simulation.snapshot`,
+    `restore`).
   - `ModeRulesTest` checks:
     - nothing changes beyond the chip;
     - the user's elements are kept;
@@ -639,14 +650,31 @@ returns a script made of events.
 - `ChipIn(lo, hi, mode)`: fires at each instant the chip enters [lo, hi) with
   that mode.
 - `TransitionCount(k)`: fires after k revealed transitions.
+- `Start`: the initial script's only trigger: the program starts.
+- `Edited`: fires at each edit of the user. A user edit runs the generator only
+  through it; a change of rules or problems runs the new generator.
+- `Uncovered`: the chip is where no stretch of the script applies (§7).
 
 **Actions:**
 
 - `EditAction`: an edit on exact intervals of the real line, resolved as in §6
   and guarded as in §7.
+- `ChipEditAction`: an edit written from the chip, moved to the chip's position
+  when it fires. A run's constraints (`RulesGenerator(constraints=...)`, e.g.
+  `Future on (0, inf)`) are kept this way: the run makes the edit first, scores
+  its candidates on top of it, and its script makes it again where it is put in
+  place, unless the line already has it (`test_constraints`).
 - `RerunAction`: runs the generator again.
-- `ModeRulesAction`: while its trigger holds, the mode rules act at the chip
-  (§7). A run adds it, with `ChipIn(c, ∞)`, whenever there are mode rules.
+- Stretches (`Script.stretches`): the mode rules a run compiled, each acting while
+  the chip goes through it in its mode on the line compiled for it (§7).
+
+**Runs that take time.** In the background mode (`Simulation.background`, the
+interactive program), a call to run the generator is only recorded
+(`Simulation.request`). The script in place goes on, and the run's script replaces
+it when the run completes (`Simulation.complete`), unless a newer call was recorded
+meanwhile. The window runs each call in a process of its own
+(`scripts/generator_worker.py`): it computes in parallel with the chip, and a newer
+call ends it (`test_background_runs`).
 
 ### What a run optimizes (`problems.py`)
 
@@ -699,6 +727,12 @@ returns a script made of events.
 | work of a run | min(B(q), number of candidates), with B(q) = 2 + ⌊36q⌋ | non-decreasing in q |
 | rerun distance | D(q) = H(1 − q/2) | strictly decreasing in q |
 | rerun transitions | K(q) = 1 + ⌊4(1 − q)⌋ | non-increasing in q |
+
+With mode rules, a run compiles them up to c + D(q)/6 and asks for the next run at
+c + D(q)/18 instead of c + D(q). A run compiles about two minutes of the chip per
+second on the 15-minute break example, so short runs asked for early complete
+before the chip leaves what the run before compiled, and the new script takes over
+in the middle of a stretch (`Simulation._inside`).
 
 **Per run** (`test_per_run`). The candidate list does not depend on q, and a
 run evaluates a prefix of it. So with a lower q:

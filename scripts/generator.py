@@ -4,6 +4,12 @@ A run takes the state of the line, the chip's position c and the revealed modes,
 returns a script. It is given optimization problems, each with a weight (problems.py),
 and plans the window W = (c, c + H], H the longest horizon of its problems.
 
+0. Constraints (`constraints`, edits written from the chip, e.g. `Future on (0, inf)`):
+   the script keeps them. A run puts them with the chip at c (unless the line already
+   has them), and every candidate edit comes on top of that; the script makes the
+   same edit, from the chip where it fires (script.ChipEditAction). The element
+   rules then do the rest: with `Future → Start15 or no Start15`, the breaks go
+   everywhere in the future.
 1. It builds candidate edits in a fixed order that does not depend on the
    hyperparameter q: the no-op first, then for each (prediction, placement) the
    edits all the problems propose together, then (with several problems) each
@@ -20,12 +26,23 @@ and plans the window W = (c, c + H], H the longest horizon of its problems.
    expected over the probability finder's scenarios (or uniform modes) where a
    problem predicts the mode rules; the earliest wins ties, so the no-op wins when
    nothing is better.
-3. The script applies the best edit at once and schedules the next run. When there
-   are mode rules, it also carries them out at the chip (script.ModeRulesAction).
+3. The script applies the best edit at once and schedules the next run.
+   It also runs again at each edit of the user (script.Edited) and, with mode
+   rules, when the chip is where none of its compiled stretches applies
+   (script.Uncovered).
+4. With mode rules, it compiles them (mode_rules.compile_runs) from the line after
+   the best edit, as the chip goes from c to the next run's position D(q) through
+   the predicted modes: the mode at the chip, then the most probable scenario of the
+   probability finder where it predicts one (else the mode goes on). Each compiled
+   stretch is in the script (script.Script.stretches); other mode sequences are not.
 
 The hyperparameter q in (0, 1):
     budget      B(q) = 2 + floor(36 q)           candidates evaluated (non-decreasing)
-    distance    D(q) = H (1 - q / 2)             rerun when the chip has moved D (decreasing)
+    distance    D(q) = H (1 - q / 2)             rerun when the chip has moved D (decreasing); with mode
+                                                 rules, they are compiled up to c + D / 6 (a run compiles
+                                                 about a minute of the chip in a second) and the next run
+                                                 is asked for at c + D / 18, so that it can complete
+                                                 before the chip leaves what this one compiled
     transitions K(q) = 1 + floor(4 (1 - q))      or after K revealed transitions (non-increasing)
 """
 
@@ -36,15 +53,16 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 
 from guards import check_script_edit
-from intervals import INF, Interval, IntervalSet
+from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import GEN, LineState, Op
+from mode_rules import compile_runs
 from modes import ModeKnowledge
 from probability import ProbabilityFinder, Scenario
 from problems import MinimumLengthProblem, PresenceRatioProblem  # noqa: F401 (the problems, for the callers)
 from region import Region
 from resolve import Refused, apply_edit
 from rules import RuleSet
-from script import ChipIn, EditAction, Event, ModeRulesAction, RerunAction, Script, TransitionCount
+from script import ChipEditAction, ChipIn, EditAction, Event, RerunAction, Script, TransitionCount, Uncovered, Edited
 from solver import lhs_region
 
 PREDICTIONS = ("scenario", "uniform", "none")
@@ -59,6 +77,8 @@ class RunStats:
     chosen: str = "no-op"
     key: tuple = ()
     probability_rules: list[str] = field(default_factory=list)
+    refused: list = field(default_factory=list)  # (position, why): operands of the mode rules refused while compiling
+    constraints: str = ""  # why the constraints could not be put, if they could not
 
 
 def budget(q: float) -> int:
@@ -77,8 +97,9 @@ def rerun_transitions(q: float) -> int:
 class RulesGenerator:
     MAX_SCENARIOS = 8
 
-    def __init__(self, rules: RuleSet, problems, q: float, use_probability: bool = True) -> None:
-        """problems: a problem, or [(problem, weight)] with weights >= 0."""
+    def __init__(self, rules: RuleSet, problems, q: float, use_probability: bool = True, constraints=()) -> None:
+        """problems: a problem, or [(problem, weight)] with weights >= 0; constraints: Ops
+        whose regions are written from the chip."""
         if not 0 < q < 1:
             raise ValueError("the allocated resources quantity must be in (0, 1)")
         self.rules = rules
@@ -88,13 +109,24 @@ class RulesGenerator:
         self.horizon = max((p.horizon for p, _ in self.problems), default=Fraction(1))
         self.q = q
         self.use_probability = use_probability
+        self.constraints = tuple(constraints)
 
     def run(self, state: LineState, chip, known: ModeKnowledge) -> tuple[Script, RunStats]:
         c = Fraction(chip)
         H = self.horizon
         ctx = _Context(self, state, c, known)
         stats = RunStats(budget=budget(self.q), probability_rules=ctx.probability_rules)
-        best_ops, best_key, best_label = (), ctx.score(state), "no-op"
+        base, keep = state, None
+        if self.constraints and not _has(state, ChipEditAction(self.constraints).at(c)):
+            keep = ChipEditAction(self.constraints)
+            try:
+                base = apply_edit(self.rules, state, keep.at(c), GEN)
+                why = check_script_edit(state, base, c)
+            except Refused as e:
+                why = str(e)
+            if why:
+                base, keep, stats.constraints = state, None, why
+        best_ops, best_key, best_label, best_after = (), ctx.score(base), "no-op", base
         stats.work, stats.valid = 1, 1
         seen = {""}
         for label, ops in ctx.candidates():
@@ -106,7 +138,7 @@ class RulesGenerator:
                 break
             stats.work += 1
             try:
-                after = apply_edit(self.rules, state, list(ops), GEN)
+                after = apply_edit(self.rules, base, list(ops), GEN)
             except Refused:
                 continue
             if check_script_edit(state, after, c) is not None:
@@ -114,17 +146,29 @@ class RulesGenerator:
             stats.valid += 1
             key = ctx.score(after)
             if key < best_key:
-                best_ops, best_key, best_label = ops, key, label
+                best_ops, best_key, best_label, best_after = ops, key, label, after
         stats.chosen, stats.key = best_label, best_key
         events: list[Event] = []
+        if keep is not None:
+            events.append(Event(ChipIn(c, INF), (keep,)))
+        stretches, covered = [], []
+        D = rerun_distance(self.q, H)
         if self.rules.mode_rules:
-            events.append(Event(ChipIn(c, INF), (ModeRulesAction(),)))
+            covered = self.predicted(ctx, c + D / 6)
+            stretches, stats.refused = compile_runs(self.rules, best_after, covered)
         if best_ops:
             events.append(Event(ChipIn(c, c + H), (EditAction(tuple(best_ops)),)))
         if not self._futile(state, best_ops):
-            events.append(Event(ChipIn(c + rerun_distance(self.q, H), INF), (RerunAction(),)))
+            events.append(Event(ChipIn(c + (D / 18 if self.rules.mode_rules else D), INF), (RerunAction(),)))
             events.append(Event(TransitionCount(rerun_transitions(self.q)), (RerunAction(),)))
-        return Script(events), stats
+        events.append(Event(Edited(), (RerunAction(),)))
+        if covered:
+            events.append(Event(Uncovered(), (RerunAction(),)))
+        return Script(events, stretches, covered, c, best_after), stats
+
+    def predicted(self, ctx: _Context, end: Fraction) -> list[tuple[Pos, Pos, str]]:
+        """The modes the mode rules are compiled for (`_Context.predicted`)."""
+        return ctx.predicted(end)
 
     def _futile(self, state: LineState, ops) -> bool:
         """A run can tell that later runs would do nothing until the user edits the line:
@@ -135,6 +179,14 @@ class RulesGenerator:
             return True
         empty = not state.claims.kinds() and not state.line.kinds()
         return empty and not self.rules.mode_rules and not ops
+
+
+def _has(state: LineState, ops) -> bool:
+    """The line already has what these edits put (elements at 100% only: else False)."""
+    for o in ops:
+        if o.action != "put" or o.value != 100 or not (o.region - state.line.presence(o.kind)).is_empty():
+            return False
+    return True
 
 
 class _Context:
@@ -167,6 +219,24 @@ class _Context:
         best = self.scenarios[0] if self.scenarios else None
         self.weights_best = ([(m, Region.of(best.mode_region(m)) & unknown, Fraction(1)) for m in self.modes]
                              + [(m, Region.of(best.uncovered) & unknown, u) for m in self.modes]) if best else None
+
+    def predicted(self, end: Fraction) -> list[tuple[Pos, Pos, str]]:
+        """The chip's positions from c to end, (lo, hi, mode) where the modes are
+        predicted: the mode at the chip, then the most probable scenario where it
+        predicts one; elsewhere the mode goes on."""
+        starts = {self.c: self.known.current_mode()}
+        if self.scenarios:
+            for m in self.modes:
+                for iv in self.scenarios[0].mode_region(m).intervals:
+                    x = iv.lo.x if isinstance(iv.lo, Pos) else iv.lo
+                    if self.c < x < end:
+                        starts[x] = m
+        points = []
+        for x in sorted(starts):
+            if not points or points[-1][1] != starts[x]:
+                points.append((x, starts[x]))
+        return [(Pos(x), Pos(points[i + 1][0]) - EPS if i + 1 < len(points) else Pos(end), m)
+                for i, (x, m) in enumerate(points)]
 
     # expected integral of a kind on Wset (W by default), with what the mode rules will do there
     def expected(self, s: LineState, kind: str, weights, Wset: IntervalSet | None = None) -> Fraction:

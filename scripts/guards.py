@@ -6,8 +6,9 @@ N2  remove (or change) an element added by the user: the user's claims (their
     removals included) are unchanged. An edit of the script never makes one give way
     (resolve.py refuses it), and the user's edits always come before the script's.
 
-The script also carries out the mode rules (script.ModeRulesAction, mode_rules.py).
-Each of their edits acts at the chip's position x only, so N1 becomes:
+The script also carries out the mode rules (mode_rules.py), as its run compiled them
+(script.Script.stretches). Each of their edits acts at the chip's position x only, so
+N1 becomes:
 
 M1  the line and the claims on (-inf, x) are unchanged, and the claims outside {x}
     are unchanged (no older element is removed away from the chip);

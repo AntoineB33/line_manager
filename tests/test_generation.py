@@ -7,7 +7,7 @@ from fractions import Fraction as F
 
 from helpers import check_log, rand_interval, rules_hold
 from generator import PresenceRatioProblem, RulesGenerator, _Context, budget, rerun_distance, rerun_transitions
-from intervals import INF, Interval, IntervalSet
+from intervals import INF, Interval, IntervalSet, Pos
 from line import GEN, MODE, USER, LineState, Op
 from modes import ModeTimeline
 from probability import ProbabilityFinder
@@ -15,7 +15,7 @@ from problems import MinimumLengthProblem, shortfalls
 from region import Region
 from resolve import apply_edit
 from rules import parse_rules
-from script import ChipIn, EditAction, Event, ModeRulesAction, RerunAction, Script
+from script import ChipIn, EditAction, Event, RerunAction, Script, TransitionCount
 from simulation import Chip, Simulation, UserEdit
 
 POOL = ["A → B or C", "B → D", "B → no D 1 unit on the right", "A → no C 1 unit on the left", "C → D",
@@ -79,19 +79,33 @@ class ScriptTest(unittest.TestCase):
         check_log(log, rs)
 
 
+class Oracle(RulesGenerator):
+    """A generator that predicts the real modes: the mode rules are compiled for them."""
+
+    def __init__(self, *args, timeline: ModeTimeline, **kw) -> None:
+        super().__init__(*args, **kw)
+        self.timeline = timeline
+
+    def predicted(self, ctx, end):
+        from intervals import EPS
+        points = [(ctx.c, self.timeline.mode_at(ctx.c))] + [(x, m) for x, m in self.timeline.transitions if ctx.c < x < end]
+        return [(Pos(x), Pos(points[i + 1][0]) - EPS if i + 1 < len(points) else Pos(end), m) for i, (x, m) in enumerate(points)]
+
+
 class ModeRulesTest(unittest.TestCase):
     RULES = ["mode 1 → D", "mode 2 → no D"]
     MODES = [(5, "2"), (7, "1"), (12, "2")]
 
     def simulate(self, rs, state, edits=(), script=None):
-        gen = RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5)
+        timeline = ModeTimeline(0, "1", self.MODES)
+        gen = Oracle(rs, PresenceRatioProblem({}, 10), 0.5, timeline=timeline)
         if script is not None:
             class Fixed(RulesGenerator):
                 def run(self, s, chip, known):
                     from generator import RunStats
                     return script, RunStats()
             gen = Fixed(rs, PresenceRatioProblem({}, 10), 0.5)
-        sim = Simulation(state, gen, Chip([(0, 0), (10, 10), (20, 15)]), ModeTimeline(0, "1", self.MODES), list(edits))
+        sim = Simulation(state, gen, Chip([(0, 0), (10, 10), (20, 15)]), timeline, list(edits))
         log = sim.run(20)
         check_log(log, rs)
         return sim, log
@@ -110,7 +124,7 @@ class ModeRulesTest(unittest.TestCase):
         rs = parse_rules(self.RULES)
         sim, log = self.simulate(rs, LineState.empty(), [UserEdit(F(1), [Op.put("D", Interval.closed(0, 20))])])
         self.assertEqual(sim.state.line.presence("D"), Region.of(Interval.closed(0, 20)))
-        self.assertTrue(any(src == "mode" and "N2:" in why for _, src, why in log.refused))
+        self.assertTrue(any("N2:" in why for r in log.runs for _, why in r[4].refused))
 
     def test_nothing_removed_away_from_the_chip(self):
         """D at the chip conflicts with the generated A on [-3, -2] through C on [-3, 7]:
@@ -123,7 +137,7 @@ class ModeRulesTest(unittest.TestCase):
         self.assertEqual(sim.state.line.presence("A"), Region.of(Interval.closed(-3, -2)))
         self.assertEqual(sim.state.line.presence("C"), Region.of(Interval.closed(-3, 7)))
         self.assertEqual(sim.state.line.presence("D"), Region.of(Interval.open(7, 12)))
-        self.assertTrue(any(src == "mode" and "M1:" in why for _, src, why in log.refused))
+        self.assertTrue(any("M1:" in why for r in log.runs for _, why in r[4].refused))
 
     def test_each_position_takes_the_first_operand(self):
         """One stretch of the chip, [0, 5) in mode 1, and the operand changes inside it: D
@@ -152,48 +166,71 @@ class ModeRulesTest(unittest.TestCase):
         self.assertFalse(sim.state.line.presence("D").contains(13))
         self.assertTrue(sim.state.line.presence("D").contains(F(1000 * 3 + 1, 2)))  # 0.5 + 3n, far ahead
 
-    def test_compiled_ahead(self):
-        """The chip in mode 1 drags B (S starts it as early as possible). The run compiled
-        ahead is kept from one step to the next; at each step its line is the one solved
-        from its claims, and its stretches move the line with the chip (no solve)."""
+    def test_compiled_by_the_generator(self):
+        """The chip in mode 1 drags B (S starts it as early as possible). The generator's
+        run compiles it: the script's stretch the chip goes through gives, at each step,
+        the line solved from its claims, and moves the line with the chip (no solve)."""
         from intervals import EPS
         from mode_rules import _iv, _same_line
         rs = parse_rules(["T → S or no S", "S → R", "S → B on [0, 2] of p", "S → no R on (0, 6] of p", "mode 1 → no B"])
         state = apply_edit(rs, LineState.empty(), [Op.put("T", Interval(0, INF, True, False))], USER)
-        sim = Simulation(state, RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5), Chip([(0, 0), (20, 20)]),
+        # horizon 100: the next run is asked for at 75 / 18, after the positions looked at
+        sim = Simulation(state, RulesGenerator(rs, PresenceRatioProblem({}, 100), 0.5), Chip([(0, 0), (20, 20)]),
                          ModeTimeline(0, "1"))
         moving = False
         for i in range(1, 9):
             sim.advance(F(i, 2))
-            plan = sim.mode_rules["1"].plan
-            solved = plan.mr.with_run(plan.state0, plan.decision, Region.of(_iv(plan.a0, plan.next - EPS)))
+            st = sim._stretch[0]
+            plan = st.plan
+            solved = plan.mr.with_run(plan.state0, plan.decision, Region.of(_iv(plan.a0, Pos(F(i, 2)) - EPS)))
             self.assertTrue(_same_line(sim.state.line, solved.line), i)
             self.assertEqual(sim.state.line.presence("S") & Region.of(Interval.closed(0, F(i, 2) + 5)),
                              Region.of(Interval.point(F(i, 2))))
             moving |= any(line is not None for _, _, line, _ in plan.pieces)
         self.assertEqual(plan.m, 0)  # one run, decided at the start
+        self.assertEqual(len(sim.log.runs), 1)  # compiled by the generator's first run
+        self.assertIn(st, sim.script.stretches)
         self.assertTrue(moving)
 
+    def test_constraints(self):
+        """The line starts empty; the generator's constraint keeps Future after the chip
+        (written from the chip), the rules place the breaks there, and the script's
+        compiled mode rules drag the one at the chip."""
+        rs = parse_rules(["Future → S or no S", "S → R", "S → B on [0, 2] of p", "S → no R on (0, 6] of p", "mode 1 → no B"])
+        future = Op.put("Future", Interval(0, INF, False, False))  # (0, inf)
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5, constraints=[future]),
+                         Chip([(0, 0), (20, 20)]), ModeTimeline(0, "1"))
+        sim.start()
+        self.assertIn("put Future 100% on chip + (0, +inf)", sim.script.text())
+        sim.advance(4)
+        check_log(sim.log, rs)
+        line = sim.state.line
+        self.assertEqual(line.presence("Future"), Region.of(Interval(0, INF, False, False)))
+        self.assertTrue((line.presence("B") & Region.of(Interval.closed_open(0, 4))).is_empty())  # dragged: none left behind
+        self.assertTrue(line.presence("B").contains(5))
+        self.assertTrue(any(ch.source == "script" for ch in sim.log.changes))
+        script, _ = sim.gen.run(sim.state, F(4), ModeTimeline(0, "1").known(4))
+        self.assertNotIn("Future", " ".join(str(e) for e in script.events))  # already kept: no edit
+
     def test_stopped_step(self):
-        """STOP set (Pause): the step raises Interrupted, and restore gives back the
-        simulation as it was before it."""
+        """STOP set (Pause) while the generator compiles the mode rules: the step raises
+        Interrupted, and restore gives back the simulation as it was before it."""
         import solver
         rs = parse_rules(["T → S or no S", "S → B on [0, 2] of p", "S → no S on (0, 6] of p", "mode 1 → no B"])
         state = apply_edit(rs, LineState.empty(), [Op.put("T", Interval(0, INF, True, False))], USER)
         sim = Simulation(state, RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5), Chip([(0, 0), (20, 20)]),
                          ModeTimeline(0, "1"))
-        sim.advance(F(1, 2))
         before, changes = sim.state, len(sim.log.changes)
         snap = sim.snapshot()
         solver.STOP.set()
         try:
             with self.assertRaises(solver.Interrupted):
-                sim.advance(F(3))
+                sim.advance(F(1, 2))
         finally:
             solver.STOP.clear()
         sim.restore(snap)
         self.assertIs(sim.state, before)
-        self.assertEqual((sim.t, len(sim.log.changes)), (F(1, 2), changes))
+        self.assertEqual((sim.t, len(sim.log.changes), len(sim.log.runs), sim.started), (0, changes, 0, False))
         sim.advance(F(3))
         self.assertEqual(sim.state.line.presence("S") & Region.of(Interval.closed(0, 8)), Region.of(Interval.point(3)))
 
@@ -208,13 +245,29 @@ class ModeRulesTest(unittest.TestCase):
 
     def test_only_through_the_script(self):
         """The line is modified only by the user and the generated script: without the
-        script's mode-rule action, the mode rules do nothing."""
+        stretches a run compiled, the mode rules do nothing."""
         rs = parse_rules(self.RULES)
         sim, log = self.simulate(rs, LineState.empty(), script=Script())
         self.assertFalse(sim.state.line.kinds())
         self.assertFalse(any(ch.source == "mode" for ch in log.changes))
         script, _ = RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5).run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
-        self.assertTrue(any(isinstance(a, ModeRulesAction) for e in script.events for a in e.actions))
+        self.assertTrue(script.stretches)
+
+    def test_unpredicted_modes(self):
+        """A run compiles the mode rules for the modes it predicts (here the mode at the
+        chip goes on): where the modes differ, no stretch applies, and the script's
+        Uncovered event runs the generator again there."""
+        rs = parse_rules(self.RULES)
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5, use_probability=False),
+                         Chip([(0, 0), (10, 10)]), ModeTimeline(0, "1", [(4, "2"), (5, "1")]))
+        log = sim.run(10)
+        check_log(log, rs)
+        runs = [(r[1], r[2]) for r in log.runs]
+        self.assertEqual(runs[0], (0, "start"))
+        self.assertIn((4, "uncovered"), runs)  # mode 2 where mode 1 was compiled
+        self.assertIn((5, "uncovered"), runs)  # mode 1 again, on a line the run from 4 did not compile
+        self.assertEqual(sim.state.line.presence("D") & Region.of(Interval.closed_open(0, F(15, 2))),
+                         Region.of(IntervalSet.of(Interval.closed_open(0, 4), Interval.closed_open(5, F(15, 2)))))
 
 
 class GuaranteesTest(unittest.TestCase):
@@ -251,7 +304,7 @@ class HyperparameterTest(unittest.TestCase):
         for trig in script.rerun_triggers():
             if isinstance(trig, ChipIn):
                 times.append(chip.first_time(max(trig.lo, c)))
-            else:
+            elif isinstance(trig, TransitionCount):  # (the others answer events: an edit, a line not compiled)
                 later = [p for p, _ in modes.transitions if p > c]
                 if len(later) >= trig.k:
                     times.append(chip.first_time(later[trig.k - 1]))
@@ -389,19 +442,81 @@ class StepByStepTest(unittest.TestCase):
         problem = PresenceRatioProblem({"A": F(1, 4)}, F(6))
         modes = ModeTimeline(0, "1", [(F(3), "2"), (F(7), "1")])
         edit = [Op.put("A", Interval.closed(9, 10))]
+        # the edit at time 41/10 (chip 81/20): not where the scripts ask for a run (every 1/4)
         whole = Simulation(LineState.empty(), RulesGenerator(rs, problem, 0.5), Chip([(0, 0), (4, 4), (12, 8)]), modes,
-                           [UserEdit(F(4), edit)])
+                           [UserEdit(F(41, 10), edit)])
         whole.run(12)
         chip = Chip([(0, 0)])
         steps = Simulation(LineState.empty(), RulesGenerator(rs, problem, 0.5), chip, modes)
         chip.extend(4, 4)
-        steps.advance(4)
+        chip.extend(F(41, 10), F(81, 20))
+        steps.advance(F(41, 10))
         self.assertIsNone(steps.edit_now(edit))
         chip.extend(12, 8)
         steps.advance(12)
         self.assertEqual(steps.state.line, whole.state.line)
         self.assertEqual(steps.state.claims.same(whole.state.claims), True)
         check_log(steps.log, rs)
+
+    def test_background_runs(self):
+        """In the background mode a call to run the generator is only recorded: the
+        script in place goes on, and the run's script replaces it when it completes; the
+        script of an older call does not."""
+        rs = parse_rules(["A → B"])
+        chip = Chip([(0, 0)])
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 4), 0.5), chip, ModeTimeline(0, "1"))
+        sim.background = True
+        sim.start()
+        first = sim.request
+        self.assertIsNotNone(first)
+        self.assertIn("the program starts", sim.script.text())  # the initial script, until the run completes
+        self.assertIsNone(sim.edit_now([Op.put("A", Interval.closed(2, 3))]))
+        self.assertIs(sim.request, first)  # the initial script does not answer edits
+        chip.extend(1, 1)
+        sim.advance(1)
+        script, stats = first.gen.run(first.state, first.chip, first.known)
+        self.assertTrue(sim.complete(first.id, script, stats))
+        self.assertIs(sim.script, script)
+        self.assertEqual([(t, c) for t, c, _, _, _ in sim.log.runs], [(1, 0)])  # completed at time 1, from chip 0
+        self.assertIsNone(sim.request)
+        self.assertIsNone(sim.edit_now([Op.put("A", Interval.closed(5, 6))]))  # its script answers edits
+        second = sim.request
+        self.assertIsNotNone(second)
+        self.assertIsNone(sim.edit_now([Op.put("A", Interval.closed(7, 8))]))
+        third = sim.request
+        self.assertNotEqual(third.id, second.id)  # a newer call: the older run's script is not used
+        script2, stats2 = second.gen.run(second.state, second.chip, second.known)
+        self.assertFalse(sim.complete(second.id, script2, stats2))
+        self.assertIs(sim.script, script)
+
+    def test_late_script_moved(self):
+        """A run computes from chip 0 while the chip goes to 3 (background mode, the line
+        empty meanwhile): its script, put in place at 3, finds the line it compiled from
+        moved by 3, and its stretches apply moved by 3: the break is dragged."""
+        rs = parse_rules(["Future → S or no S", "S → R", "S → B on [0, 2] of p", "S → no R on (0, 6] of p", "mode 1 → no B"])
+        future = Op.put("Future", Interval(0, INF, False, False))
+        chip = Chip([(0, 0)])
+        # horizon 180: the next run is asked for at 135 / 18 = 7.5, after the positions looked at
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 180), 0.5, constraints=[future]),
+                         chip, ModeTimeline(0, "1"))
+        sim.background = True
+        sim.start()
+        req = sim.request
+        chip.extend(3, 3)
+        sim.advance(3)
+        self.assertFalse(sim.state.line.kinds())  # nothing yet: the initial script only asks for a run
+        script, stats = req.gen.run(req.state, req.chip, req.known)
+        self.assertTrue(sim.complete(req.id, script, stats))
+        self.assertEqual(sim._shift, 3)
+        self.assertEqual(sim.state.line.presence("Future"), Region.of(Interval(3, INF, False, False)))
+        chip.extend(7, 7)
+        sim.advance(7)
+        check_log(sim.log, rs)
+        B = sim.state.line.presence("B")
+        self.assertTrue((B & Region.of(Interval.closed_open(3, 7))).is_empty())  # dragged from 3 to 7
+        self.assertTrue(B.contains(8))
+        self.assertFalse(any(r[2] == "uncovered" for r in sim.log.runs))
+        self.assertIsNone(sim.request)
 
     def test_initial_script(self):
         """At the start the script is only an instruction to run the generator once, as

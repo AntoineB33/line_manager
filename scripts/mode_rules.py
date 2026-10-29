@@ -41,9 +41,9 @@ from dataclasses import dataclass
 from fractions import Fraction
 
 from guards import check_mode_edit
-from intervals import EPS, INF, Interval, IntervalSet, Pos
+from intervals import EPS, INF, Interval, IntervalSet, Pos, _fmt
 from line import MODE, LineState, Op
-from region import IncompatiblePeriods, Region
+from region import ZERO, IncompatiblePeriods, Region
 from resolve import Refused, apply_edit
 from rules import RuleSet, _fgcd
 from solver import Conflict, Line, Undetermined, checkpoint, lhs_region, solve
@@ -59,6 +59,51 @@ class Run:
     at: Region
     before: LineState
     after: LineState
+    end: Pos | None = None  # the last position of `at`
+    plan: object = None  # the run compiled ahead that makes it (a stretch), or None (a decision at `start`)
+
+
+@dataclass
+class Stretch:
+    """The mode rules compiled by a generator run: with the chip at a position p of
+    [a, b] in `mode`, the line having been `before` when the chip was at a, the state is
+    `state_at(p)` (a decision at a = b, or a stretch of a compiled run)."""
+    mode: str
+    a: Pos
+    b: Pos
+    before: LineState
+    after: LineState  # at b
+    plan: object = None
+    does: str = ""  # a decision: what it puts at the chip
+
+    def state_at(self, p: Pos) -> LineState:
+        return self.after if self.plan is None or p == self.b else self.plan.state_at(p)
+
+    def text(self) -> str:
+        at = f"at {self.a}" if self.a == self.b else f"in [{self.a}, {self.b}]"
+        head = f"if the chip is {at}, mode is {self.mode} and the line is the one compiled there, then "
+        if self.plan is None:
+            return head + (self.does or "the mode rules' decision there")
+        what = self.plan.text_on(self.a, self.b)
+        return head + f"{self.plan.does()} as it goes" + (f"; {what}" if what else "")
+
+
+def compile_runs(rs: RuleSet, state: LineState, segments) -> tuple[list[Stretch], list[tuple[Pos, str]]]:
+    """The mode rules along the chip's positions [lo, hi] of each (lo, hi, mode) of
+    `segments`, from `state`: the stretches they make, and the operands refused."""
+    out, refused, mrs = [], [], {}
+    for lo, hi, mode in segments:
+        mr = mrs.get(mode) or mrs.setdefault(mode, ModeRules(rs, mode))
+        for ev in mr.act(state, lo, hi):
+            if isinstance(ev, Run):
+                plan = ev.plan.frozen() if ev.plan is not None else None
+                if plan is not None and out and out[-1].plan is None and out[-1].a == plan.m:
+                    out[-1].does = plan.does()  # the decision the run goes on with
+                out.append(Stretch(mode, ev.start, ev.end, ev.before, ev.after, plan))
+                state = ev.after
+            else:
+                refused.append(ev)
+    return out, refused
 
 
 class ModeRules:
@@ -179,7 +224,7 @@ class ModeRules:
                 for w in why:
                     yield x, w
                 if s1 is not state:
-                    yield Run(x, Region.point(x), state, s1)
+                    yield Run(x, Region.point(x), state, s1, x)
                 state = plan.last = s1
                 nxt = x + EPS
                 if nxt > hi:
@@ -189,7 +234,7 @@ class ModeRules:
                 for w in why:
                     yield x, w
                 if s1 is not state:
-                    yield Run(x, Region.point(x), state, s1)
+                    yield Run(x, Region.point(x), state, s1, x)
                 state = s1
                 plan = self.plan = _Plan(self, s1, decision, x)
                 nxt = x + EPS
@@ -207,7 +252,7 @@ class ModeRules:
                 continue
             state2 = plan.state_at(end)
             if state2 is not state:
-                yield Run(nxt, Region.of(_iv(nxt, end)), state, state2)
+                yield Run(nxt, Region.of(_iv(nxt, end)), state, state2, end, plan)
             state = plan.last = state2
             plan.next = end + EPS
             x = end + EPS
@@ -307,6 +352,36 @@ class _Plan:
         self.pieces.append((a, b, line, states))
         self.checked = b
 
+    def frozen(self) -> _Plan:
+        """A copy that keeps its checked stretches (the run goes on without it)."""
+        out = object.__new__(_Plan)
+        out.__dict__.update(self.__dict__)
+        out.pieces = list(self.pieces)
+        return out
+
+    def does(self) -> str:
+        """The decision, as edits at the chip."""
+        ops = [f"{it.options[choice[1]]}" for (r, it), choice in zip(self.mr.items, self.decision) if choice and choice[0] == PUT]
+        return "; ".join(f"put {o} at the chip" for o in ops) or "put nothing"
+
+    def text_on(self, lo: Pos, hi: Pos) -> str:
+        """What moves with the chip on its checked stretches within [lo, hi], written
+        from the chip ("chip" being the last position it went through); the same rule on
+        several stretches is written once, the positions between them being solved one
+        by one."""
+        rows = []  # [what, first position, last position, stretches]
+        for a, b, line, _ in self.pieces:
+            if b < lo or a > hi or line is None or a == b:
+                continue
+            moving = line.text()
+            what = "; ".join(moving) if moving else "the line stays as it is"
+            if rows and rows[-1][0] == what:
+                rows[-1][2], rows[-1][3] = min(b, hi), rows[-1][3] + 1
+            else:
+                rows.append([what, max(a, lo), min(b, hi), 1])
+        return "; ".join(f"with the chip in [{a}, {b}]" + (f" ({n} stretches checked)" if n > 1 else "") + f": {what}"
+                         for what, a, b, n in rows)
+
     def state_at(self, p: Pos) -> LineState:
         """The state with the run on [m + ε, p], p checked."""
         for a, b, line, states in self.pieces:
@@ -350,6 +425,16 @@ class _AffineLine:
 
     def __call__(self, p: Pos) -> Line:
         return Line({k: {v: f(p - self.p1) for v, f in d.items()} for k, d in self.parts.items()})
+
+    def text(self) -> list[str]:
+        """What moves with the chip, written relative to it: "B on [chip, chip + 2]"."""
+        out = []
+        for k in sorted(self.parts):
+            for v in sorted(self.parts[k]):
+                t = _region_text(self.parts[k][v], self.p1)
+                if t:
+                    out.append(f"{k}{'' if v == 100 else f' {v}%'} on {t}")
+        return out
 
 def _affine_region(r1: Region, r2: Region, s):
     """r(d) with r(0) = r1 and r(s) = r2, each end fixed or moving by d, the left part
@@ -448,3 +533,40 @@ def _holds(o, s: LineState, x: Pos) -> bool:
     if o.value is not None:
         return s.line.vals.get(o.kind, {}).get(o.value, Region.empty()).contains(x)
     return s.line.presence(o.kind).contains(x)
+
+
+def _region_text(r: _AffineRegion, chip: Pos) -> str:
+    """The parts of r that move, relative to the chip (at `chip` when d = 0); "" if none.
+    What moves entirely is one region from the chip; an interval with one fixed end is
+    written alone."""
+    whole = [Interval._mk(lo, hi) for lo, lm, hi, hm in r.ends if lm and hm]
+    rel = Region.of(IntervalSet(whole)).shift(-chip) if whole else Region.empty()
+    if r.moves and r.tail:
+        rel = rel | r.tail.shift(-chip)
+    parts = [f"chip + ({rel})"] if rel else []
+    parts += [_iv_text(lo, lm, hi, hm, chip) for lo, lm, hi, hm in r.ends if lm != hm]
+    return " U ".join(parts)
+
+
+def _iv_text(lo, lm, hi, hm, p1) -> str:
+    """An interval whose moving ends are written from the chip."""
+    def end(e, moving, left):
+        if type(e) is not Pos:
+            return ("(" if left else "") + _fmt(e) + ("" if left else ")")
+        open_ = e.k == 1 if left else e.k == -1  # an open end is the next position
+        x = e - EPS if open_ and left else e + EPS if open_ else e
+        t = _rel(x - p1) if moving else _fmt(x)
+        return ("(" if open_ else "[") + t if left else t + (")" if open_ else "]")
+    if lo == hi and not lm and not hm:
+        return f"{{{_fmt(lo)}}}"
+    if lm and hm and lo == hi:
+        return f"{{{_rel(lo - p1)}}}"
+    return f"{end(lo, lm, True)}, {end(hi, hm, False)}"
+
+
+def _rel(off: Pos) -> str:
+    """chip + off."""
+    if off == ZERO:
+        return "chip"
+    t = str(off)
+    return f"chip - {t[1:]}" if t.startswith("-") else f"chip + {t}"

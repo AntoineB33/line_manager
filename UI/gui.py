@@ -5,14 +5,17 @@ moves smoothly at its speed; Pause stops it, Slower and Faster halve and double 
 speed, and the mode buttons change the mode from the chip on. Dashed blue lines show where the generator runs again (its script's rerun
 triggers), blue ticks where it ran. "Generated script" opens the current script in a
 text file: at first only "run the generator once, as soon as possible", which the
-first step does, paused or not. Rules and edits are typed in the command box (type help).
+first step asks for, paused or not. A generator run goes on in a process of its own
+(Session.runs), paused or not, while the chip moves with the script in place; the
+status line says when one is going on. Rules and edits are typed in the command box
+(type help); while the chip is paused, nothing that changes the line, the mode or the
+rules is accepted (the mode buttons are disabled).
 
 The simulation runs in a thread of its own, so the window never waits for it. Each
 step lets as much time run as has passed since the previous one (1/20 s to 1/2 s, in
 twentieths of a second), so the chip keeps its speed while the generator or the mode
 rules compute; the window slides the chip toward where the step being computed takes
-it, and waits there if the step is not done yet. While paused, the mode rules at the
-chip are compiled ahead, so Play does not wait for them. Pause stops
+it, and waits there if the step is not done yet. Pause stops
 a step being computed (solver.STOP): it is undone, and computed again after Play.
 The GIL's switch interval is shortened (`run`) so that the drawing is not starved by
 the simulation's thread.
@@ -31,6 +34,7 @@ import tkinter as tk
 from fractions import Fraction as F
 from tkinter import font as tkfont
 
+from app import EDITS, PAUSED
 from solver import STOP
 
 STEP, MAX_STEP = F(1, 20), F(1, 2)  # the time of a step, in seconds
@@ -113,9 +117,13 @@ class App:
         self.post(change)
 
     def set_mode(self, m: str) -> None:
-        self.post(lambda: self.s.set_mode(m))
+        if self.paused:
+            self.log(PAUSED)
+            return
+        self.post(lambda: PAUSED if self.paused else self.s.set_mode(m))
 
     def _mode_buttons(self, names: list[str], current: str) -> None:
+        """The mode buttons, disabled while the chip is paused (no edit then)."""
         if list(self.mode_buttons) != names:
             for b in self.mode_buttons.values():
                 b.destroy()
@@ -125,7 +133,8 @@ class App:
                 b.pack(side="left")
                 self.mode_buttons[m] = b
         for m, b in self.mode_buttons.items():
-            b.configure(relief="sunken" if m == current else "raised", background="#ffeaa7" if m == current else self.button_color)
+            b.configure(relief="sunken" if m == current else "raised", background="#ffeaa7" if m == current else self.button_color,
+                        state="disabled" if self.paused else "normal")
 
     def zoom(self, factor: F) -> None:
         self.span = min(max(self.span * factor, F(3)), F(768))
@@ -136,14 +145,23 @@ class App:
             return
         self.entry.delete(0, "end")
         self.log(f"> {cmd}")
-        self.post(lambda: self.s.command(cmd))
+        if cmd.split()[0] in EDITS:  # no edit while the chip is paused (checked again when it is made)
+            if self.paused:
+                self.log(PAUSED)
+                return
+            self.post(lambda: PAUSED if self.paused else self.s.command(cmd))
+        else:
+            self.post(lambda: self.s.command(cmd))
 
     def open_script(self) -> None:
         if self.snap is None:
             return
-        path = os.path.join(tempfile.gettempdir(), "line_manager_generated_script.txt")
-        with open(path, "w", encoding="utf-8") as f:
+        # a new file at each click: an editor that has an older one open cannot show it instead
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="line_manager_generated_script_", suffix=".txt",
+                                         delete=False) as f:
             f.write(self.snap["script"])
+            path = f.name
+        self.log(f"generated script written to {path}")
         try:
             if sys.platform.startswith("win"):
                 os.startfile(path)  # noqa: S606 (the user's own text editor)
@@ -162,6 +180,7 @@ class App:
 
     def close(self) -> None:
         self.stopping = True
+        self.s.close()
         self.root.destroy()
 
     # ------------------------------------------------------------ the simulation (its own thread)
@@ -186,6 +205,10 @@ class App:
                     self.out.put(job())
                 except Exception as e:  # shown, and the simulation goes on
                     self.out.put(f"error: {e}")
+            n = len(self.s.sim.log.runs)
+            for msg in self.s.runs():  # start the run asked for, install the completed ones
+                self.out.put(msg)
+            busy |= len(self.s.sim.log.runs) != n
             if not self.s.sim.started:  # the initial script: the generator runs as soon as possible
                 self.heading = None
                 self._publish()
@@ -196,11 +219,6 @@ class App:
             elif self.paused:
                 self.heading = None
                 last = began
-                if not self.s.compiled():  # the mode rules at the chip, compiled ahead of Play
-                    self._publish()
-                    STOP.clear()
-                    self.s.compile()
-                    busy = True
             else:
                 dt = min(max(F(round((began - last) * 20), 20), STEP), MAX_STEP)
                 last = began
@@ -230,7 +248,7 @@ class App:
         self.snap = {"t": s.sim.t, "x": s.position, "mode": s.mode(), "speed": s.speed, "line": s.sim.state.line,
                      "claims": s.sim.state.claims, "kinds": s.kinds(), "reruns": reruns, "other": other,
                      "past": s.past_runs(), "modes": s.known_modes(), "script": s.script_text(),
-                     "mode_names": list(s.mode_names)}
+                     "mode_names": list(s.mode_names), "running": s.running() is not None}
 
     # ------------------------------------------------------------ drawing (the window's thread)
 
@@ -268,7 +286,8 @@ class App:
         self.speed_label.configure(text=f"speed: {_num(sn['speed'])} per second")
         when = [f"chip at {_num(p)}" for p in sn["reruns"]] + sn["other"]
         self.status.configure(text=f"time {float(sn['t']):.2f} s    chip at {float(x):.3f}    mode {sn['mode']}    "
-                                   f"generator runs again: {' or '.join(when) if when else 'not planned'}")
+                                   f"generator runs again: {' or '.join(when) if when else 'not planned'}"
+                                   + ("    (a generator run is going on)" if sn["running"] else ""))
         # the modes: revealed up to the chip, unknown after
         c.create_text(LEFT - 6, TOP + MODE_H / 2, text="modes", anchor="e")
         names = sorted({m for _, _, m in sn["modes"]})

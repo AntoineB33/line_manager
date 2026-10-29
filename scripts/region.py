@@ -92,11 +92,11 @@ class Region:
 
     @staticmethod
     def empty() -> Region:
-        return Region(ZERO, ZERO, IntervalSet())
+        return _EMPTY
 
     @staticmethod
     def universe() -> Region:
-        return Region.of(IntervalSet.universe())
+        return _UNIVERSE
 
     @staticmethod
     def point(x) -> Region:
@@ -116,17 +116,23 @@ class Region:
         parts = [self.core & _window(a, b)]
         if b > self.hi and self.right:
             start = a if a > self.hi else self.hi
-            k = (start - self.hi) // self.pr
-            while self.hi + k * self.pr < b:
-                parts.append(self.right.shift(self.hi + k * self.pr) & _window(a, b))
-                k += 1
+            if _constant(self.right, self.pr):  # all of [hi, inf): one interval, not one per period
+                parts.append(_window(start, b))
+            else:
+                k = (start - self.hi) // self.pr
+                while self.hi + k * self.pr < b:
+                    parts.append(self.right.shift(self.hi + k * self.pr) & _window(a, b))
+                    k += 1
         if a < self.lo and self.left:
             end = b if b < self.lo else self.lo
-            k = (self.lo - end) // self.pl
-            while self.lo - k * self.pl > a:
-                base = self.lo - (k + 1) * self.pl
-                parts.append(self.left.shift(base) & _window(a, b))
-                k += 1
+            if _constant(self.left, self.pl):  # all of (-inf, lo)
+                parts.append(_window(a, end))
+            else:
+                k = (self.lo - end) // self.pl
+                while self.lo - k * self.pl > a:
+                    base = self.lo - (k + 1) * self.pl
+                    parts.append(self.left.shift(base) & _window(a, b))
+                    k += 1
         if len(parts) == 1:
             return parts[0]
         return IntervalSet([iv for p in parts for iv in p.intervals])
@@ -151,6 +157,14 @@ class Region:
 
     # ------------------------------------------------------------ algebra
     def _combine(self, other: Region, op) -> Region:
+        if not (self.left or self.right or other.left or other.right):  # both bounded: the cores only
+            core = op(self.core, other.core)
+            if not core:
+                return _EMPTY
+            r = object.__new__(Region)  # already compact: from the first to the last position of the core
+            r.lo, r.hi, r.core = core.intervals[0].lo, core.intervals[-1].hi + EPS, core
+            r.pl, r.pr, r.left, r.right = ONE, ONE, _NONE, _NONE
+            return r
         lo = self.lo if self.lo <= other.lo else other.lo
         hi = self.hi if self.hi >= other.hi else other.hi
         pl = _period(self.left, self.pl, other.left, other.pl)
@@ -321,6 +335,11 @@ class Region:
 
     __repr__ = __str__
 
+
+
+# regions are never modified once built: these are shared
+_EMPTY = Region(ZERO, ZERO, IntervalSet())
+_UNIVERSE = Region.of(IntervalSet.universe())
 
 def _period(pa: IntervalSet, a: Pos, pb: IntervalSet, b: Pos) -> Pos:
     """A period for combining two tails: a constant tail goes with any period."""

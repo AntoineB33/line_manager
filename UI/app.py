@@ -12,7 +12,10 @@ computed from all of them (resolve.py), so changing the rules recomputes it, and
 "undo" gives the line as if the last edit had never been made. The initial state of
 the line is the user's first edit. The generated script is at first only an
 instruction to run the generator once, as soon as possible: the window's first step
-does it (`Session.begin`), paused or not. As the chip moves, the modes are revealed,
+asks for it (`Session.begin`), paused or not. Each run of the generator goes on in a
+process of its own (scripts/generator_worker.py) while the chip moves with the script
+in place (`Session.runs`): its script replaces that one when it completes, and a newer
+call cancels it (the process is ended). As the chip moves, the modes are revealed,
 the generator runs and its script acts, the mode rules included (simulation.py).
 
 This file is the session the window drives: the definitions, the commands typed in
@@ -21,9 +24,14 @@ the window (`Session.command`), and the chip's motion (`Session.tick`).
 
 from __future__ import annotations
 
+import atexit
 import os
+import pickle
+import queue
 import re
+import subprocess
 import sys
+import threading
 from fractions import Fraction as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
@@ -38,6 +46,8 @@ from rules import RuleError, is_hidden, parse_rules  # noqa: E402
 from script import ChipIn, RerunAction, TransitionCount  # noqa: E402
 from simulation import Chip, Simulation  # noqa: E402
 from solver import Interrupted  # noqa: E402
+
+WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "generator_worker.py")
 
 HELP = """\
 Rules
@@ -66,12 +76,16 @@ Information
   help"""
 
 KIND = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
+# the commands that change the line, the mode or the rules: refused while the chip is paused
+EDITS = {"add", "no", "remove", "undo", "clear", "mode", "rule", "unrule"}
+PAUSED = "the chip is paused: press Play to edit"
 RESERVED = {"no", "at", "on", "everywhere", "mode"}
 
 
 class Session:
-    def __init__(self, rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=0.5) -> None:
+    def __init__(self, rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=0.5, constraints=()) -> None:
         self.texts = list(rules)
+        self.constraints = [op for text in constraints for op in parse_op(f"add {text}")]  # written from the chip
         self.rs = parse_rules(self.texts)
         self.problems = [(p, F(w)) for p, w in problems]
         self.q = q
@@ -94,8 +108,11 @@ class Session:
         self.planned = (initial, list(self.modes.transitions))  # by MODES
         self.changes: dict[F, str] = {}  # by the user: the mode from each position on
         self.sim = Simulation(LineState.empty(), self.generator(self.rs), self.chip, self.modes)
+        self.sim.background = True
+        self._running = None  # (request id, process): the generator run going on
+        atexit.register(self.close)
+        self._done: queue.Queue = queue.Queue()  # (request id, script, stats or the error) of completed runs
         self.edits: list[str] = []  # the user's edits, as typed, oldest first
-        self._failed = None  # (state, chip) where compiling the mode rules failed
         self.seen = (0, 0)  # refusals and generator runs already reported
         ops = [op for text in line for op in parse_op(text)]
         self.initial_refused = self.sim.edit_now(ops) if ops else None  # the generator runs at `begin`
@@ -103,7 +120,7 @@ class Session:
             self.edits.append("; ".join(line))
 
     def generator(self, rs) -> RulesGenerator:
-        return RulesGenerator(rs, self.problems, self.q)
+        return RulesGenerator(rs, self.problems, self.q, constraints=self.constraints)
 
     # ------------------------------------------------------------ the chip
 
@@ -126,6 +143,56 @@ class Session:
             self.sim.restore(snap)
             return False
         return True
+
+    def runs(self) -> list[str]:
+        """Start the generator run the simulation asks for, cancelling the one going on,
+        and install the runs that completed (in the simulation's thread). What to show."""
+        out = []
+        while True:
+            try:
+                rid, script, stats = self._done.get_nowait()
+            except queue.Empty:
+                break
+            if self._running is not None and self._running[0] == rid:
+                self._running = None
+            if isinstance(script, Exception):
+                out.append(f"the generator run failed: {script}")
+            else:
+                self.sim.complete(rid, script, stats)
+        req = self.sim.request
+        if req is not None and (self._running is None or self._running[0] != req.id):
+            self.close()  # a newer run was asked for: the one going on is cancelled
+            flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
+            proc = subprocess.Popen([sys.executable, WORKER], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, creationflags=flags)
+            self._running = (req.id, proc)
+            threading.Thread(target=self._run, args=(req, proc), daemon=True).start()
+        return out
+
+    def _run(self, req, proc: subprocess.Popen) -> None:
+        """Wait for the run's process (in a thread of its own) and hand its result over."""
+        try:
+            out, err = proc.communicate(pickle.dumps((req.gen, req.state, req.chip, req.known)))
+        except (OSError, ValueError):
+            return  # ended meanwhile
+        if proc.returncode == 0:
+            self._done.put((req.id, *pickle.loads(out)))
+        elif self._running is not None and self._running[1] is proc:  # not cancelled: it failed
+            lines = err.decode(errors="replace").strip().splitlines()
+            self._done.put((req.id, RuntimeError(lines[-1] if lines else f"exit code {proc.returncode}"), None))
+
+    def close(self) -> None:
+        """End the generator run going on, if any."""
+        if self._running is not None:
+            proc = self._running[1]
+            self._running = None
+            if proc.poll() is None:
+                proc.kill()
+
+    def running(self) -> str | None:
+        """The generator run going on, as text, or None."""
+        req = self.sim.request
+        return None if req is None else f"a generator run is going on, from chip {req.chip} ({req.why}, asked at time {req.time})"
 
     def tick(self, dt: F) -> bool:
         """Let the time run for dt: the chip moves dt * speed. If solver.STOP is set
@@ -168,26 +235,12 @@ class Session:
         head = [f"Generated script at time {self.sim.t}, chip at {self.position} (mode {self.mode()})."]
         if runs:
             t, c, why, _, stats = runs[-1]
-            head.append(f"Last generator run: at time {t}, chip at {c} ({why}); it chose {stats.chosen}.")
+            head.append(f"Last generator run: from chip {c} ({why}), completed at time {t}; it chose {stats.chosen}.")
         else:
             head.append("The generator has not run yet.")
+        if self.running():
+            head.append(self.running().capitalize() + ": this script stays until it completes.")
         return "\n".join(head) + "\n\n" + (self.sim.script.text() or "(empty script)") + "\n"
-
-    def compiled(self) -> bool:
-        """The mode rules at the chip are compiled ahead (or none act there, or compiling
-        them failed on this line at this position: the chip's step will say why)."""
-        f = self._failed
-        return self.sim.prepared() or (f is not None and f[0] is self.sim.state and f[1] == self.position)
-
-    def compile(self) -> bool:
-        """Compile ahead the mode rules at the chip; False if stopped (solver.STOP)."""
-        try:
-            self.sim.prepare()
-        except Interrupted:
-            return False
-        except Exception:  # the step of the chip meets it again, and says why
-            self._failed = (self.sim.state, self.position)
-        return True
 
     def news(self) -> list[str]:
         """What happened since the last call: generator runs that edit, refusals."""
@@ -296,6 +349,7 @@ class Session:
         out += [f"{p.name}, weight {w}, horizon {p.horizon}: "
                 + ", ".join(f"{k} {v}" for k, v in sorted((getattr(p, 'targets', None) or getattr(p, 'lengths', {})).items()))
                 for p, w in self.problems] or ["no optimization problem"]
+        out.append("constraints (from the chip): " + (", ".join(map(str, self.constraints)) or "none"))
         out.append(f"allocated resources quantity {self.q}, {len(self.sim.log.runs)} generator runs")
         return "\n".join(out)
 
@@ -365,7 +419,7 @@ def number(text: str, infinite: bool = False):
         raise ValueError(f"a number is expected, not {s!r}")
 
 
-def start(rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=0.5) -> None:
+def start(rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=0.5, constraints=()) -> None:
     """Open the window on these definitions.
     rules:    the rules, as text
     modes:    [(position, mode)]: the mode from each position on (the first one at or
@@ -374,11 +428,13 @@ def start(rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=
     speed:    its speed, > 0, in positions per second
     line:     the initial state of the line, as edits ("A on [1, 3)", "A 50% at 2")
     problems: [(problem, weight)]: PresenceRatioProblem, MinimumLengthProblem
-    q:        the allocated resources quantity, in (0, 1)"""
+    q:        the allocated resources quantity, in (0, 1)
+    constraints: what the generated script keeps on the line, as edits written from the
+              chip ("Future on (0, inf)": Future on (chip, inf))"""
     import gui
     try:
         s = Session(rules, modes, chip, speed, [t if t.split()[0] in ("no", "remove") else f"add {t}" for t in line],
-                    problems, q)
+                    problems, q, constraints)
     except (RuleError, ValueError) as e:
         print(f"the definitions are refused: {e}")
         return

@@ -65,9 +65,11 @@ probe, which takes the past to place nothing far after P, is not used. Nothing e
 changes: what the past placed after P follows, through the rules, from what it placed
 within their reach of P, which the remembered situations hold.
 
-Beyond the elements and claims everything is invariant by translation; when the
-choices of the last stretch (as long as the rules reach) repeat, translated, the
-choices repeat forever, possibly with an ε part in the period (1+ε). On the left of
+Beyond the elements and claims everything is invariant by translation, or repeats
+with a period q (an element a cycle repeats); when the choices of the last stretch
+(as long as the rules reach) repeat, translated (by a multiple of q, with no ε part,
+if the data repeats), the choices repeat forever, possibly with an ε part in the
+period (1+ε). On the left of
 an element unbounded on the left there is no first position: `Undetermined`.
 """
 
@@ -78,9 +80,9 @@ from dataclasses import dataclass
 from fractions import Fraction
 
 from intervals import EPS, INF, Interval, IntervalSet, Pos
-from region import ZERO, Region, _constant
+from region import ZERO, Region, _constant, flcm
 from rules import _fgcd
-from solver import EMPTY, Conflict, Undetermined, close, kinds_of, lhs_region, unbound_reach, union
+from solver import EMPTY, Conflict, Undetermined, checkpoint, close, kinds_of, lhs_region, unbound_reach, union
 
 MAX_EVENTS = 3000
 MAX_CALLS = 3000
@@ -175,7 +177,17 @@ class Sweep:
         for it in self.items:
             if not set(it.lhs.kinds()) & kinds_in:
                 self.static_regions.append(lhs_region(it.lhs, self.vals0))
-        self.periodic_ok = all(_flat_tails(reg) for reg in self.static_regions)
+        # the data beyond its ends: constant, or repeating with period q (an element that
+        # repeats, placed by a cycle): a repetition of the choices is then q apart, or a
+        # multiple of q
+        self.periodic_ok = all(_constant(reg.left, reg.pl) for reg in self.static_regions)
+        self.q = None
+        for reg in self.static_regions:
+            if not _constant(reg.right, reg.pr):
+                if reg.pr.k:
+                    self.periodic_ok = False
+                else:
+                    self.q = reg.pr.x if self.q is None else flcm(self.q, reg.pr.x)
         bounds = [abs(b.x) for reg in self.static_regions for b in (reg.lo, reg.hi)]
         self.T = max(bounds, default=Fraction(0)) + 2 * self.R
         self.static_ends = sorted({e for reg in self.static_regions for e in _ends(reg, -self.T - self.R, self.T + self.R) if type(e) is Pos})
@@ -266,11 +278,14 @@ class Sweep:
         seen: dict = {}
         events = 0
         while P is not None:
+            checkpoint()
             events += 1
             if events > MAX_EVENTS:
                 raise Undetermined(f"the choices change more than {MAX_EVENTS} times without repeating")
             if start == 0 and self.periodic_ok and P.x > self.T:
                 sig = self._signature(ch, P)
+                if self.q is not None:
+                    sig = (sig, P.x % self.q, P.k)
                 if sig in seen and (P - seen[sig]).x > 0:
                     return "ok", self._repeat(ch, seen[sig], P)
                 seen[sig] = P
@@ -302,6 +317,7 @@ class Sweep:
         The greedy sweep is tried first: if it never fails, it is the answer. Otherwise
         the positions from P are decided one block at a time (`_unit`), each operand
         being kept only if the rest can be completed (recursively, greedy first)."""
+        checkpoint()
         self.shared["calls"] += 1
         if self.shared["calls"] > self.shared["limit"]:
             raise Undetermined("deciding the choices needs to look ahead further than this solver does "
@@ -748,5 +764,3 @@ class Sweep:
         return out
 
 
-def _flat_tails(reg: Region) -> bool:
-    return _constant(reg.left, reg.pl) and _constant(reg.right, reg.pr)

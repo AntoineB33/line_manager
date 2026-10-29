@@ -283,16 +283,26 @@ class Region:
         return 0
 
     def _compact(self) -> Region:
-        """Shrink the core where it is empty next to an empty tail (keeps sizes small)."""
+        """Shrink the core where it is empty next to an empty tail, and where its ends
+        repeat the tails (keeps sizes small)."""
         lo, hi = self.lo, self.hi
         if not self.right:
             h = _last(self.core, self.lo)
             hi = h if h > lo else lo
+        else:
+            while hi - self.pr >= lo and (self.core & _window(hi - self.pr, hi)).shift(self.pr - hi) == self.right:
+                hi = hi - self.pr
         if not self.left:
             lo = (self.core.inf() if self.core.inf() < hi else hi) if self.core else hi
+        else:
+            while lo + self.pl <= hi and (self.core & _window(lo, lo + self.pl)).shift(-lo) == self.left:
+                lo = lo + self.pl
         if lo == self.lo and hi == self.hi:
             return self
-        return Region(lo, hi, self.core, self.pl, self.left, self.pr, self.right)
+        core = self.core
+        if self.right and hi != self.hi or self.left and lo != self.lo:
+            core = core & _window(lo, hi)  # what is folded into a tail
+        return Region(lo, hi, core, self.pl, self.left, self.pr, self.right)
 
     # ------------------------------------------------------------ show
     def __str__(self) -> str:

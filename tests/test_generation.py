@@ -152,6 +152,51 @@ class ModeRulesTest(unittest.TestCase):
         self.assertFalse(sim.state.line.presence("D").contains(13))
         self.assertTrue(sim.state.line.presence("D").contains(F(1000 * 3 + 1, 2)))  # 0.5 + 3n, far ahead
 
+    def test_compiled_ahead(self):
+        """The chip in mode 1 drags B (S starts it as early as possible). The run compiled
+        ahead is kept from one step to the next; at each step its line is the one solved
+        from its claims, and its stretches move the line with the chip (no solve)."""
+        from intervals import EPS
+        from mode_rules import _iv, _same_line
+        rs = parse_rules(["T → S or no S", "S → R", "S → B on [0, 2] of p", "S → no R on (0, 6] of p", "mode 1 → no B"])
+        state = apply_edit(rs, LineState.empty(), [Op.put("T", Interval(0, INF, True, False))], USER)
+        sim = Simulation(state, RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5), Chip([(0, 0), (20, 20)]),
+                         ModeTimeline(0, "1"))
+        moving = False
+        for i in range(1, 9):
+            sim.advance(F(i, 2))
+            plan = sim.mode_rules["1"].plan
+            solved = plan.mr.with_run(plan.state0, plan.decision, Region.of(_iv(plan.a0, plan.next - EPS)))
+            self.assertTrue(_same_line(sim.state.line, solved.line), i)
+            self.assertEqual(sim.state.line.presence("S") & Region.of(Interval.closed(0, F(i, 2) + 5)),
+                             Region.of(Interval.point(F(i, 2))))
+            moving |= any(line is not None for _, _, line, _ in plan.pieces)
+        self.assertEqual(plan.m, 0)  # one run, decided at the start
+        self.assertTrue(moving)
+
+    def test_stopped_step(self):
+        """STOP set (Pause): the step raises Interrupted, and restore gives back the
+        simulation as it was before it."""
+        import solver
+        rs = parse_rules(["T → S or no S", "S → B on [0, 2] of p", "S → no S on (0, 6] of p", "mode 1 → no B"])
+        state = apply_edit(rs, LineState.empty(), [Op.put("T", Interval(0, INF, True, False))], USER)
+        sim = Simulation(state, RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5), Chip([(0, 0), (20, 20)]),
+                         ModeTimeline(0, "1"))
+        sim.advance(F(1, 2))
+        before, changes = sim.state, len(sim.log.changes)
+        snap = sim.snapshot()
+        solver.STOP.set()
+        try:
+            with self.assertRaises(solver.Interrupted):
+                sim.advance(F(3))
+        finally:
+            solver.STOP.clear()
+        sim.restore(snap)
+        self.assertIs(sim.state, before)
+        self.assertEqual((sim.t, len(sim.log.changes)), (F(1, 2), changes))
+        sim.advance(F(3))
+        self.assertEqual(sim.state.line.presence("S") & Region.of(Interval.closed(0, 8)), Region.of(Interval.point(3)))
+
     def test_only_at_the_chip_point(self):
         """The generated X on [2, 3] is in D's way: as the chip goes through it, X goes at
         each position the chip reaches, and only there, so D can be chosen everywhere."""
@@ -357,6 +402,21 @@ class StepByStepTest(unittest.TestCase):
         self.assertEqual(steps.state.line, whole.state.line)
         self.assertEqual(steps.state.claims.same(whole.state.claims), True)
         check_log(steps.log, rs)
+
+    def test_initial_script(self):
+        """At the start the script is only an instruction to run the generator once, as
+        soon as possible: it runs at the first instant, after the user's edits of it."""
+        rs = parse_rules(["A → B"])
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 4), 0.5), Chip([(0, 0)]),
+                         ModeTimeline(0, "1"))
+        self.assertEqual(sim.script.text(), "if the program starts, then run the generator once, as soon as possible.")
+        self.assertIsNone(sim.edit_now([Op.put("A", Interval.closed(2, 3))]))
+        self.assertEqual(sim.log.runs, [])
+        sim.start()
+        self.assertEqual([(t, why) for t, _, why, _, _ in sim.log.runs], [(0, "start")])
+        self.assertNotIn("the program starts", sim.script.text())
+        sim.advance(3)
+        self.assertEqual(len(sim.log.runs), 1)
 
     def test_undo_and_rules(self):
         rs = parse_rules(["A → B"])

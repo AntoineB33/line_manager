@@ -242,6 +242,11 @@ simply takes its first valid operand (`test_unbounded_on_the_left`).
     only reads positions within the reach of the rules. By induction each next layer
     is placed by the steps. The limit is also checked to be closed.
     `A → A 1/1000 unit on the right` from A on [0, 1] gives [0, +∞) at once.
+  - **Long but bounded.** When what is read looks the same translated by t only up
+    to some position (`NoScreen & Long → Long on [0, 1] of p` through NoScreen on
+    [0, 3000]), the same induction holds for the layers whose reads stay before it:
+    the steps jump to the state that many layers later, and go on from there
+    (`test_long_but_bounded`).
   - **Rounds without end.** A "not" read one position before what it places (B at
     x + 1 where A is and B is not at x) decides one more position per round. When the
     rounds add to the underestimate, and take from the overestimate, layers that move
@@ -298,9 +303,12 @@ simply takes its first valid operand (`test_unbounded_on_the_left`).
     end crosses a fixed one, so the sweep looks only at those positions, e − d + jε
     (and checks a position between two of them, refusing the edit if the check
     fails);
-  - beyond the claims everything is invariant by translation. When the choices of
-    the last stretch as long as the rules reach repeat, translated, they repeat
-    forever, possibly with an ε part in the period.
+  - beyond the claims everything is invariant by translation, or repeats with a
+    period q (an element a cycle repeats: `Sleep → Sleep 1440 units on the right`).
+    When the choices of the last stretch as long as the rules reach repeat,
+    translated (by a multiple of q, with no ε part, if the data repeats), they
+    repeat forever, possibly with an ε part in the period
+    (`test_choices_over_a_repeating_element`).
 
   This greedy sweep is the definition above whenever it never meets a position
   where no operand can be chosen. Each operand it took can be placed, and the
@@ -582,6 +590,22 @@ out at the chip (`ModeRulesAction`).
     them. A check that fails between them refuses the rest of the chip's
     stretch, rather than guessing. A run is logged as one continuous change:
     each of its positions changes when the chip is there.
+  - **Compiled ahead.** A run is kept from one step of the chip to the next while
+    the line is the one it made (`mode_rules._Plan`): its positions are those of
+    the state where it was decided, and each stretch between two of them is
+    checked once, to its end, when the chip enters it. On a stretch the line's
+    ends are fixed or move with the chip (above): the first and middle checks
+    give which ones move, and the last check must be exactly that line, else the
+    steps there solve as before. A step inside a checked stretch only moves those
+    ends: a break that the chip drags in mode 1 costs nothing per step, only the
+    checks where the decision can change (`test_compiled_ahead`). The run at the
+    chip can be compiled before the chip moves (`Simulation.prepare`; the window
+    does it while paused): its decision at the chip's position happens only when
+    the chip goes through it. A compiled run is how the line is computed; it is not
+    part of the generated script.
+  - **Stopped.** A step of the simulation can be stopped from another thread
+    (`solver.STOP`, Pause in the window): the long loops raise `Interrupted`, and
+    the step is undone (`Simulation.snapshot`, `restore`).
   - `ModeRulesTest` checks:
     - nothing changes beyond the chip;
     - the user's elements are kept;

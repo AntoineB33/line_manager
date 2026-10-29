@@ -4,13 +4,18 @@ The line around the chip, one row per kind, with the revealed modes above it. Th
 moves smoothly at its speed; Pause stops it, Slower and Faster halve and double its
 speed, and the mode buttons change the mode from the chip on. Dashed blue lines show where the generator runs again (its script's rerun
 triggers), blue ticks where it ran. "Generated script" opens the current script in a
-text file. Rules and edits are typed in the command box (type help).
+text file: at first only "run the generator once, as soon as possible", which the
+first step does, paused or not. Rules and edits are typed in the command box (type help).
 
 The simulation runs in a thread of its own, so the window never waits for it. Each
 step lets as much time run as has passed since the previous one (1/20 s to 1/2 s, in
 twentieths of a second), so the chip keeps its speed while the generator or the mode
 rules compute; the window slides the chip toward where the step being computed takes
-it, and waits there if the step is not done yet.
+it, and waits there if the step is not done yet. While paused, the mode rules at the
+chip are compiled ahead, so Play does not wait for them. Pause stops
+a step being computed (solver.STOP): it is undone, and computed again after Play.
+The GIL's switch interval is shortened (`run`) so that the drawing is not starved by
+the simulation's thread.
 """
 
 from __future__ import annotations
@@ -25,6 +30,8 @@ import time
 import tkinter as tk
 from fractions import Fraction as F
 from tkinter import font as tkfont
+
+from solver import STOP
 
 STEP, MAX_STEP = F(1, 20), F(1, 2)  # the time of a step, in seconds
 COLORS = ["#2e86de", "#10ac84", "#ee5253", "#ff9f43", "#5f27cd", "#01a3a4", "#c44569", "#8395a7", "#576574", "#b33939"]
@@ -95,6 +102,9 @@ class App:
 
     def toggle(self) -> None:
         self.paused = not self.paused
+        if self.paused:
+            STOP.set()  # the step being computed stops, and is undone
+            self.heading = None
         self.play.configure(text="▶ Play" if self.paused else "❚❚ Pause")
 
     def speed(self, factor: F) -> None:
@@ -171,20 +181,38 @@ class App:
                 except queue.Empty:
                     break
                 busy = True
+                STOP.clear()  # a command is not stopped by Pause
                 try:
                     self.out.put(job())
                 except Exception as e:  # shown, and the simulation goes on
                     self.out.put(f"error: {e}")
-            if self.paused:
+            if not self.s.sim.started:  # the initial script: the generator runs as soon as possible
+                self.heading = None
+                self._publish()
+                STOP.clear()
+                self.s.begin()
+                busy = True
+                last = time.monotonic()
+            elif self.paused:
                 self.heading = None
                 last = began
+                if not self.s.compiled():  # the mode rules at the chip, compiled ahead of Play
+                    self._publish()
+                    STOP.clear()
+                    self.s.compile()
+                    busy = True
             else:
                 dt = min(max(F(round((began - last) * 20), 20), STEP), MAX_STEP)
                 last = began
                 x0 = self.s.position
                 self.heading = (began, x0, x0 + self.s.speed * dt, float(dt))
+                STOP.clear()
                 try:
-                    self.s.tick(dt)
+                    if self.paused:  # paused meanwhile
+                        self.heading = None
+                    elif not self.s.tick(dt):
+                        self.heading = None
+                        self.out.put("paused: the step being computed is undone")
                     busy = True
                 except Exception as e:
                     self.paused, self.heading = True, None
@@ -339,6 +367,9 @@ def _num(x) -> str:
 
 
 def run(session) -> None:
+    # Each Tk call releases the GIL and waits up to the switch interval to get it back
+    # from the simulation's thread: a few hundred per drawing took ~1 s at the 5 ms default.
+    sys.setswitchinterval(0.0005)
     root = tk.Tk()
     App(root, session)
     root.mainloop()

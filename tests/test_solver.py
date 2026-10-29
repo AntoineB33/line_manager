@@ -687,6 +687,24 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(line.presence("A") & Region.of(Interval.closed(-20, 20)),
                          Region.of(IntervalSet(Interval.point(n) for n in range(-20, 1))))
 
+    def test_long_but_bounded(self):
+        """Long goes through NoScreen 1 unit per step: on [0, 1000] the steps jump to near
+        its end (what is read repeats, translated, only up to there), then go on. A later
+        run of NoScreen, 10 units long, only gets the seed 15 units after its start."""
+        rules = ["NoScreen → Long at 15 of l", "NoScreen & Long → Long on [0, 1] of p"]
+        line = self.line(rules, [("NoScreen", IntervalSet([Interval.closed(0, 1000), Interval.closed(1100, 1110)]))])
+        self.assertEqual(line.presence("Long"), Region.of(IntervalSet([Interval.closed(15, 1001), Interval.point(1115)])))
+
+    def test_choices_over_a_repeating_element(self):
+        """S on [10, 20), repeated every 20 units by a cycle, forbids the starts; a start
+        forbids the next 6 units. The choices repeat with the days: 20k and 20k + 6 + ε."""
+        rules = ["S → S 20 units on the right", "S → no Ready", "X → Start or no Start", "Start → Ready",
+                 "Start → no Ready on (0, 6] of p"]
+        line = self.line(rules, [("S", Interval(10, 20, True, False)), ("X", Interval(0, INF, True, False))])
+        days = IntervalSet(Interval.point(p) for k in range(100) for p in (Pos(20 * k), Pos(20 * k + 6, 1)))
+        self.assertEqual(line.presence("Start") & Region.of(Interval(0, 2000, True, False)), Region.of(days))
+        self.assertTrue(line.presence("Start").contains(Pos(20 * 10 ** 6 + 6, 1)))
+
     def test_stops_where_the_rules_stop(self):
         line = self.line(["A & X → A 1 unit on the right"], [("A", Interval.point(0)), ("X", Interval.closed(0, 10))])
         self.assertEqual(line.presence("A"), Region.of(IntervalSet(Interval.point(n) for n in range(0, 12))))

@@ -10,8 +10,10 @@ opens the window (gui.py).
 Everything is exact (fractions). The user's edits are kept, in order: the line is
 computed from all of them (resolve.py), so changing the rules recomputes it, and
 "undo" gives the line as if the last edit had never been made. The initial state of
-the line is the user's first edit. As the chip moves, the modes are revealed, the
-generator runs and its script acts, the mode rules included (simulation.py).
+the line is the user's first edit. The generated script is at first only an
+instruction to run the generator once, as soon as possible: the window's first step
+does it (`Session.begin`), paused or not. As the chip moves, the modes are revealed,
+the generator runs and its script acts, the mode rules included (simulation.py).
 
 This file is the session the window drives: the definitions, the commands typed in
 the window (`Session.command`), and the chip's motion (`Session.tick`).
@@ -35,6 +37,7 @@ from region import Region  # noqa: E402
 from rules import RuleError, is_hidden, parse_rules  # noqa: E402
 from script import ChipIn, RerunAction, TransitionCount  # noqa: E402
 from simulation import Chip, Simulation  # noqa: E402
+from solver import Interrupted  # noqa: E402
 
 HELP = """\
 Rules
@@ -92,9 +95,10 @@ class Session:
         self.changes: dict[F, str] = {}  # by the user: the mode from each position on
         self.sim = Simulation(LineState.empty(), self.generator(self.rs), self.chip, self.modes)
         self.edits: list[str] = []  # the user's edits, as typed, oldest first
+        self._failed = None  # (state, chip) where compiling the mode rules failed
         self.seen = (0, 0)  # refusals and generator runs already reported
         ops = [op for text in line for op in parse_op(text)]
-        self.initial_refused = self.sim.edit_now(ops) if ops else self.sim.start([])
+        self.initial_refused = self.sim.edit_now(ops) if ops else None  # the generator runs at `begin`
         if ops and not self.initial_refused:
             self.edits.append("; ".join(line))
 
@@ -110,11 +114,31 @@ class Session:
     def mode(self) -> str:
         return self.modes.mode_at(self.position)
 
-    def tick(self, dt: F) -> None:
-        """Let the time run for dt: the chip moves dt * speed."""
+    def begin(self) -> bool:
+        """The program starts: the initial script runs the generator. If solver.STOP is
+        set meanwhile (Pause), it is undone and False is returned."""
+        if self.sim.started:
+            return True
+        snap = self.sim.snapshot()
+        try:
+            self.sim.start()
+        except Interrupted:
+            self.sim.restore(snap)
+            return False
+        return True
+
+    def tick(self, dt: F) -> bool:
+        """Let the time run for dt: the chip moves dt * speed. If solver.STOP is set
+        meanwhile (Pause), the step is undone and False is returned."""
+        snap = self.sim.snapshot()
         t0 = self.sim.t
         self.chip.extend(t0 + dt, self.position + self.speed * dt)
-        self.sim.advance(t0 + dt)
+        try:
+            self.sim.advance(t0 + dt)
+        except Interrupted:
+            self.sim.restore(snap)
+            return False
+        return True
 
     def reruns(self) -> tuple[list[F], list[str]]:
         """When the generator runs again: the positions the chip will reach, and the
@@ -145,7 +169,25 @@ class Session:
         if runs:
             t, c, why, _, stats = runs[-1]
             head.append(f"Last generator run: at time {t}, chip at {c} ({why}); it chose {stats.chosen}.")
+        else:
+            head.append("The generator has not run yet.")
         return "\n".join(head) + "\n\n" + (self.sim.script.text() or "(empty script)") + "\n"
+
+    def compiled(self) -> bool:
+        """The mode rules at the chip are compiled ahead (or none act there, or compiling
+        them failed on this line at this position: the chip's step will say why)."""
+        f = self._failed
+        return self.sim.prepared() or (f is not None and f[0] is self.sim.state and f[1] == self.position)
+
+    def compile(self) -> bool:
+        """Compile ahead the mode rules at the chip; False if stopped (solver.STOP)."""
+        try:
+            self.sim.prepare()
+        except Interrupted:
+            return False
+        except Exception:  # the step of the chip meets it again, and says why
+            self._failed = (self.sim.state, self.position)
+        return True
 
     def news(self) -> list[str]:
         """What happened since the last call: generator runs that edit, refusals."""

@@ -46,6 +46,7 @@ from __future__ import annotations
 import itertools
 import math
 import sys
+import threading
 from dataclasses import dataclass, field
 from fractions import Fraction
 
@@ -63,6 +64,19 @@ class Conflict(Exception):
 class Undetermined(Exception):
     """The rules do not decide the "or" choices here (no first position), or deciding
     them would take the sweep's search longer than it is allowed."""
+
+
+class Interrupted(Exception):
+    """The computation was stopped from outside (STOP, set by another thread)."""
+
+
+STOP = threading.Event()
+
+
+def checkpoint() -> None:
+    """Raise Interrupted if STOP is set: called in the long loops."""
+    if STOP.is_set():
+        raise Interrupted("stopped")
 
 
 EMPTY = Region.empty()
@@ -410,6 +424,7 @@ class _Group:
         translation repeated (`_jump`)."""
         hist = [self.empty()]
         for _ in range(MAX_STEPS):
+            checkpoint()
             a = self.step(hist[-1], b)
             if _same(a, hist[-1]):
                 return a
@@ -417,6 +432,9 @@ class _Group:
             for lag in range(1, MAX_LAG + 1):
                 if len(hist) > 2 * lag:
                     lim = self._jump(hist[-1 - 2 * lag], hist[-1 - lag], a, b, lag)
+                    if isinstance(lim, _Ahead):
+                        hist = [lim.state]  # a later step: the steps go on from there
+                        break
                     if lim is _NO:
                         break  # the shortest lag that shows a translation is the one to follow
                     if lim is not None:
@@ -436,7 +454,11 @@ class _Group:
         the steps (each position from positions within reach, which look the same). The
         candidate is also checked to be closed (a step adds nothing): it is the least
         fixpoint. Returns it, None if the layers do not move by a translation, or _NO if
-        they do but are not proven to go on."""
+        they do but are not proven to go on.
+        When what is read looks the same translated only up to some position (a long
+        but bounded stretch), the same induction holds for the layers whose reads stay
+        before it: returns _Ahead, the state that many layers later, and the steps go on
+        from there."""
         keys = self._keys(a1, a2)
         get = _get
         d1 = {key: get(a1, key) - get(a0, key) for key in keys}
@@ -459,6 +481,7 @@ class _Group:
         # what turns a layer into a view: the claims and b
         into = [r for K in self.block for r in list(self.claims[K].values()) + [b[K][0]] + list(b[K][1].values())]
         lim = {K: (a2[K][0], dict(a2[K][1])) for K in self.block}
+        layers, n = [], None  # n: how many more layers are proven, None: all
         for cut, t in sides:
             layer = {k: _part(d2[k], cut, t) for k in keys}
             u = union(layer.values())
@@ -471,14 +494,30 @@ class _Group:
                 edge = u.sup()
                 half = lambda z: Region.of(Interval(-INF, z, False, True))
             y = edge - reach if t.x > 0 else edge + reach
-            moved = lambda r, z: (r & half(z)) == (r & half(z - t)).shift(t)
             try:
-                if not all((r2 & half(y)) == (r1 & half(y - t)).shift(t) for r1, r2 in zip(seen(a1), seen(a2))):
-                    return None
-                if not all(moved(r, y) for r in read) or not all(moved(r, edge) for r in into):
-                    return None
+                # the first position from which what is read no longer looks the same
+                # translated by t (None: nowhere)
+                ends = [_differs(r2, r1, y, t) for r1, r2 in zip(seen(a1), seen(a2))]
+                ends += [_differs(r, r, y, t) for r in read] + [_differs(r, r, edge, t) for r in into]
             except IncompatiblePeriods:
                 return None
+            ends = [e for e in ends if e is not None]
+            if ends:
+                # layer j + 1 reads up to its far end + reach: before the first difference
+                far = (u.sup() if t.x > 0 else u.inf()).x
+                room = min(abs(e.x - far) for e in ends) if all((e.x - far) * t.x > 0 for e in ends) else 0
+                k = int((room - reach) // abs(t.x)) - 1
+                if k < 2:
+                    return None
+                n = k if n is None else min(n, k)
+            layers.append((layer, t))
+        if n is not None:
+            for layer, t in layers:
+                for k in keys:
+                    if layer[k]:
+                        _put(lim, k, _get(lim, k) | union(layer[k].shift(t * j) for j in range(1, n + 1)))
+            return _Ahead(lim)
+        for layer, t in layers:
             for k in keys:
                 if layer[k]:
                     r = _ray(layer[k], t)
@@ -496,6 +535,26 @@ class _Group:
 
 
 _NO = object()  # a translation is seen, but not proven to go on
+
+
+@dataclass
+class _Ahead:
+    """A later state of the steps, proven by a translation over a bounded stretch."""
+    state: dict
+
+
+def _differs(new: Region, old: Region, y, t):
+    """The first position from y on (t > 0; the last one from y down, t < 0) where new
+    is not old translated by t, or None if there is none."""
+    if t.x > 0:
+        half = lambda z: Region.of(Interval(z, INF, True, False))
+    else:
+        half = lambda z: Region.of(Interval(-INF, z, False, True))
+    a, b = new & half(y), (old & half(y - t)).shift(t)
+    d = (a - b) | (b - a)
+    if not d:
+        return None
+    return d.inf() if t.x > 0 else d.sup()
 
 
 def _get(a: dict, key) -> Region:

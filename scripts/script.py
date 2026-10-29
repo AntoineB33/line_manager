@@ -1,6 +1,10 @@
 """Generated scripts: events that trigger edits of the line or a new generator run.
 
+At the start of the program the script is only an instruction to run the rules
+generator once, as soon as possible (`Script.initial`).
+
 Triggers
+- Start(): true from the start of the program; it fires once, at the first instant.
 - ChipIn(lo, hi, mode): true while the chip is in [lo, hi) and (if mode is not
   None) the mode at the chip is `mode`. Its actions fire at each instant it
   becomes true (at installation if it is already true).
@@ -24,6 +28,12 @@ from fractions import Fraction
 
 from intervals import INF, Num, _fmt
 from line import Op
+
+
+@dataclass(frozen=True)
+class Start:
+    def __str__(self) -> str:
+        return "the program starts"
 
 
 @dataclass(frozen=True)
@@ -58,8 +68,10 @@ class EditAction:
 
 @dataclass(frozen=True)
 class RerunAction:
+    first: bool = False  # the initial script's run
+
     def __str__(self) -> str:
-        return "run the generator again"
+        return "run the generator once, as soon as possible" if self.first else "run the generator again"
 
 
 @dataclass(frozen=True)
@@ -70,7 +82,7 @@ class ModeRulesAction:
 
 @dataclass(frozen=True)
 class Event:
-    trigger: ChipIn | TransitionCount
+    trigger: Start | ChipIn | TransitionCount
     actions: tuple
 
     def __str__(self) -> str:
@@ -81,10 +93,15 @@ class Event:
 class Script:
     events: list[Event] = field(default_factory=list)
 
+    @staticmethod
+    def initial() -> Script:
+        """The script at the start of the program: run the generator once, as soon as possible."""
+        return Script([Event(Start(), (RerunAction(first=True),))])
+
     def text(self) -> str:
         return "\n".join(map(str, self.events))
 
-    def rerun_triggers(self) -> list[ChipIn | TransitionCount]:
+    def rerun_triggers(self) -> list[Start | ChipIn | TransitionCount]:
         return [e.trigger for e in self.events if any(isinstance(a, RerunAction) for a in e.actions)]
 
     def applies_mode_rules(self, chip: Fraction, mode: str) -> bool:

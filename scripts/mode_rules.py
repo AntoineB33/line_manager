@@ -42,7 +42,7 @@ from fractions import Fraction
 
 from guards import check_mode_edit
 from intervals import EPS, INF, Interval, IntervalSet, Pos, _fmt
-from line import MODE, LineState, Op
+from line import GEN, MODE, LineState, Op
 from region import ZERO, IncompatiblePeriods, Region
 from resolve import Refused, apply_edit
 from rules import RuleSet, _fgcd
@@ -88,12 +88,13 @@ class Stretch:
         return head + f"{self.plan.does()} as it goes" + (f"; {what}" if what else "")
 
 
-def compile_runs(rs: RuleSet, state: LineState, segments) -> tuple[list[Stretch], list[tuple[Pos, str]]]:
+def compile_runs(rs: RuleSet, state: LineState, segments, constraints=()) -> tuple[list[Stretch], list[tuple[Pos, str]]]:
     """The mode rules along the chip's positions [lo, hi] of each (lo, hi, mode) of
-    `segments`, from `state`: the stretches they make, and the operands refused."""
+    `segments`, from `state`, the constraints kept after the chip: the stretches they
+    make, and the operands refused."""
     out, refused, mrs = [], [], {}
     for lo, hi, mode in segments:
-        mr = mrs.get(mode) or mrs.setdefault(mode, ModeRules(rs, mode))
+        mr = mrs.get(mode) or mrs.setdefault(mode, ModeRules(rs, mode, constraints))
         for ev in mr.act(state, lo, hi):
             if isinstance(ev, Run):
                 plan = ev.plan.frozen() if ev.plan is not None else None
@@ -107,8 +108,9 @@ def compile_runs(rs: RuleSet, state: LineState, segments) -> tuple[list[Stretch]
 
 
 class ModeRules:
-    def __init__(self, rs: RuleSet, mode: str) -> None:
+    def __init__(self, rs: RuleSet, mode: str, constraints=()) -> None:
         self.rs = rs
+        self.constraints = tuple(constraints)  # kept after the chip (constraints.py): `constrain`
         self.rules = [r for r in rs.mode_rules if r.mode == mode]
         self.items = [(r, it) for r in self.rules for it in r.rhs]
         dists = [abs(e.x) for r in rs.element for o in r.lits() for e in (o.where.lo, o.where.hi) if type(e) is Pos]
@@ -152,14 +154,44 @@ class ModeRules:
                     s, choice = after, (PUT, oi, _gone(s, after, x, o.kind))
                     break
                 out.append(choice)
-        return tuple(out), s, why
+        return tuple(out), self._constrained(s, x), why
 
     def with_run(self, state: LineState, decision: tuple, at: Region) -> LineState:
         """The state with the decision's edits on `at`: the operands placed, and the older
         claims the edit removed at its position (M1: at that position only) removed on
         `at` too."""
         c = self.run_claims(state, decision, at)
-        return state if c is None else LineState(c, solve(self.rs, c.problem()), state.history)
+        if c is None:
+            return state
+        return self._constrained(LineState(c, solve(self.rs, c.problem()), state.history), at.bounded().sup())
+
+    def constrain(self, claims, line: Line, p: Pos, history=()):
+        """The claims with the constraints' elements after p where they want them, as the
+        generator's (GEN; its script keeps them as the chip goes): with the chip at p in
+        mode 1, the break it would eat moves on after it."""
+        if not self.constraints:
+            return claims
+        st, c = LineState(claims, line, history), claims.copy()
+        later = Region.of(Interval(p, INF, False, False))
+        for k in self.constraints:
+            for kind, want in k.targets(st, p).items():
+                d = c.pos.setdefault(kind, {})
+                for key in list(d):
+                    if key[1] == GEN:
+                        d[key] = d[key] - later
+                        if not d[key]:
+                            del d[key]
+                if want:
+                    key = (Fraction(100), GEN)
+                    d[key] = d[key] | want if key in d else want
+        return c
+
+    def _constrained(self, state: LineState, p: Pos) -> LineState:
+        """The state with the constraints kept after p (`constrain`), solved."""
+        if not self.constraints:
+            return state
+        c = self.constrain(state.claims, state.line, p, state.history)
+        return state if c.same(state.claims) is True else LineState(c, solve(self.rs, c.problem()), state.history)
 
     def run_claims(self, state: LineState, decision: tuple, at: Region):
         """The claims of `with_run`, or None if the decision places nothing."""
@@ -391,7 +423,10 @@ class _Plan:
                 if line is not None:
                     try:
                         c = self.mr.run_claims(self.state0, self.decision, Region.of(_iv(self.a0, p)))
-                        return self.state0 if c is None else LineState(c, line(p), self.state0.history)
+                        if c is None:
+                            return self.state0
+                        lp = line(p)
+                        return LineState(self.mr.constrain(c, lp, p, self.state0.history), lp, self.state0.history)
                     except _NotAffine:
                         pass
                 break

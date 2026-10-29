@@ -1229,7 +1229,19 @@ def solve(rs: RuleSet, prob: Problem) -> Line:
         if k in kinds_in:
             plain, exact = fixed.get(k, (EMPTY, {}))
             regions[k] = {"claims": prob.pos.get(k, {}), "fixed": plain, "exact": exact, "forbidden": forbid.get(k, EMPTY)}
+    if any(_repeats(reg) for d in regions.values() for v in d.values() for reg in (v.values() if isinstance(v, dict) else [v])):
+        # the lattice takes the data as constant beyond its window: data that repeats there
+        # (e.g. breaks every 135 units, claimed) goes to the sweep, which follows it
+        from sweep import Sweep
+        vals.update(Sweep(rs, prob, vals, fixed, forbid, kinds_in).solve())
+        return Line(vals)
     lp = LatticeProblem(kinds + sorted(n for n in regions if n.startswith("#")), kinds_in, regions, lrules,
                         cyclic=bool(kinds_in & rs.cyclic))
     vals.update(lp.solve())
     return Line(vals)
+
+
+def _repeats(reg: Region) -> bool:
+    """The region has a part beyond its ends that repeats without being constant."""
+    full = lambda pat, period: pat == IntervalSet.of(Interval(ZERO, period, True, False))
+    return bool(reg) and ((reg.right and not full(reg.right, reg.pr)) or (reg.left and not full(reg.left, reg.pl)))

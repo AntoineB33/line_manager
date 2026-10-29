@@ -4,12 +4,11 @@ A run takes the state of the line, the chip's position c and the revealed modes,
 returns a script. It is given optimization problems, each with a weight (problems.py),
 and plans the window W = (c, c + H], H the longest horizon of its problems.
 
-0. Constraints (`constraints`, edits written from the chip, e.g. `Future on (0, inf)`):
-   the script keeps them. A run puts them with the chip at c (unless the line already
-   has them), and every candidate edit comes on top of that; the script makes the
-   same edit, from the chip where it fires (script.ChipEditAction). The element
-   rules then do the rest: with `Future → Start15 or no Start15`, the breaks go
-   everywhere in the future.
+0. Constraints (`constraints`, constraints.py): each gives the edits that make it hold
+   after the chip at c, on the line as it is (e.g. FifteenMinuteBreaks: the 15-minute
+   breaks, where OmniApp's rules put them). A run makes them first, and every
+   candidate edit comes on top of them; the script makes them where it is put in
+   place (script.ConstraintEditAction).
 1. It builds candidate edits in a fixed order that does not depend on the
    hyperparameter q: the no-op first, then for each (prediction, placement) the
    edits all the problems propose together, then (with several problems) each
@@ -62,7 +61,7 @@ from problems import MinimumLengthProblem, PresenceRatioProblem  # noqa: F401 (t
 from region import Region
 from resolve import Refused, apply_edit
 from rules import RuleSet
-from script import ChipEditAction, ChipIn, EditAction, Event, RerunAction, Script, TransitionCount, Uncovered, Edited
+from script import ConstraintEditAction, ChipIn, EditAction, Event, RerunAction, Script, TransitionCount, Uncovered, Edited
 from solver import lhs_region
 
 PREDICTIONS = ("scenario", "uniform", "none")
@@ -98,8 +97,8 @@ class RulesGenerator:
     MAX_SCENARIOS = 8
 
     def __init__(self, rules: RuleSet, problems, q: float, use_probability: bool = True, constraints=()) -> None:
-        """problems: a problem, or [(problem, weight)] with weights >= 0; constraints: Ops
-        whose regions are written from the chip."""
+        """problems: a problem, or [(problem, weight)] with weights >= 0; constraints:
+        constraints.py's (anything with `ops(state, chip)`)."""
         if not 0 < q < 1:
             raise ValueError("the allocated resources quantity must be in (0, 1)")
         self.rules = rules
@@ -117,10 +116,11 @@ class RulesGenerator:
         ctx = _Context(self, state, c, known)
         stats = RunStats(budget=budget(self.q), probability_rules=ctx.probability_rules)
         base, keep = state, None
-        if self.constraints and not _has(state, ChipEditAction(self.constraints).at(c)):
-            keep = ChipEditAction(self.constraints)
+        ops = [o for k in self.constraints for o in k.ops(state, c)]
+        if ops:
+            keep = ConstraintEditAction(tuple(ops), c)
             try:
-                base = apply_edit(self.rules, state, keep.at(c), GEN)
+                base = apply_edit(self.rules, state, ops, GEN)
                 why = check_script_edit(state, base, c)
             except Refused as e:
                 why = str(e)
@@ -155,7 +155,7 @@ class RulesGenerator:
         D = rerun_distance(self.q, H)
         if self.rules.mode_rules:
             covered = self.predicted(ctx, c + D / 6)
-            stretches, stats.refused = compile_runs(self.rules, best_after, covered)
+            stretches, stats.refused = compile_runs(self.rules, best_after, covered, self.constraints)
         if best_ops:
             events.append(Event(ChipIn(c, c + H), (EditAction(tuple(best_ops)),)))
         if not self._futile(state, best_ops):
@@ -179,14 +179,6 @@ class RulesGenerator:
             return True
         empty = not state.claims.kinds() and not state.line.kinds()
         return empty and not self.rules.mode_rules and not ops
-
-
-def _has(state: LineState, ops) -> bool:
-    """The line already has what these edits put (elements at 100% only: else False)."""
-    for o in ops:
-        if o.action != "put" or o.value != 100 or not (o.region - state.line.presence(o.kind)).is_empty():
-            return False
-    return True
 
 
 class _Context:

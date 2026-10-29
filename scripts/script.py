@@ -19,9 +19,11 @@ Actions
 - EditAction(ops): an edit of the line on exact intervals (continuous: any interval
   of the real line, not a grid), resolved by the fixed rules of resolve.py and applied
   only if it respects N1 and N2 (guards.py).
-- ChipEditAction(ops): an edit whose regions are written from the chip: at the instant
-  it fires, each region is shifted by the chip's position (`Future on (0, inf)` puts
-  Future on (chip, inf)); then as EditAction.
+- ConstraintEditAction(ops, origin): the edits the run's constraints asked for with
+  the chip at `origin` (constraints.py). If, where it fires, the chip has passed
+  positions they act on (the run took that long), they are moved with the chip: on a
+  line that did not change meanwhile, the run would have asked for them moved so.
+  Then as EditAction.
 - RerunAction(): runs the rules generator again; its new script replaces this one.
 
 Compiled mode rules (`stretches`, mode_rules.Stretch): what the mode rules do as the
@@ -38,8 +40,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from fractions import Fraction
 
-from intervals import INF, Num, _fmt
+from intervals import INF, Interval, Num, _fmt
 from line import Op
+from region import Region
 
 
 @dataclass(frozen=True)
@@ -91,15 +94,19 @@ class EditAction:
 
 
 @dataclass(frozen=True)
-class ChipEditAction:
+class ConstraintEditAction:
     ops: tuple[Op, ...]
+    origin: Fraction
 
     def at(self, chip) -> list[Op]:
         """The edit with the chip at `chip`."""
-        return [Op(o.action, o.kind, o.region.shift(chip), o.value) for o in self.ops]
+        past = Region.of(Interval(-INF, chip, False, True))
+        if all((o.region & past).is_empty() for o in self.ops):
+            return list(self.ops)
+        return [Op(o.action, o.kind, o.region.shift(chip - self.origin), o.value) for o in self.ops]
 
     def __str__(self) -> str:
-        return ", ".join(str(o).replace(" on ", " on chip + ", 1).replace(" off ", " off chip + ", 1) for o in self.ops)
+        return ", ".join(map(str, self.ops)) + f" (moved with the chip if it is past {_fmt(self.origin)} by then)"
 
 
 @dataclass(frozen=True)

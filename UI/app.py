@@ -36,6 +36,7 @@ from fractions import Fraction as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 
+from constraints import FifteenMinuteBreaks, KeepOn  # noqa: E402,F401 (FifteenMinuteBreaks: for the example scripts)
 from generator import RulesGenerator  # noqa: E402
 from intervals import INF, Interval, IntervalSet  # noqa: E402
 from line import LineState, Op  # noqa: E402
@@ -83,9 +84,12 @@ RESERVED = {"no", "at", "on", "everywhere", "mode"}
 
 
 class Session:
-    def __init__(self, rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=0.5, constraints=()) -> None:
+    def __init__(self, rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=0.5, constraints=(),
+                 ) -> None:
         self.texts = list(rules)
-        self.constraints = [op for text in constraints for op in parse_op(f"add {text}")]  # written from the chip
+        # constraints.py's, or text: an edit written from the chip, kept ("Future on (0, inf)")
+        self.constraints = [KeepOn(op) for k in constraints if isinstance(k, str) for op in parse_op(f"add {k}")] + \
+                           [k for k in constraints if not isinstance(k, str)]
         self.rs = parse_rules(self.texts)
         self.problems = [(p, F(w)) for p, w in problems]
         self.q = q
@@ -429,8 +433,9 @@ def start(rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=
     line:     the initial state of the line, as edits ("A on [1, 3)", "A 50% at 2")
     problems: [(problem, weight)]: PresenceRatioProblem, MinimumLengthProblem
     q:        the allocated resources quantity, in (0, 1)
-    constraints: what the generated script keeps on the line, as edits written from the
-              chip ("Future on (0, inf)": Future on (chip, inf))"""
+    constraints: what the generated script keeps true after the chip: constraints.py's
+              (FifteenMinuteBreaks()), or edits written from the chip, as text
+              ("Future on (0, inf)": Future on (chip, inf))"""
     import gui
     try:
         s = Session(rules, modes, chip, speed, [t if t.split()[0] in ("no", "remove") else f"add {t}" for t in line],

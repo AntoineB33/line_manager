@@ -705,6 +705,17 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(line.presence("Start") & Region.of(Interval(0, 2000, True, False)), Region.of(days))
         self.assertTrue(line.presence("Start").contains(Pos(20 * 10 ** 6 + 6, 1)))
 
+    def test_or_over_repeating_claims(self):
+        """Claims that repeat without end (N on [1, 3] every 10): the choices of an "or"
+        at single positions repeat with them (the lattice takes its data as constant
+        beyond its window: such data goes to the sweep)."""
+        from region import ONE
+        n = Region(Pos(1), Pos(1), IntervalSet(), ONE, IntervalSet(), Pos(10), IntervalSet.of(Interval.closed(0, 2)))
+        line = solve(parse_rules(["N → (A or B) & (C or D)"]), Problem({"N": {F(100): n}}, {}))
+        every = Region.of(IntervalSet(Interval.closed(1 + 10 * k, 3 + 10 * k) for k in range(10)))
+        self.assertEqual(line.presence("A") & Region.of(Interval.closed(0, 99)), every)
+        self.assertEqual(line.presence("C") & Region.of(Interval.closed(0, 99)), every)
+
     def test_stops_where_the_rules_stop(self):
         line = self.line(["A & X → A 1 unit on the right"], [("A", Interval.point(0)), ("X", Interval.closed(0, 10))])
         self.assertEqual(line.presence("A"), Region.of(IntervalSet(Interval.point(n) for n in range(0, 12))))

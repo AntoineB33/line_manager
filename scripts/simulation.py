@@ -44,7 +44,7 @@ from modes import ModeTimeline
 from region import Region
 from solver import Line
 from resolve import Refused, owned_by_others, apply_edit, rebuild
-from script import ChipEditAction, ChipIn, EditAction, RerunAction, Script, Start, TransitionCount, Uncovered, Edited
+from script import ConstraintEditAction, ChipIn, EditAction, RerunAction, Script, Start, TransitionCount, Uncovered, Edited
 
 
 class Chip:
@@ -338,7 +338,7 @@ class Simulation:
                 for a in ev.actions:
                     if isinstance(a, EditAction):
                         self._edit(t, list(a.ops), GEN, "script")
-                    elif isinstance(a, ChipEditAction):
+                    elif isinstance(a, ConstraintEditAction):
                         self._edit(t, a.at(self.chip.position(t)), GEN, "script")
                     elif isinstance(a, RerunAction):
                         rerun = ("start" if a.first else "user edit" if isinstance(ev.trigger, Edited)

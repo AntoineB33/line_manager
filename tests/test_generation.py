@@ -6,6 +6,7 @@ import unittest
 from fractions import Fraction as F
 
 from helpers import check_log, rand_interval, rules_hold
+from constraints import FifteenMinuteBreaks, KeepOn
 from generator import PresenceRatioProblem, RulesGenerator, _Context, budget, rerun_distance, rerun_transitions
 from intervals import INF, Interval, IntervalSet, Pos
 from line import GEN, MODE, USER, LineState, Op
@@ -198,10 +199,10 @@ class ModeRulesTest(unittest.TestCase):
         compiled mode rules drag the one at the chip."""
         rs = parse_rules(["Future → S or no S", "S → R", "S → B on [0, 2] of p", "S → no R on (0, 6] of p", "mode 1 → no B"])
         future = Op.put("Future", Interval(0, INF, False, False))  # (0, inf)
-        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5, constraints=[future]),
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5, constraints=[KeepOn(future)]),
                          Chip([(0, 0), (20, 20)]), ModeTimeline(0, "1"))
         sim.start()
-        self.assertIn("put Future 100% on chip + (0, +inf)", sim.script.text())
+        self.assertIn("put Future 100% on (0, +inf) (moved with the chip if it is past 0 by then)", sim.script.text())
         sim.advance(4)
         check_log(sim.log, rs)
         line = sim.state.line
@@ -268,6 +269,58 @@ class ModeRulesTest(unittest.TestCase):
         self.assertIn((5, "uncovered"), runs)  # mode 1 again, on a line the run from 4 did not compile
         self.assertEqual(sim.state.line.presence("D") & Region.of(Interval.closed_open(0, F(15, 2))),
                          Region.of(IntervalSet.of(Interval.closed_open(0, 4), Interval.closed_open(5, F(15, 2)))))
+
+
+class FifteenMinuteBreaksTest(unittest.TestCase):
+    """The 15-minute breaks as a constraint of the generator (constraints.py)."""
+    RULES = ["Break15 → NoScreen", "mode 1 → no NoScreen"]
+
+    def breaks(self, state, chip=0):
+        return FifteenMinuteBreaks().breaks(state, F(chip)) & Region.of(Interval.closed(0, 700))
+
+    def with_no_screen(self, a, b):
+        return apply_edit(parse_rules(self.RULES), LineState.empty(), [Op.put("NoScreen", Interval.closed(a, b))], USER)
+
+    @staticmethod
+    def every_135(*starts):
+        """Breaks of 15 starting right after 0 and after each of these: (a, a + 15 + ε]."""
+        return Region.of(IntervalSet([Interval(a, Pos(a + 15, 1), False, True) for a in (0,) + starts]))
+
+    def test_empty_line(self):
+        """From the chip on, one break every 135: 15 of "no screen", then 2 hours."""
+        self.assertEqual(self.breaks(LineState.empty()), self.every_135(135, 270, 405, 540, 675))
+
+    def test_two_hours_after_no_screen(self):
+        """30 minutes of "no screen" on [300, 330]: no break until 2 hours after its end;
+        10 minutes only: nothing changes."""
+        long = self.breaks(self.with_no_screen(300, 330))
+        self.assertEqual(long & Region.of(Interval.closed(286, 460)), Region.of(Interval.closed(450, 460)))
+        self.assertEqual(self.breaks(self.with_no_screen(300, 310)), self.every_135(135, 270, 405, 540, 675))
+
+    def test_moved_back_into_no_screen(self):
+        """A break that would start inside a "no screen" period starts at its start."""
+        b = self.breaks(self.with_no_screen(400, 410))
+        self.assertTrue(b.contains(400) and b.contains(415) and not b.contains(F(4155, 10)))  # [400, 415], not at 405
+        self.assertTrue((b & Region.of(Interval.closed(416, 534))).is_empty() and b.contains(535))  # then 2 hours
+
+    def test_going_on_at_the_chip(self):
+        """The chip inside a break: the break stays as it is, and nothing changes."""
+        rs = parse_rules(self.RULES)
+        k = FifteenMinuteBreaks()
+        line = apply_edit(rs, LineState.empty(), k.ops(LineState.empty(), F(0)), GEN)
+        self.assertEqual(k.ops(line, F(140)), [])
+
+    def test_script_puts_them(self):
+        """The line starts empty: the first run's script puts the breaks after the chip."""
+        rs = parse_rules(self.RULES)
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 180), 0.5,
+                                                           constraints=[FifteenMinuteBreaks()]),
+                         Chip([(0, 0), (1, 1)]), ModeTimeline(0, "2"))
+        sim.run(1)
+        check_log(sim.log, rs)
+        self.assertEqual(sim.state.line.presence("Break15") & Region.of(Interval.closed(0, 700)),
+                         self.every_135(135, 270, 405, 540, 675))
+        self.assertTrue(any(ch.source == "script" for ch in sim.log.changes))
 
 
 class GuaranteesTest(unittest.TestCase):
@@ -497,7 +550,7 @@ class StepByStepTest(unittest.TestCase):
         future = Op.put("Future", Interval(0, INF, False, False))
         chip = Chip([(0, 0)])
         # horizon 180: the next run is asked for at 135 / 18 = 7.5, after the positions looked at
-        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 180), 0.5, constraints=[future]),
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 180), 0.5, constraints=[KeepOn(future)]),
                          chip, ModeTimeline(0, "1"))
         sim.background = True
         sim.start()

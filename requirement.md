@@ -33,6 +33,7 @@ This generated script has events that trigger continuous edits of the line or a 
 A generated rule must never:
 - change the left side of the chip and what is at the position of the chip.
 - remove elements added by the user.
+At the absolute start of the program, the generated script is only an instruction to run the rules generator once as soon as possible.
 
 Example:
 if the optimization problem is a simple presence ratio target for each kind of element, the generated script looks like this:

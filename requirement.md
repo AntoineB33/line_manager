@@ -56,3 +56,5 @@ Now A at [1, 2], B at [1, 1.5)U(1.5, 2] and C at 1.5.
 
 
 The line is computed from all the user's edits, kept in the order they were made. Each edit adds or removes elements on intervals. Where edits contradict each other, directly or through the rules, the newer one wins. An older edit gives way only where, and as long as, it contradicts newer ones: when that contradiction disappears, it applies again.
+
+A run of the rules generator is progressive: it publishes a series of generated scripts, each replacing the previous one, and ends after publishing the last one. The generated script is "definitive" up to a position x when every next script of the same run gives the same instructions for the chip's positions before x, whatever the modes. If a run has made the script definitive up to x, then 10 seconds later it must have made it definitive up to x + 10 minutes, using an approximation if the exact result can't be found in time. Within 10 seconds of the start of a run, the first script is published and definitive for the next 10 seconds of the chip's movement.

@@ -44,9 +44,13 @@ from line import GEN, USER, Claims, LineState, Op
 from mode_rules import ModeRules, Run
 from modes import ModeTimeline
 from region import Region
-from solver import Line
+from solver import Line, Undetermined, limited
 from resolve import Refused, owned_by_others, apply_edit, rebuild
 from script import ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Start, TransitionCount, Uncovered, Edited, score
+
+
+EDIT_LIMIT = 2  # the seconds an edit of the user can take: beyond, it is refused
+LAST_RESORT = PACE_TIME - EDIT_LIMIT  # (so that an edit going on never delays the pace)
 
 
 class Chip:
@@ -206,8 +210,20 @@ class Simulation:
         covered = [(lo, hi, m) for lo, hi, m in s.covered if m is not None]
         if self.rules.mode_rules:
             covered.insert(0, (Pos(req.chip), Pos(x), None))
+        ops = getattr(self.gen, "first_edit", lambda *_: [])(self.state, req.chip)
+        if ops:
+            try:  # on top of what the constraints ask for, and they must still hold after it
+                asked = [o for k in constraints for o in k.ops(self.state, req.chip)]
+                base = apply_edit(self.rules, self.state, asked, GEN) if asked else self.state
+                after = apply_edit(self.rules, base, ops, GEN)
+                why = check_script_edit(base, after, req.chip) or                     ("it goes against the constraints" if any(k.ops(after, req.chip) for k in constraints) else None)
+            except (Refused, Undetermined) as e:
+                why = str(e)
+            if not why:
+                at = sum(1 for e in events if isinstance(e.trigger, ChipIn) and isinstance(e.actions[0], ConstraintEditAction))
+                events.insert(at, Event(ChipIn(req.chip, req.chip + self.gen.horizon), (EditAction(tuple(ops)),)))
         script = replace(s, events=events, covered=covered, constraints=constraints, live=s.live or bool(constraints and self.rules.mode_rules))
-        req.published, req.pace_at = True, req.time + PACE_TIME
+        req.published, req.pace_at, req.previous = True, req.time + LAST_RESORT, script
         self._carry(script)
         self.script = script
         self._reset()
@@ -220,7 +236,7 @@ class Simulation:
         req = self.request
         while req is not None and req.published and t >= req.pace_at:
             self.definitive += PACE
-            req.pace_at += PACE_TIME
+            req.pace_at += LAST_RESORT
             self.script = self._fit(self.script)
             if self.definitive >= req.chip + getattr(self.gen, "horizon", 0):
                 self.request = None
@@ -257,7 +273,7 @@ class Simulation:
             return False
         script = self._fit(script)  # (up to the frontier as it was: this script goes further)
         if stats.definitive is not None and stats.definitive > self.definitive:
-            self.definitive, req.pace_at = stats.definitive, self.t + PACE_TIME
+            self.definitive, req.pace_at = stats.definitive, self.t + LAST_RESORT
             script = replace(script, covered=[(lo, Pos(stats.definitive), m) if m is None else (lo, hi, m) for lo, hi, m in script.covered])
         self._carry(script)
         self.script = script
@@ -288,8 +304,7 @@ class Simulation:
             self._fired = [False] * len(script.events)
         self.script = script
         self._reset()
-        if stats.definitive is not None:
-            self.definitive = max(stats.definitive, self.definitive or stats.definitive)
+        self.definitive = None if stats.definitive is None else max(stats.definitive, self.definitive or stats.definitive)
         self.log.runs.append((t, c, why, script, stats))
 
     def replace_script(self, script: Script) -> None:
@@ -324,21 +339,19 @@ class Simulation:
 
     def _edit(self, t: Fraction, ops: list[Op], owner: str, source: str) -> bool:
         before = self.state
-        try:
-            after = apply_edit(self.rules, before, ops, owner)
-        except Refused as e:
-            self.log.refused.append((t, source, str(e)))
+        with limited(EDIT_LIMIT if self.background and source == "user" else None):
+            try:
+                after = apply_edit(self.rules, before, ops, owner)
+                why = None
+                if source == "script":
+                    why = check_script_edit(before, after, self.chip.position(t))
+                elif source == "user":
+                    why = self._against_constraints(after, self.chip.position(t))
+            except (Refused, Undetermined) as e:
+                why = str(e)
+        if why:
+            self.log.refused.append((t, source, why))
             return False
-        if source == "script":
-            why = check_script_edit(before, after, self.chip.position(t))
-            if why:
-                self.log.refused.append((t, source, why))
-                return False
-        elif source == "user":
-            why = self._against_constraints(after, self.chip.position(t))
-            if why:
-                self.log.refused.append((t, source, why))
-                return False
         self.log.changes.append(Change(t, self.chip.position(t), source, before, after))
         self.state = after
         return True
@@ -447,6 +460,10 @@ class Simulation:
         self.started = True
         self.keep_pace(t)
         c = self.chip.position(t)
+        if self.background and self.definitive is not None and c > self.definitive and \
+                any(isinstance(k, ChipIn) for k in self.script.rerun_triggers()):
+            self._install(t, "catch up")  # (the program was put to sleep)
+        c = self.chip.position(t)
         revealed = sum(1 for p, _ in self.modes.transitions if p <= c)
         self._since_install += revealed - self.revealed
         self.revealed = revealed
@@ -475,6 +492,9 @@ class Simulation:
                         c = self.chip.position(t)
                         self._edit(t, [o for k in self.script.constraints for o in k.ops(self.state, c)], GEN, "script")
                     elif isinstance(a, RerunAction):
+                        if isinstance(ev.trigger, ChipIn) and self.request is not None:
+                            self._was_true[i] = False  # a run goes on: not before it ends
+                            continue
                         rerun = ("start" if a.first else "user edit" if isinstance(ev.trigger, Edited)
                                  else "uncovered" if isinstance(ev.trigger, Uncovered) else "script")
                 if rerun:

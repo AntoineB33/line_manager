@@ -20,7 +20,8 @@ calculation takes, the line ends up as if it had taken no time. A frame takes th
 from the end of the last step by the time passed since, and never stops for a
 calculation: where the formula stops, or while an edit computes, the line goes on as it
 was shown, and takes its place when the step is done. A click counts from where the chip
-was when it was made (`_up_to`). Pause stops
+was when it was made (`_up_to`). The time is the clock's, so a program put to sleep finds
+the chip where it would have gone. Pause stops
 a step being computed (solver.STOP): it is undone, and computed again after Play.
 The GIL's switch interval is shortened (`run`) so that the drawing is not starved by
 the simulation's thread.
@@ -129,7 +130,7 @@ class App:
         if self.paused:
             self.log(PAUSED)
             return
-        at = time.monotonic()
+        at = time.time()
         self.post(lambda: PAUSED if self.paused else self._up_to(at) or self.s.set_mode(m))
 
     def _mode_buttons(self, names: list[str], current: str) -> None:
@@ -159,7 +160,7 @@ class App:
             if self.paused:
                 self.log(PAUSED)
                 return
-            at = time.monotonic()
+            at = time.time()
             self.post(lambda: PAUSED if self.paused else self._up_to(at) or self.s.command(cmd))
         else:
             self.post(lambda: self.s.command(cmd))
@@ -238,9 +239,9 @@ class App:
                 self.wall = self.last
 
     def _work(self) -> None:
-        self.last = time.monotonic()
+        self.last = time.time()
         while not self.stopping:
-            began = time.monotonic()
+            began = time.time()
             busy = False
             while True:
                 try:
@@ -263,7 +264,7 @@ class App:
                 STOP.clear()
                 self.s.begin()
                 busy = True
-                self.last = time.monotonic()
+                self.last = time.time()
             elif self.paused:
                 self.wall = None
                 busy = True
@@ -287,7 +288,7 @@ class App:
                     self.out.put(("paused",))
             if busy or self.snap is None:
                 self._publish()
-            time.sleep(max(0.0, float(STEP) - (time.monotonic() - began)))
+            time.sleep(max(0.0, float(STEP) - (time.time() - began)))
 
     def _publish(self) -> None:
         s = self.s
@@ -304,8 +305,8 @@ class App:
     def _poll(self) -> None:
         if self.stopping:
             return
-        if time.monotonic() >= self.next_watch:
-            self.next_watch = time.monotonic() + 0.5
+        if time.time() >= self.next_watch:
+            self.next_watch = time.time() + 0.5
             self._watch()
         while True:
             try:
@@ -333,7 +334,7 @@ class App:
             self.shown = None
         else:  # one position for the chip and the line, the time passed since the step
             shown = self.shown
-            p = x + sn["speed"] * F(time.monotonic() - sn["wall"]).limit_denominator(1000)
+            p = x + sn["speed"] * F(time.time() - sn["wall"]).limit_denominator(1000)
             if shown is not None and p < shown[0]:
                 p = shown[0]
             if p > x and sn["ahead"] is not None:

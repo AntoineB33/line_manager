@@ -625,16 +625,23 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     of them, so a lower q has fewer stages and a shorter run. A stage only adds an edit
     between the last frontier and its own, so the lines before a frontier never change,
     whatever the modes: that is "definitive". A run in a process of its own edits nothing
-    in the first 10 after c. The pace does not depend on the run: at each 10 s without
+    in the first 10 after c. The first script also puts the kind with the biggest ratio
+    target not reached on those 10, if the constraints and the guards allow it
+    (`RulesGenerator.first_edit`). The pace does not depend on the run: at each 8 s without
     a new frontier, the simulation moves it 10 further with the script in place
-    (`Simulation.keep_pace`), and what the run sends later only counts after it
-    (`Simulation._fit`). A published script does not undo what happened; if the line went
+    (`Simulation.keep_pace`; 8 so that an edit of 2 s going on never delays it), and what
+    the run sends later only counts after it (`Simulation._fit`). The script's position
+    triggers never cancel the run going on: they wait for its end, and the first stage
+    puts the next run at twice the time the run is going to take, if that is further
+    than D/18. If the program was put to sleep, the chip is where it would have gone,
+    and a script for the 10 after it is published at once, in a new run ("catch up"). A published script does not undo what happened; if the line went
     away from it, its triggers ask for a new run. The run ends with its last script,
     or when the script in place has reached c + H, and the compiled shortcut comes with
     the last script.
   - **Calculations are instantaneous.** A step lets the time that passed run, however
     long, and a click counts from the position of the chip when it was made, so the
-    result of a slow edit is what it would have been at once (`gui._up_to`).
+    result of a slow edit is what it would have been at once (`gui._up_to`). An edit is
+    refused beyond 2 s on the clock (`solver.limited`, at the checkpoints of the long loops).
   - **The script is its text.** What the text says is what the script does (script.py):
     the mode rules apply where a line says so, on the line as it is; what a run
     compiled ahead is only a shortcut. So the user can change any line (the file

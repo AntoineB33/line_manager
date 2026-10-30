@@ -47,6 +47,8 @@ import itertools
 import math
 import sys
 import threading
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from fractions import Fraction
 
@@ -73,10 +75,26 @@ class Interrupted(Exception):
 STOP = threading.Event()
 
 
+_limit = threading.local()  # (this thread's: the window's reads are not limited)
+
+
+@contextmanager
+def limited(seconds):
+    """What is computed inside gives up (Undetermined) after this time, None: no limit."""
+    _limit.at = None if seconds is None else time.monotonic() + seconds
+    try:
+        yield
+    finally:
+        _limit.at = None
+
+
 def checkpoint() -> None:
-    """Raise Interrupted if STOP is set: called in the long loops."""
+    """Raise Interrupted if STOP is set, Undetermined past the limit: called in the long loops."""
     if STOP.is_set():
         raise Interrupted("stopped")
+    at = getattr(_limit, "at", None)
+    if at is not None and time.monotonic() > at:
+        raise Undetermined("it takes too long to compute")
 
 
 EMPTY = Region.empty()
@@ -299,6 +317,7 @@ class _Group:
         return {K: (EMPTY, {}) for K in self.block}
 
     def solve(self) -> dict:
+        checkpoint()
         if not self.cyclic:
             return self.step(self.empty(), self.empty())
         if self.positive:

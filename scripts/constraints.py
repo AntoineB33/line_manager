@@ -21,6 +21,7 @@ from fractions import Fraction
 from intervals import EPS, INF, Interval, IntervalSet, Pos, _fmt
 from line import LineState, Op
 from region import ONE, ZERO, Region
+from solver import checkpoint
 
 
 def _after(c) -> Region:
@@ -114,6 +115,7 @@ class FifteenMinuteBreaks:
             """The first start from t that no pause, ban or break already there excludes."""
             changed = True
             while changed:
+                checkpoint()
                 changed = False
                 for a, e in periods(placed):  # (a period with its break in it: no other one in it)
                     if (e - a).x >= L and (e < t < e + P or (a < t <= e and any(a <= pa and pe <= e for pa, pe in placed))):
@@ -125,6 +127,7 @@ class FifteenMinuteBreaks:
 
         t = allowed(cp + EPS)
         while t <= end:
+            checkpoint()
             for a, e in periods([]):  # inside "no screen": the break starts at its start
                 if a < t <= e:
                     t = a if a > cp else cp + EPS

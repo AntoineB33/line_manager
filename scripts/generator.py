@@ -48,6 +48,7 @@ The hyperparameter q in (0, 1):
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 
@@ -116,6 +117,18 @@ class RulesGenerator:
         self.use_probability = use_probability
         self.constraints = tuple(constraints)
         self.paced = False  # in a process of its own: the instant script holds PACE after the chip
+        self.speed = Fraction(1)  # the chip's, for how far it goes during a run
+
+    def first_edit(self, state: LineState, c: Fraction) -> list[Op]:
+        """What the script at the start of a run can do at once for the ratio targets: the
+        kind with the biggest target not reached yet, on the PACE after the chip."""
+        best = None
+        for p, _ in self.problems:
+            for kind, r in sorted(getattr(p, "targets", {}).items()):
+                w = IntervalSet.of(Interval(c, c + p.horizon, False, True))
+                if state.line.integral(kind, w) / p.horizon < r and (best is None or r > best[0]):
+                    best = (r, kind)
+        return [Op.put(best[1], Region.of(Interval(c, c + PACE, False, True)))] if best else []
 
     def frontiers(self, c: Fraction) -> list:
         """Where the stages of a run from c make the script definitive: c + PACE, then steps
@@ -170,11 +183,19 @@ class RulesGenerator:
             carried = [e for e in (previous.events if previous else ()) if any(isinstance(a, EditAction) for a in e.actions)
                        and (not isinstance(e.trigger, ChipIn) or e.trigger.hi > c)]
             frontiers = frontiers[1:] or [lo]
+            for e in carried:  # (they fire before the chip goes on: the stages start from them)
+                for a in e.actions:
+                    if isinstance(a, EditAction):
+                        try:
+                            base = apply_edit(self.rules, base, list(a.ops), GEN)
+                        except Refused:
+                            pass
         live = bool(self.constraints and self.rules.mode_rules)  # a constraint holds whatever a run had time for
         best_key, best_label, current = ctx.score(base), "no-op", base
         stats.work, stats.valid = 1, 1
         edits: list[Event] = []  # one for each stage that edits
         after_edits: list[Event] | None = None
+        began = time.perf_counter()
         for i, hi in enumerate(frontiers):
             ctx.state = current
             ops, key, label, after = self._stage(ctx, state, current, lo, hi, stats, best_key, len(frontiers) - i)
@@ -184,7 +205,11 @@ class RulesGenerator:
             if after_edits is None:
                 after_edits = []
                 if len(frontiers) > 1 or not self._futile(state, ops):
-                    after_edits.append(Event(ChipIn(c + (D / 18 if self.rules.mode_rules else D), INF), (RerunAction(),)))
+                    next_run = D / 18 if self.rules.mode_rules else D
+                    if self.paced:  # after this run, whatever it takes: twice the time it is going to take
+                        took = Fraction(time.perf_counter() - began).limit_denominator(1000)
+                        next_run = max(next_run, 2 * took * len(frontiers) * self.speed)
+                    after_edits.append(Event(ChipIn(c + next_run, INF), (RerunAction(),)))
                     after_edits.append(Event(TransitionCount(rerun_transitions(self.q)), (RerunAction(),)))
                     after_edits += self._watches(current, c, D, known.current_mode())
                 after_edits.append(Event(Edited(), (RerunAction(),)))
@@ -209,6 +234,7 @@ class RulesGenerator:
         best = ((), best_key, "no-op", base)
         where = None if hi is None else Region.of(Interval(lo, hi, False, True))
         limit = stats.work + max(1, (stats.budget - stats.work) // left)
+        held = not any(k.ops(base, ctx.c) for k in self.constraints)
         seen = {""}
         for label, ops in ctx.candidates():
             if where is not None:
@@ -226,6 +252,8 @@ class RulesGenerator:
                 continue
             if check_script_edit(state, after, ctx.c) is not None:
                 continue
+            if held and any(k.ops(after, ctx.c) for k in self.constraints):
+                continue  # an edit never breaks a constraint
             stats.valid += 1
             key = ctx.score(after)
             if key < best[1]:

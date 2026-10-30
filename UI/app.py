@@ -173,6 +173,7 @@ class Session:
             self.close()  # overtaken by the script in place: it is over
         if req is not None and (self._running is None or self._running[0] != req.id):
             self.close()  # a newer run was asked for: the one going on is cancelled
+            req.gen.speed = self.speed
             flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
             proc = subprocess.Popen([sys.executable, WORKER], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, creationflags=flags)

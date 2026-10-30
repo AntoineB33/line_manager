@@ -159,6 +159,9 @@ class Session:
                 rid, script, stats = self._done.get_nowait()
             except queue.Empty:
                 break
+            if stats is not None and not stats.final:
+                self.sim.publish(rid, script, stats)
+                continue
             if self._running is not None and self._running[0] == rid:
                 self._running = None
             if isinstance(script, Exception):
@@ -168,6 +171,7 @@ class Session:
         req = self.sim.request
         if req is not None and (self._running is None or self._running[0] != req.id):
             self.close()  # a newer run was asked for: the one going on is cancelled
+            req.gen.speed = self.speed
             flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
             proc = subprocess.Popen([sys.executable, WORKER], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, creationflags=flags)
@@ -176,14 +180,21 @@ class Session:
         return out
 
     def _run(self, req, proc: subprocess.Popen) -> None:
-        """Wait for the run's process (in a thread of its own) and hand its result over."""
+        """Hand over the scripts of the run's process as they come (in a thread of its own)."""
         try:
-            out, err = proc.communicate(pickle.dumps((req.gen, req.state, req.chip, req.known)))
-        except (OSError, ValueError):
+            proc.stdin.write(pickle.dumps((req.gen, req.state, req.chip, req.known)))
+            proc.stdin.close()
+            while True:
+                try:
+                    script, stats = pickle.load(proc.stdout)
+                except EOFError:
+                    break
+                self._done.put((req.id, script, stats))
+            err = proc.stderr.read()
+            proc.wait()
+        except (OSError, ValueError, pickle.UnpicklingError):
             return  # ended meanwhile
-        if proc.returncode == 0:
-            self._done.put((req.id, *pickle.loads(out)))
-        elif self._running is not None and self._running[1] is proc:  # not cancelled: it failed
+        if proc.returncode != 0 and self._running is not None and self._running[1] is proc:  # not cancelled: it failed
             lines = err.decode(errors="replace").strip().splitlines()
             self._done.put((req.id, RuntimeError(lines[-1] if lines else f"exit code {proc.returncode}"), None))
 
@@ -247,7 +258,9 @@ class Session:
         if self.script_edit is not None and self.script_edit[1] is self.sim.script:
             head.append(f"Changed by the user at time {self.script_edit[0]}.")
         if self.running():
-            head.append(self.running().capitalize() + ": this script stays until it completes.")
+            head.append(self.running().capitalize() + ": its next script replaces this one.")
+        if self.sim.definitive is not None:
+            head.append(f"Definitive up to {self.sim.definitive}.")
         return "\n".join(head) + "\n\n" + (self.sim.script.text() or "(empty script)") + "\n"
 
     def edit_script(self, text: str, previous: Script) -> str:

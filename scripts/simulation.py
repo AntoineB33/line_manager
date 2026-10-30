@@ -24,8 +24,9 @@ needed), the chip's trajectory being extended as it goes (`Chip.extend`); `edit_
 before the start is an edit of the first instant, whose triggers wait for `start()`;
 In the background mode (`background`, the interactive program), a run of the generator
 takes time: a call to run it only records it (`request`), the script in place goes on,
-and the run's script replaces it when the run completes (`complete`, at that time),
-unless a newer call was recorded meanwhile (the older run is then cancelled).
+and each script of the run replaces it when it is found (`publish`, and `complete` for
+the last, at that time), unless a newer call was recorded meanwhile (the older run is
+then cancelled).
 `edit_now`, `undo_now`, `clear_now` and `set_generator` act at
 the current time, as a user edit at that instant would; `modes_changed` after the
 modes from the chip on were changed (ModeTimeline.replace).
@@ -115,6 +116,7 @@ class RunRequest:
     state: LineState
     known: object
     gen: RulesGenerator
+    published: bool = False  # a script of this run is in place
 
 
 @dataclass
@@ -150,6 +152,7 @@ class Simulation:
         self._missed = None  # (script, state): no stretch of that script takes over on that line
         self.background = False  # runs of the generator complete later (`complete`)
         self.request: RunRequest | None = None  # the run asked for and not completed
+        self.definitive = None  # how far the run's scripts are definitive
         self._edited = False  # the user edited at this instant
         self._requests = 0
 
@@ -183,18 +186,48 @@ class Simulation:
         if req is None or req.id != request_id:
             return False
         self.request = None
-        self._set_script(self.t, req.chip, req.why, script, stats)
+        self._set_script(self.t, req.chip, req.why, script, stats, keep=req.published)
         self._after_edits(self.t, False, False, req.why)
         return True
 
-    def _set_script(self, t: Fraction, c: Fraction, why: str, script: Script, stats: RunStats) -> None:
+    def publish(self, request_id: int, script: Script, stats: RunStats) -> bool:
+        """The run asked for by `request` found a script and goes on: it replaces the one in
+        place, the events that stay stay as they were. False if a newer run was asked for."""
+        req = self.request
+        if req is None or req.id != request_id:
+            return False
+        req.published = True
+        self._carry(script)
         self.script = script
+        self._reset()
+        self.definitive = stats.definitive
+        self._after_edits(self.t, False, False, req.why)
+        return True
+
+    def _reset(self) -> None:
         self._stretch = None
         self._live_rules = {}
         self._shift = None  # how far the script's stretches are moved: decided when they are first needed
         self._since_install = 0
-        self._was_true = [False] * len(script.events)
-        self._fired = [False] * len(script.events)
+
+    def _carry(self, script: Script, same_constraints: bool = True) -> None:
+        """The events of `script` that are in the one in place stay as they were (what they
+        did is not done again), unless they satisfy constraints that changed."""
+        seen = {str(e): i for i, e in enumerate(self.script.events)}
+        at = [seen.get(str(e)) if same_constraints or not any(isinstance(a, ConstraintEditAction) for a in e.actions) else None
+              for e in script.events]
+        self._was_true = [i is not None and self._was_true[i] for i in at]
+        self._fired = [i is not None and self._fired[i] for i in at]
+
+    def _set_script(self, t: Fraction, c: Fraction, why: str, script: Script, stats: RunStats, keep: bool = False) -> None:
+        if keep:
+            self._carry(script)
+        else:
+            self._was_true = [False] * len(script.events)
+            self._fired = [False] * len(script.events)
+        self.script = script
+        self._reset()
+        self.definitive = stats.definitive
         self.log.runs.append((t, c, why, script, stats))
 
     def replace_script(self, script: Script) -> None:
@@ -202,17 +235,11 @@ class Simulation:
         on is cancelled (its script would replace the user's). An event that was already
         there stays as it was (what it did is not done again), the others are evaluated
         at the next instant; with other constraints, those that satisfy them too."""
-        same = list(map(str, script.constraints)) == list(map(str, self.script.constraints))
-        seen = {str(e): i for i, e in enumerate(self.script.events)}
-        at = [seen.get(str(e)) if same or not any(isinstance(a, ConstraintEditAction) for a in e.actions) else None for e in script.events]
-        self._was_true = [i is not None and self._was_true[i] for i in at]
-        self._fired = [i is not None and self._fired[i] for i in at]
+        self._carry(script, list(map(str, script.constraints)) == list(map(str, self.script.constraints)))
         self.script = script
         self.request = None
-        self._stretch = None
-        self._live_rules = {}
-        self._shift = None
-        self._since_install = 0
+        self.definitive = None
+        self._reset()
 
     def _cond(self, i: int, t: Fraction) -> bool:
         trig = self.script.events[i].trigger

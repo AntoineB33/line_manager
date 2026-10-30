@@ -48,7 +48,8 @@ The hyperparameter q in (0, 1):
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 
 from guards import check_script_edit
@@ -78,6 +79,12 @@ class RunStats:
     probability_rules: list[str] = field(default_factory=list)
     refused: list = field(default_factory=list)  # (position, why): operands of the mode rules refused while compiling
     constraints: str = ""  # why the constraints could not be put, if they could not
+    final: bool = True  # the last script of the run
+    definitive: object = None  # the next scripts of the run change nothing before this position
+
+
+PACE = Fraction(10)  # a run makes the script definitive this far further ...
+PACE_TIME = 10  # ... every this many seconds
 
 
 def budget(q: float) -> int:
@@ -109,8 +116,31 @@ class RulesGenerator:
         self.q = q
         self.use_probability = use_probability
         self.constraints = tuple(constraints)
+        self.speed = Fraction(1)  # the chip's, in units per second
+        self.paced = False  # a stage of a run stops at PACE_TIME (time is not exact: not in tests)
+
+    def frontiers(self, c: Fraction) -> list:
+        """Where the stages of a run from c make the script definitive: 10 s of the chip's
+        movement, then steps of at least PACE up to c + H, as many as q allows (the lower q,
+        the shorter the run). None for a run that reaches c + H at once."""
+        first = c + PACE_TIME * self.speed
+        rest = c + self.horizon - first
+        if rest <= 0:
+            return [None]
+        more = math.ceil(Fraction(str(self.q)) * rest / PACE)
+        return [first + rest * i / more for i in range(more + 1)] if more else [first]
 
     def run(self, state: LineState, chip, known: ModeKnowledge) -> tuple[Script, RunStats]:
+        """The last script of the run."""
+        for out in self.stages(state, chip, known):
+            pass
+        return out
+
+    def stages(self, state: LineState, chip, known: ModeKnowledge):
+        """The scripts of a run, as they are found, each with its stats. Each stage only adds
+        an edit on the positions after the last frontier and up to its own, so the lines of
+        the script for the positions before a frontier never change (the score, the mode
+        rules and the constraints of the script are decided at the first stage)."""
         c = Fraction(chip)
         H = self.horizon
         ctx = _Context(self, state, c, known)
@@ -126,51 +156,72 @@ class RulesGenerator:
                 why = str(e)
             if why:
                 base, keep, stats.constraints = state, None, why
-        best_ops, best_key, best_label, best_after = (), ctx.score(base), "no-op", base
+        frontiers = self.frontiers(c)
+        D = rerun_distance(self.q, H)
+        covered = self.predicted(ctx, c + D / 6) if self.rules.mode_rules else []
+        live = bool(self.constraints and self.rules.mode_rules)  # a constraint holds whatever a run had time for
+        best_key, best_label, current = ctx.score(base), "no-op", base
         stats.work, stats.valid = 1, 1
+        edits: list[Event] = []  # one for each stage that edits
+        after_edits: list[Event] | None = None
+        lo = c
+        for i, hi in enumerate(frontiers):
+            ctx.state = current
+            ops, key, label, after = self._stage(ctx, state, current, lo, hi, stats, best_key, len(frontiers) - i)
+            if ops:
+                best_key, best_label, current = key, label, after
+                edits.append(Event(ChipIn(c, c + H), (EditAction(tuple(ops)),)))
+            if after_edits is None:
+                after_edits = []
+                if len(frontiers) > 1 or not self._futile(state, ops):
+                    after_edits.append(Event(ChipIn(c + (D / 18 if self.rules.mode_rules else D), INF), (RerunAction(),)))
+                    after_edits.append(Event(TransitionCount(rerun_transitions(self.q)), (RerunAction(),)))
+                    after_edits += self._watches(current, c, D, known.current_mode())
+                after_edits.append(Event(Edited(), (RerunAction(),)))
+                if covered:
+                    after_edits.append(Event(Uncovered(), (RerunAction(),)))
+            final = i == len(frontiers) - 1
+            stretches = []
+            if final and covered:
+                # the text does not depend on what is compiled ahead, a shortcut: a lower q
+                # compiles less (q D(q) grows with q), and the chip computes the rest
+                end = c + D / 6 * Fraction(str(self.q))
+                ahead = [(a, min(b, Pos(end)), m) for a, b, m in covered if a <= end]
+                stretches, stats.refused = compile_runs(self.rules, current, ahead, self.constraints)
+            stats.chosen, stats.key, stats.final, stats.definitive = best_label, best_key, final, hi
+            events = ([Event(ChipIn(c, INF), (keep,))] if keep is not None else []) + edits + after_edits
+            yield Script(events, stretches, covered, c, current, live, self.constraints), replace(stats)
+            lo = hi
+
+    def _stage(self, ctx: _Context, state: LineState, base: LineState, lo, hi, stats: RunStats, best_key, left: int):
+        """The best edit on (lo, hi] of the candidates this stage has budget and time for
+        (the budget left, shared with the `left` stages to come): (ops, key, label, state)."""
+        best = ((), best_key, "no-op", base)
+        where = None if hi is None else Region.of(Interval(lo, hi, False, True))
+        limit = stats.work + max(1, (stats.budget - stats.work) // left)
+        deadline = time.monotonic() + PACE_TIME if self.paced else None
         seen = {""}
         for label, ops in ctx.candidates():
+            if where is not None:
+                ops = tuple(o for o in (Op(o.action, o.kind, o.region & where, o.value) for o in ops) if not o.region.is_empty())
             key = " ; ".join(map(str, ops))
             if key in seen:
                 continue  # the no-op, or an edit already built
             seen.add(key)
-            if stats.work >= stats.budget:
+            if stats.work >= min(limit, stats.budget) or (deadline is not None and time.monotonic() >= deadline):
                 break
             stats.work += 1
             try:
                 after = apply_edit(self.rules, base, list(ops), GEN)
             except Refused:
                 continue
-            if check_script_edit(state, after, c) is not None:
+            if check_script_edit(state, after, ctx.c) is not None:
                 continue
             stats.valid += 1
             key = ctx.score(after)
-            if key < best_key:
-                best_ops, best_key, best_label, best_after = ops, key, label, after
-        stats.chosen, stats.key = best_label, best_key
-        events: list[Event] = []
-        if keep is not None:
-            events.append(Event(ChipIn(c, INF), (keep,)))
-        stretches, covered = [], []
-        D = rerun_distance(self.q, H)
-        if self.rules.mode_rules:
-            covered = self.predicted(ctx, c + D / 6)
-            # what the text covers does not depend on what is compiled ahead, a shortcut: a
-            # lower q compiles less (q D(q) grows with q), and the chip computes the rest
-            end = c + D / 6 * Fraction(str(self.q))
-            ahead = [(lo, min(hi, Pos(end)), m) for lo, hi, m in covered if lo <= end]
-            stretches, stats.refused = compile_runs(self.rules, best_after, ahead, self.constraints)
-        if best_ops:
-            events.append(Event(ChipIn(c, c + H), (EditAction(tuple(best_ops)),)))
-        if not self._futile(state, best_ops):
-            events.append(Event(ChipIn(c + (D / 18 if self.rules.mode_rules else D), INF), (RerunAction(),)))
-            events.append(Event(TransitionCount(rerun_transitions(self.q)), (RerunAction(),)))
-            events += self._watches(best_after, c, D, known.current_mode())
-        events.append(Event(Edited(), (RerunAction(),)))
-        if covered:
-            events.append(Event(Uncovered(), (RerunAction(),)))
-        live = bool(self.constraints and self.rules.mode_rules)  # a constraint holds whatever a run had time for
-        return Script(events, stretches, covered, c, best_after, live, self.constraints), stats
+            if key < best[1]:
+                best = (ops, key, label, after)
+        return best
 
     def _watches(self, state: LineState, c: Fraction, D: Fraction, mode: str) -> list[Event]:
         """Run again if the line goes away from what this run left: the score gets lower than

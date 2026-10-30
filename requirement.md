@@ -33,7 +33,7 @@ This generated script is a very concise text showing events and the correspondin
 A generated rule must never:
 - change the left side of the chip and what is at the position of the chip.
 - remove elements added by the user.
-At the absolute start of the program, the generated script is only an instruction to run the rules generator once as soon as possible. The generated script is changed only when the generator completes a run or by the user. If the generator is called to run again while it is already running, the previous run is cancelled and the new one starts.
+At the absolute start of the program, the generated script is only an instruction to run the rules generator once as soon as possible. The generated script is changed only when the generator finds a new one or the user edits it. If the generator is called to run again while it is already running, the previous run is cancelled and the new one starts.
 
 Example:
 if the optimization problem is a simple presence ratio target for each kind of element, the generated script looks like this:
@@ -46,6 +46,8 @@ if the chip is between $x_7$ and $x_8$ and mode is 2, then the generator runs ag
 
 The "allocated resources quantity" hyperparameter in (0, 1) balances between resource usage economy (0) and optimization problem solving (1). When the hyperparameter is lower, then a rules generator run will be faster and use less CPU resources to solve the optimization problems, and the current generated script will trigger less frequently a new rules generator run.
 
+A run of the rules generator is progressive: it publishes a series of generated scripts, each replacing the previous one, and ends after publishing the last one. The generated script is "definitive" up to a position x when every next script of the same run gives the same instructions for the chip's positions before x, whatever the modes. If a run has made the script definitive up to x, then 10 seconds later it must have made it definitive up to x + 10 units, using an approximation if the exact result can't be found in time. An approximation may lower the optimization score but never breaks a constraint. Within 10 seconds of the start of a run, the first script is published and definitive for the next 10 seconds of the chip's movement. The duration of a run of the rules generator depends on the allocated resources quantity hyperparameter.
+
 The "probability finder" program is used to find probability rules in the mode transitions pattern. This helps the rules generator being more performant with a low allocated resources quantity hyperparameter.
 
 Edits from the user win over what is on the line. Nothing more than necessary is changed from the older elements, or more if it helps keeping a fast computation. If a result cannot be computed in reasonable time, the edit is refused. If the edit leads to a contradiction with the constraints the generated script must satisfy, the edit is refused. For example:
@@ -56,5 +58,3 @@ Now A at [1, 2], B at [1, 1.5)U(1.5, 2] and C at 1.5.
 
 
 The line is computed from all the user's edits, kept in the order they were made. Each edit adds or removes elements on intervals. Where edits contradict each other, directly or through the rules, the newer one wins. An older edit gives way only where, and as long as, it contradicts newer ones: when that contradiction disappears, it applies again.
-
-A run of the rules generator is progressive: it publishes a series of generated scripts, each replacing the previous one, and ends after publishing the last one. The generated script is "definitive" up to a position x when every next script of the same run gives the same instructions for the chip's positions before x, whatever the modes. If a run has made the script definitive up to x, then 10 seconds later it must have made it definitive up to x + 10 minutes, using an approximation if the exact result can't be found in time. Within 10 seconds of the start of a run, the first script is published and definitive for the next 10 seconds of the chip's movement.

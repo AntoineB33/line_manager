@@ -115,8 +115,8 @@ class FifteenMinuteBreaks:
             changed = True
             while changed:
                 changed = False
-                for a, e in periods(placed):
-                    if (e - a).x >= L and e < t < e + P:
+                for a, e in periods(placed):  # (a period with its break in it: no other one in it)
+                    if (e - a).x >= L and (e < t < e + P or (a < t <= e and any(a <= pa and pe <= e for pa, pe in placed))):
                         t, changed = e + P, True
                 for a, e in bans + placed:
                     if a <= t + L and e >= t:

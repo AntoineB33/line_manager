@@ -304,7 +304,6 @@ class _Group:
         if self.positive:
             return self.least(self.empty())
         under, over = self.empty(), self.least(self.empty())
-        unders, overs = [under], [over]
         for _ in range(MAX_ROUNDS):
             nxt = self.least(over)
             if _same(nxt, over):
@@ -314,32 +313,7 @@ class _Group:
                                    f"({', '.join(self.block)})")
             under = nxt
             over = self.least(under)
-            unders, overs = unders[-2 * MAX_LAG:] + [under], overs[-2 * MAX_LAG:] + [over]
-            lim = self._meet(unders, overs)
-            if lim is not None:
-                return lim
         raise Undetermined(f"a cycle of the rules ({', '.join(self.block)}) is not decided in {MAX_ROUNDS} rounds")
-
-    def _meet(self, unders, overs):
-        """Each round may decide only a few more positions (a "not" read one position
-        before what it places: B at x + 1 where B is not at x). When the rounds add to the
-        underestimate, and take from the overestimate, layers that move by a translation,
-        both are followed to their ends. If they meet there, and the result is its own
-        least fixpoint with the absences read from itself (the rules hold, and each
-        element is placed by them from the claims), it is the result. That the rounds go on
-        as they started is the one assumption made here (unlike `_jump`, a round is not
-        local: it is a whole least fixpoint)."""
-        for lag in range(1, MAX_LAG + 1):
-            if len(unders) > 2 * lag:
-                u = self._extrapolate(unders[-1 - 2 * lag], unders[-1 - lag], unders[-1], True)
-                o = u and self._extrapolate(overs[-1 - 2 * lag], overs[-1 - lag], overs[-1], False)
-                if u and o and _same(u, o):
-                    try:
-                        if _same(self.least(u), u):
-                            return u
-                    except Undetermined:
-                        pass
-        return None
 
     def _keys(self, *states) -> list:
         """(kind, None) for the plain elements of a kind, (kind, value) for its exact ones."""

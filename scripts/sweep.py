@@ -39,7 +39,7 @@ operand:
   earlier operand: the result of the definition has no change there. Changes are at
   real parts e + n·g;
 - ε parts. A real distance keeps the ε part of a position, and an open end adds
-  ±1, so the changes are looked for within ±2 of the ε parts of the ends of the
+  ±1, so the changes are looked for within `eps_reach` of the ε parts of the ends of the
   claims, fixed regions and choices nearby. This is the one assumption the search
   makes; a check between candidate positions refuses the edit if a change falls
   elsewhere.
@@ -123,6 +123,8 @@ def _ends(reg: Region, lo, hi) -> list:
 class Sweep:
     def __init__(self, rs, prob, vals, fixed, forbid, kinds_in, probe=None, shared=None) -> None:
         self.rs = rs
+        if rs.drifts:
+            raise Undetermined("a cycle of the rules moves ε parts: the positions of the choices have no bound")
         self.args = (rs, prob, vals, fixed, forbid, kinds_in)
         self.vals0 = dict(vals)
         self.fixed = fixed
@@ -432,14 +434,15 @@ class Sweep:
         """The ε parts to look at near P: around those of the ends of the claims and fixed
         regions, and of the choices made before P (not their end at P - ε, which is only
         where the decisions have got to). A real distance keeps the ε part of a
-        position, so every end that matters has one of these, within ±2."""
+        position, so every end that matters has one of these, within `eps_reach`."""
         a, b = P - 2 * self.R, P + 2 * self.R
         ends = [e for e in self.static_ends if a <= e <= b]
         for row in ch:
             for reg in row:
                 for iv in reg.on(a - 1, P).intervals:
                     ends += [e for e in (iv.lo, iv.hi) if a <= e < P - EPS]
-        return tuple(sorted({k for e in ends for k in range(e.k - 2, e.k + 3)} | {-2, -1, 0, 1, 2}))
+        J = self.rs.eps_reach
+        return tuple(sorted({k for e in ends for k in range(e.k - J, e.k + J + 1)} | set(range(-J, J + 1))))
 
     def _on_grid(self, x) -> bool:
         return any((x - r) % self.g == 0 for r in self.residues)
@@ -695,7 +698,7 @@ class Sweep:
         for e in ends:
             for d in deltas:
                 x = e + d
-                for j in (-2, -1, 0, 1, 2):
+                for j in range(-self.rs.eps_reach, self.rs.eps_reach + 1):
                     y = Pos(x.x, x.k + j)
                     if lo < y < hi:
                         out.add(y)

@@ -248,12 +248,9 @@ simply takes its first valid operand (`test_unbounded_on_the_left`).
     the steps jump to the state that many layers later, and go on from there
     (`test_long_but_bounded`).
   - **Rounds without end.** A "not" read one position before what it places (B at
-    x + 1 where A is and B is not at x) decides one more position per round. When the
-    rounds add to the underestimate, and take from the overestimate, layers that move
-    by a translation, both are followed to their ends; if they meet and the result is
-    its own least fixpoint with the absences read from itself, it is the result. That
-    the rounds go on as they started is the one assumption of this part: a round is a
-    whole fixpoint, not local, so the induction above does not apply.
+    x + 1 where A is and B is not at x) decides one more position per round. A round
+    is a whole fixpoint, not local, so the induction above does not apply to rounds:
+    nothing proves that they go on as they started, and they are not followed to an end.
   - Beyond 300 steps or 40 rounds the edit is refused (`Undetermined`).
 - **Two solvers for the choices.** When the rules that read chosen kinds read
   them in a conjunction and place single positions relative to p, and the "or"
@@ -329,10 +326,11 @@ simply takes its first valid operand (`test_unbounded_on_the_left`).
     and one of the two directions gives an earlier position an earlier operand.
     That contradicts the definition, so the changes are at real parts e + n·g.
   - **ε parts.** A real distance keeps the ε part of a position, and an open end
-    adds ±1. So the search looks for changes within ±2 of the ε parts of the
-    nearby ends of the claims, fixed regions and choices. This is the one
-    assumption it makes. A check between two candidate positions refuses the edit
-    if a change falls elsewhere.
+    adds ±1. A chain of rules goes through each kind once, so what it places is within
+    `RuleSet.eps_reach` of the ε parts of the nearby ends of the claims, fixed regions
+    and choices: 1 + the open ends of the rules (at most the kinds + 1), and 2 at
+    least. A cycle that moves positions with an open end has no such bound
+    (`RuleSet.drifts`): the choices, and the mode rules there, are refused.
   - **What makes it fast.** The search remembers each situation it completed or
     failed: what the choices before P placed and forbade, as far as the rules
     reach from P. A failure also rules out every situation with no less placed
@@ -627,6 +625,8 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     generator's constraint from then on, for the next runs too. The run going on is
     cancelled, or its script would replace the user's; the events that were there stay
     as they were, and the next run replaces the rest.
+  - **Edits against the constraints.** A user's edit after which the constraints cannot
+    hold (what they ask for would be refused) is refused (`Simulation._against_constraints`).
   - **Stopped.** A step of the simulation, a generator run included, can be
     stopped from another thread (`solver.STOP`, Pause in the window): the long
     loops raise `Interrupted`, and the step is undone (`Simulation.snapshot`,
@@ -668,6 +668,11 @@ returns a script made of events.
 - `Edited`: fires at each edit of the user. A user edit runs the generator only
   through it; a change of rules or problems runs the new generator.
 - `Uncovered`: the chip is where the script does not apply the mode rules (§7).
+- `PresenceAbove(K, v, y, H, lo, hi, m)`: the ratio of K at v% on (chip, chip + H] is
+  above y, with the chip in [lo, hi) and in mode m.
+- `ScoreBelow(z)`: the optimization score 1 / (1 + the weighted error on the line as it
+  is) is below z. Both are looked at at each instant (a step of the chip, an edit, a
+  transition), so one crossed between two instants fires at the next one.
 
 **Actions:**
 
@@ -741,12 +746,13 @@ call ends it (`test_background_runs`).
 | work of a run | min(B(q), number of candidates), with B(q) = 2 + ⌊36q⌋ | non-decreasing in q |
 | rerun distance | D(q) = H(1 − q/2) | strictly decreasing in q |
 | rerun transitions | K(q) = 1 + ⌊4(1 − q)⌋ | non-increasing in q |
+| compiled ahead | q D(q) / 6 | strictly increasing in q |
+| margin of the watches | (1 − q) / 2 | strictly decreasing in q |
 
-With mode rules, a run compiles them up to c + D(q)/6 and asks for the next run at
-c + D(q)/18 instead of c + D(q). A run compiles about two minutes of the chip per
-second on the 15-minute break example, so short runs asked for early complete
-before the chip leaves what the run before compiled, and the new script takes over
-in the middle of a stretch (`Simulation._inside`).
+With mode rules, a run's text covers them up to c + D(q)/6, it compiles them ahead up
+to c + q D(q)/6 (a shortcut: q D(q) grows with q, so a lower q compiles less, and the
+chip computes the rest), and it asks for the next run at c + D(q)/18 instead of
+c + D(q).
 
 **Per run** (`test_per_run`). The candidate list does not depend on q, and a
 run evaluates a prefix of it. So with a lower q:

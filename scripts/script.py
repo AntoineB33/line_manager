@@ -22,6 +22,10 @@ Triggers
   installation of the script is revealed.
 - Edited(): fires at each edit of the user (undo and clear included).
 - Uncovered(): true while the chip is where the script does not apply the mode rules.
+- PresenceAbove(K, v, y, H, lo, hi, mode): true while the presence ratio of K at v% on
+  (chip, chip + H] is above y, the chip in [lo, hi) and the mode at the chip `mode`.
+- ScoreBelow(z): true while the optimization score (`score`) is below z.
+  Both are looked at at each instant.
 
 Actions
 - EditAction(ops): an edit of the line on exact intervals (continuous: any interval
@@ -43,11 +47,28 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from fractions import Fraction
 
-from intervals import INF, Interval, Num, _fmt
+from intervals import INF, Interval, IntervalSet, Num, _fmt
 from line import Op
 from region import Region
 
 MODE_RULES = "apply the mode rules"
+
+
+class _Now:
+    """What a problem's error reads, on the line as it is (nothing predicted)."""
+    weights_full = None
+
+    def __init__(self, c) -> None:
+        self.c = c
+
+    def expected(self, s, kind, weights, Wset):
+        return s.line.integral(kind, Wset)
+
+
+def score(problems, state, chip) -> Fraction:
+    """The optimization score of the line, in (0, 1]: 1 when the targets are reached, lower
+    as the weighted error of the problems grows."""
+    return 1 / (1 + sum((w * p.error(_Now(chip), state) for p, w in problems if w), Fraction(0)))
 
 
 @dataclass(frozen=True)
@@ -91,6 +112,38 @@ class Uncovered:
 
 
 @dataclass(frozen=True)
+class PresenceAbove:
+    """The ratio of K at this value on (chip, chip + H], (1/H) ∫ 1 dx, is above y, the chip
+    in [lo, hi) and (if not None) the mode at the chip `mode`."""
+    kind: str
+    value: Fraction
+    y: Fraction
+    H: Fraction
+    lo: Num
+    hi: Num
+    mode: str | None = None
+
+    def holds(self, state, chip, mode: str) -> bool:
+        if not (self.lo <= chip < self.hi and (self.mode is None or self.mode == mode)):
+            return False
+        r = state.line.vals.get(self.kind, {}).get(self.value)
+        return r is not None and r.measure_on(IntervalSet.of(Interval(chip, chip + self.H, False, True))) / self.H > self.y
+
+    def __str__(self) -> str:
+        return (f"{self.kind} {_fmt(self.value)}% exceeds a presence ratio of {_fmt(self.y)} over the next {_fmt(self.H)} "
+                f"when the chip is in [{_fmt(self.lo)}, {_fmt(self.hi)})" + (f" and mode is {self.mode}" if self.mode is not None else ""))
+
+
+@dataclass(frozen=True)
+class ScoreBelow:
+    """The optimization score (`score`) is below z."""
+    z: Fraction
+
+    def __str__(self) -> str:
+        return f"the optimization score becomes less than {_fmt(self.z)}"
+
+
+@dataclass(frozen=True)
 class EditAction:
     ops: tuple[Op, ...]
 
@@ -114,7 +167,7 @@ class RerunAction:
 
 @dataclass(frozen=True)
 class Event:
-    trigger: Start | ChipIn | TransitionCount | Edited | Uncovered
+    trigger: Start | ChipIn | PresenceAbove | ScoreBelow | TransitionCount | Edited | Uncovered
     actions: tuple
 
     def __str__(self) -> str:
@@ -141,5 +194,5 @@ class Script:
                          [f"if the chip is in [{lo}, {hi}] and mode is {m}, then {MODE_RULES}." for lo, hi, m in self.covered] +
                          ([f"elsewhere, {MODE_RULES}."] if self.live else []))
 
-    def rerun_triggers(self) -> list[Start | ChipIn | TransitionCount | Edited | Uncovered]:
+    def rerun_triggers(self) -> list:
         return [e.trigger for e in self.events if any(isinstance(a, RerunAction) for a in e.actions)]

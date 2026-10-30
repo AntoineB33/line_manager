@@ -357,6 +357,46 @@ class FifteenMinuteBreaksTest(unittest.TestCase):
         self.assertEqual(b, Region.of(IntervalSet.of(Interval.closed_open(130, 140), Interval.closed(160, 175))))
 
 
+class ResourcesTest(unittest.TestCase):
+    """A lower q: a run does less work (counted: time is noisy), and asks for no more runs."""
+
+    @staticmethod
+    def solves(q):
+        import mode_rules
+        import resolve
+        import solver
+        count = [0]
+        real = solver.solve
+
+        def counted(*a, **k):
+            count[0] += 1
+            return real(*a, **k)
+
+        modules = (mode_rules, resolve, solver)
+        for m in modules:
+            m.solve = counted
+        try:
+            rs = parse_rules(["Break15 → NoScreen", "mode 1 → no NoScreen", "mode 2 → NoScreen"])
+            gen = RulesGenerator(rs, PresenceRatioProblem({"Other": F(1, 4)}, 240), q, constraints=[FifteenMinuteBreaks()])
+            gen.run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
+        finally:
+            for m in modules:
+                m.solve = real
+        return count[0]
+
+    def test_a_lower_q_solves_less(self):
+        work = [self.solves(q) for q in (F(1, 10), F(3, 10), F(1, 2), F(7, 10), F(9, 10))]
+        self.assertEqual(work, sorted(work), work)
+        self.assertLess(work[0], work[-1])
+
+    def test_the_text_does_not_depend_on_what_is_compiled(self):
+        rs = parse_rules(["mode 1 → D"])
+        low = RulesGenerator(rs, PresenceRatioProblem({}, 60), F(1, 10)).run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))[0]
+        high = RulesGenerator(rs, PresenceRatioProblem({}, 60), F(9, 10)).run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))[0]
+        self.assertGreater(low.covered[0][1], high.covered[0][1])  # a lower q reruns later, its text goes further
+        self.assertLess(low.stretches[-1].b, high.stretches[-1].b)  # and it compiles less
+
+
 class GuaranteesTest(unittest.TestCase):
     def test_random_simulations(self):
         rng = random.Random(11)

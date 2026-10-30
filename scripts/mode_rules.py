@@ -224,7 +224,7 @@ class ModeRules:
                 ks = range(max(-n, math.ceil((e.x - hi.x - 1) / self.g)), min(n, math.floor((e.x - lo.x + 1) / self.g)) + 1)
             for k in ks:
                 base = e - (k * self.g if self.g else 0)
-                for j in range(-2, 3):
+                for j in range(-self.rs.eps_reach, self.rs.eps_reach + 1):
                     c = base + EPS * j
                     if lo <= c <= hi:
                         out.add(c)
@@ -342,6 +342,8 @@ class _Plan:
 
     def _stretch(self, hi: Pos) -> None:
         cur = self.a0 if self.checked is None else self.checked + EPS
+        if self.mr.rs.drifts:  # the positions where the decision can change have no bound
+            raise _Changes(cur)
         if not self.queue and (self.top is None or self.top < cur):
             g = self.mr.g or self.mr.rs.reach or Fraction(1)
             self.top = Pos(max(hi.x, cur.x) + g)

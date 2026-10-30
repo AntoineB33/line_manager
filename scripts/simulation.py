@@ -45,7 +45,7 @@ from modes import ModeTimeline
 from region import Region
 from solver import Line
 from resolve import Refused, owned_by_others, apply_edit, rebuild
-from script import ConstraintEditAction, ChipIn, EditAction, RerunAction, Script, Start, TransitionCount, Uncovered, Edited
+from script import ConstraintEditAction, ChipIn, EditAction, PresenceAbove, RerunAction, ScoreBelow, Script, Start, TransitionCount, Uncovered, Edited, score
 
 
 class Chip:
@@ -226,6 +226,11 @@ class Simulation:
         if isinstance(trig, ChipIn):
             c = self.chip.position(t)
             return trig.holds(c, self.modes.mode_at(c))
+        if isinstance(trig, PresenceAbove):
+            c = self.chip.position(t)
+            return trig.holds(self.state, c, self.modes.mode_at(c))
+        if isinstance(trig, ScoreBelow):
+            return score(self.gen.problems, self.state, self.chip.position(t)) < trig.z
         return self._since_install >= trig.k
 
     def _edit(self, t: Fraction, ops: list[Op], owner: str, source: str) -> bool:
@@ -240,9 +245,25 @@ class Simulation:
             if why:
                 self.log.refused.append((t, source, why))
                 return False
+        elif source == "user":
+            why = self._against_constraints(after, self.chip.position(t))
+            if why:
+                self.log.refused.append((t, source, why))
+                return False
         self.log.changes.append(Change(t, self.chip.position(t), source, before, after))
         self.state = after
         return True
+
+    def _against_constraints(self, state: LineState, c: Fraction) -> str | None:
+        """Why the constraints the script must satisfy cannot hold on this line, if so."""
+        ops = [o for k in self.script.constraints or getattr(self.gen, "constraints", ()) for o in k.ops(state, c)]
+        if not ops:
+            return None
+        try:
+            why = check_script_edit(state, apply_edit(self.rules, state, ops, GEN), c)
+        except Refused as e:
+            why = str(e)
+        return f"it contradicts the constraints: {why}" if why else None
 
     def run(self, end_time) -> Log:
         self.advance(end_time)

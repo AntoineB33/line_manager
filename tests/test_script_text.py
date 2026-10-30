@@ -14,7 +14,13 @@ from app import FifteenMinuteBreaks, PresenceRatioProblem, Session  # noqa: E402
 from intervals import EPS, INF, Pos  # noqa: E402
 from line import Op  # noqa: E402
 from region import ONE  # noqa: E402
-from script import ChipIn, EditAction, Edited, Event, RerunAction, Script, Start, TransitionCount  # noqa: E402
+from generator import RulesGenerator  # noqa: E402
+from line import USER, LineState  # noqa: E402
+from modes import ModeTimeline  # noqa: E402
+from resolve import apply_edit  # noqa: E402
+from rules import parse_rules  # noqa: E402
+from script import ChipIn, EditAction, Edited, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Start, TransitionCount, score  # noqa: E402
+from simulation import Chip, Simulation  # noqa: E402
 from script_text import ScriptError, _op, parse_script, position, region  # noqa: E402
 
 RULES = ["Break15 → NoScreen", "mode 1 → no NoScreen", "mode 2 → NoScreen"]
@@ -225,6 +231,76 @@ class ReplaceTest(unittest.TestCase):
         self.assertIsNot(s.sim.script, before)
         self.assertIn("newer", s.edit_script(before.text() + "\nif the chip is at or after 1, then put A 100% on [50, 60].", before))
         self.assertIn("[50, 60]", s.sim.script.text())
+
+
+class EventsOfTheRequirementTest(unittest.TestCase):
+    """The events of the example of requirement.md."""
+
+    def test_written_and_read(self):
+        text = "\n".join(["if D 100% exceeds a presence ratio of 1/4 over the next 10 when the chip is in [2, 6) and mode is 1, then run the generator again.",
+                          "if the optimization score becomes less than 9/10, then run the generator again."])
+        script = parse_script(text, Script())
+        self.assertEqual(script.text(), text)
+        self.assertEqual(script.events[0].trigger, PresenceAbove("D", F(100), F(1, 4), F(10), F(2), F(6), "1"))
+        self.assertEqual(script.events[1].trigger, ScoreBelow(F(9, 10)))
+        with self.assertRaises(ScriptError):
+            parse_script("if D 100% exceeds a presence ratio of 1/4 over the next 0 when the chip is in [2, 6), then run the generator again.", Script())
+
+    def test_generated_and_not_fired_by_themselves(self):
+        rs = parse_rules(["A → B"])
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({"A": F(1, 4)}, 10), 0.5), Chip([(0, 0), (4, 4)]), ModeTimeline(0, "1"))
+        sim.start()
+        text = sim.script.text()
+        self.assertIn("exceeds a presence ratio of", text)
+        self.assertIn("the optimization score becomes less than", text)
+        self.assertEqual(len(sim.log.runs), 1)
+
+    def test_they_fire(self):
+        rs = parse_rules([])
+        ops = [Op.put("D", Region.of(Interval.closed(2, 3)))]
+        for line, fires in (("if D 100% exceeds a presence ratio of 1/20 over the next 10 when the chip is in [0, 6), then put R 100% on [50, 51].", True),
+                            ("if D 100% exceeds a presence ratio of 1/5 over the next 10 when the chip is in [0, 6), then put R 100% on [50, 51].", False),
+                            ("if D 100% exceeds a presence ratio of 1/20 over the next 10 when the chip is in [0, 6) and mode is 2, then put R 100% on [50, 51].", False)):
+            sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5), Chip([(0, 0), (4, 4)]), ModeTimeline(0, "1"))
+            sim.start()
+            sim.replace_script(parse_script(line, Script(), rs))
+            sim.chip.extend(5, 4)
+            sim.advance(1)
+            sim.edit_now(ops)
+            sim.advance(2)
+            self.assertEqual(sim.state.line.presence("R").contains(50), fires, line)
+
+    def test_score(self):
+        rs = parse_rules([])
+        problems = [(PresenceRatioProblem({"A": F(1, 2)}, 10), F(1))]
+        self.assertEqual(score(problems, LineState.empty(), F(0)), F(2, 3))  # the error is 1/2
+        st = apply_edit(rs, LineState.empty(), [Op.put("A", Region.of(Interval.open_closed(0, 5)))], USER)
+        self.assertEqual(score(problems, st, F(0)), 1)
+
+
+class ConstraintsRefuseTest(unittest.TestCase):
+    """An edit that leads to a contradiction with the constraints is refused."""
+
+    def test_refused(self):
+        s = session()
+        before = s.sim.state
+        self.assertIn("contradicts the constraints", s.command("add Break15 on [40, 41]"))
+        self.assertIs(s.sim.state, before)
+        self.assertFalse(s.sim.state.line.presence("Break15").contains(40))
+
+    def test_a_break_inside_a_long_period_of_no_screen(self):
+        """A break that would start inside it starts at its start, once: the next one is
+        120 after its end."""
+        s = session()
+        s.tick(F(30))
+        s.command("add NoScreen on [160, 200]")
+        b = s.sim.state.line.presence("Break15") & Region.of(Interval.closed(100, 400))
+        self.assertEqual(b, Region.of(IntervalSet.of(Interval.closed(160, 175), Interval.closed(320, 335))))
+
+    def test_accepted(self):
+        s = session()
+        self.assertNotIn("contradicts", s.command("add NoScreen on [300, 310]"))
+        self.assertTrue(s.sim.state.line.presence("NoScreen").contains(305))
 
 
 if __name__ == "__main__":

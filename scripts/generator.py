@@ -61,7 +61,7 @@ from problems import MinimumLengthProblem, PresenceRatioProblem  # noqa: F401 (t
 from region import Region
 from resolve import Refused, apply_edit
 from rules import RuleSet
-from script import ConstraintEditAction, ChipIn, EditAction, Event, RerunAction, Script, TransitionCount, Uncovered, Edited
+from script import ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, TransitionCount, Uncovered, Edited, score
 from solver import lhs_region
 
 PREDICTIONS = ("scenario", "uniform", "none")
@@ -155,17 +155,39 @@ class RulesGenerator:
         D = rerun_distance(self.q, H)
         if self.rules.mode_rules:
             covered = self.predicted(ctx, c + D / 6)
-            stretches, stats.refused = compile_runs(self.rules, best_after, covered, self.constraints)
+            # what the text covers does not depend on what is compiled ahead, a shortcut: a
+            # lower q compiles less (q D(q) grows with q), and the chip computes the rest
+            end = c + D / 6 * Fraction(str(self.q))
+            ahead = [(lo, min(hi, Pos(end)), m) for lo, hi, m in covered if lo <= end]
+            stretches, stats.refused = compile_runs(self.rules, best_after, ahead, self.constraints)
         if best_ops:
             events.append(Event(ChipIn(c, c + H), (EditAction(tuple(best_ops)),)))
         if not self._futile(state, best_ops):
             events.append(Event(ChipIn(c + (D / 18 if self.rules.mode_rules else D), INF), (RerunAction(),)))
             events.append(Event(TransitionCount(rerun_transitions(self.q)), (RerunAction(),)))
+            events += self._watches(best_after, c, D, known.current_mode())
         events.append(Event(Edited(), (RerunAction(),)))
         if covered:
             events.append(Event(Uncovered(), (RerunAction(),)))
         live = bool(self.constraints and self.rules.mode_rules)  # a constraint holds whatever a run had time for
         return Script(events, stretches, covered, c, best_after, live, self.constraints), stats
+
+    def _watches(self, state: LineState, c: Fraction, D: Fraction, mode: str) -> list[Event]:
+        """Run again if the line goes away from what this run left: the score gets lower than
+        it is, or a presence ratio above its target and what it is, by a margin that a
+        lower q makes wider (not true on the line this run leaves, so no run asks for itself)."""
+        if not any(p.has_targets() for p, _ in self.problems):
+            return []
+        margin = (1 - Fraction(str(self.q))) / 2
+        out = [Event(ScoreBelow(score(self.problems, state, c) * (1 - margin)), (RerunAction(),))]
+        for p, _ in self.problems:
+            for kind, r in sorted(getattr(p, "targets", {}).items()):
+                w = IntervalSet.of(Interval(c, c + p.horizon, False, True))
+                now = state.line.integral(kind, w) / p.horizon
+                y = max(now, r) + margin / 2
+                if y < 1:
+                    out.append(Event(PresenceAbove(kind, Fraction(100), y, p.horizon, c, c + D, mode), (RerunAction(),)))
+        return out
 
     def predicted(self, ctx: _Context, end: Fraction) -> list[tuple[Pos, Pos, str]]:
         """The modes the mode rules are compiled for (`_Context.predicted`)."""

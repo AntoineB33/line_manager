@@ -19,7 +19,7 @@ from constraints import FifteenMinuteBreaks, KeepOn
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import Op
 from region import ONE, Region
-from script import MODE_RULES, ChipIn, ConstraintEditAction, Edited, EditAction, Event, RerunAction, Script, Start, TransitionCount, Uncovered
+from script import MODE_RULES, ChipIn, ConstraintEditAction, Edited, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Start, TransitionCount, Uncovered
 
 _POS = re.compile(r"(?P<x>-?\d+(?:/\d+)?)?(?:(?P<s>[+-])?(?P<k>\d*)ε)?$")
 _BREAKS = re.compile(r"keep (\S+) on \(chip, chip \+ (\S+)\] with (\S+), as early as possible, none within (\S+) after as much (\S+)$")
@@ -183,6 +183,15 @@ def _trigger(text: str):
         if int(m[1]) < 1:
             raise ValueError("at least 1 mode transition")
         return TransitionCount(int(m[1]))
+    m = re.fullmatch(r"the optimization score becomes less than (\S+)", text)
+    if m:
+        return ScoreBelow(_number(m[1]))
+    m = re.fullmatch(r"(\S+) ([^ %]+)% exceeds a presence ratio of (\S+) over the next (\S+) when the chip is in \[([^,]+), ([^,]+)\)(?: and mode is (\w+))?", text)
+    if m:
+        y, H, lo, hi = _number(m[3]), _number(m[4]), _number(m[5]), _number(m[6])
+        if H <= 0 or not lo < hi:
+            raise ValueError(f"a length > 0, and positions in [{lo}, {hi}), are expected: {text!r}")
+        return PresenceAbove(m[1], _number(m[2]), y, H, lo, hi, m[7])
     m = re.fullmatch(r"the chip is (?:in \[([^,]+), ([^,]+)\)|at or after ([^,]+?))(?: and mode is (\w+))?", text)
     if not m:
         raise ValueError(f"this condition is not understood: {text!r}")

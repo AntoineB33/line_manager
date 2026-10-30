@@ -397,6 +397,14 @@ class RuleSet:
         self.or_rank = {a: n for n, a in enumerate(self.or_items)}
         ends = [abs(e.x) for r in self.rules for o in r.lits() for e in (o.where.lo, o.where.hi) if e not in (math.inf, -math.inf)]
         self.reach = max(ends, default=Fraction(0))
+        # how far from the ε part of what it starts from a chain of rules can place: an open
+        # end adds ±1, and a chain goes through each kind once (a cycle: `moving`, `drifts`)
+        opened = [1 for r in self.rules for o in r.lits() for e in (o.where.lo, o.where.hi) if e not in (math.inf, -math.inf) and e.k]
+        self.eps_reach = 1 + min(max(len(opened), 1), len(self.order) + 1)
+        # a cycle with an open end moves ε parts at each turn: no bound
+        self.drifts = any(o.kind in self.moving and self.block_of.get(k) == self.block_of[o.kind] and
+                          any(e not in (math.inf, -math.inf) and e.k for e in (o.where.lo, o.where.hi))
+                          for r in self.element for o in r.lits() for k in r.lhs.kinds())
         sizes = [e for e in ends if e] + [o.where.length for r in self.rules for o in r.lits() if 0 < o.where.length < math.inf]
         self.smallest_offset = min(sizes, default=None)
 

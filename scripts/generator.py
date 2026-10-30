@@ -118,7 +118,7 @@ class RulesGenerator:
         base, keep = state, None
         ops = [o for k in self.constraints for o in k.ops(state, c)]
         if ops:
-            keep = ConstraintEditAction(tuple(ops), c)
+            keep = ConstraintEditAction(tuple(ops), c, self.constraints)
             try:
                 base = apply_edit(self.rules, state, ops, GEN)
                 why = check_script_edit(state, base, c)
@@ -164,7 +164,8 @@ class RulesGenerator:
         events.append(Event(Edited(), (RerunAction(),)))
         if covered:
             events.append(Event(Uncovered(), (RerunAction(),)))
-        return Script(events, stretches, covered, c, best_after), stats
+        live = (self.rules, self.constraints) if self.constraints and self.rules.mode_rules else None
+        return Script(events, stretches, covered, c, best_after, live), stats
 
     def predicted(self, ctx: _Context, end: Fraction) -> list[tuple[Pos, Pos, str]]:
         """The modes the mode rules are compiled for (`_Context.predicted`)."""

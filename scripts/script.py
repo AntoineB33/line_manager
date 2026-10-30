@@ -19,11 +19,9 @@ Actions
 - EditAction(ops): an edit of the line on exact intervals (continuous: any interval
   of the real line, not a grid), resolved by the fixed rules of resolve.py and applied
   only if it respects N1 and N2 (guards.py).
-- ConstraintEditAction(ops, origin): the edits the run's constraints asked for with
-  the chip at `origin` (constraints.py). If, where it fires, the chip has passed
-  positions they act on (the run took that long), they are moved with the chip: on a
-  line that did not change meanwhile, the run would have asked for them moved so.
-  Then as EditAction.
+- ConstraintEditAction(ops, origin, constraints): the edits the run's constraints ask
+  for (constraints.py), asked again where it fires: the run took time, and the chip
+  and the line went on meanwhile. Then as EditAction.
 - RerunAction(): runs the rules generator again; its new script replaces this one.
 
 Compiled mode rules (`stretches`, mode_rules.Stretch): what the mode rules do as the
@@ -31,8 +29,13 @@ chip goes through the modes the run predicted, each stretch a continuous edit at
 chip that applies only if the chip is there in that mode on the line compiled for it
 (simulation.py). The rules are the same at every position, so when the script is put
 in place with the chip d after `origin` and the line is `base` moved by d, every
-stretch applies moved by d (the run took that long; nothing changed meanwhile). Nothing else carries out the mode rules: where the script has no
-stretch, they do nothing until a run compiles one.
+stretch applies moved by d (the run took that long; nothing changed meanwhile).
+
+Where the script has no stretch, the mode rules do nothing until a run compiles one,
+unless the generator has constraints to satisfy: a constraint holds whatever a run
+had time for, so its script says for itself what to do there (`live`, the rules and
+the constraints): the mode rules with the constraints kept, on the line as it is, at
+any position and in any mode, as the chip goes.
 """
 
 from __future__ import annotations
@@ -95,18 +98,16 @@ class EditAction:
 
 @dataclass(frozen=True)
 class ConstraintEditAction:
-    ops: tuple[Op, ...]
+    ops: tuple[Op, ...]  # what the constraints asked for with the chip at `origin`
     origin: Fraction
+    constraints: tuple = ()
 
-    def at(self, chip) -> list[Op]:
-        """The edit with the chip at `chip`."""
-        past = Region.of(Interval(-INF, chip, False, True))
-        if all((o.region & past).is_empty() for o in self.ops):
-            return list(self.ops)
-        return [Op(o.action, o.kind, o.region.shift(chip - self.origin), o.value) for o in self.ops]
+    def now(self, state, chip) -> list[Op]:
+        """The edit where it fires: what the constraints ask for on the line as it is."""
+        return [o for k in self.constraints for o in k.ops(state, chip)]
 
     def __str__(self) -> str:
-        return ", ".join(map(str, self.ops)) + f" (moved with the chip if it is past {_fmt(self.origin)} by then)"
+        return ", ".join(map(str, self.ops)) + f" (what the constraints ask for then, if the chip or the line went on from {_fmt(self.origin)})"
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,7 @@ class Script:
     covered: list = field(default_factory=list)  # (lo, hi, mode): the positions and modes the run compiled
     origin: object = None  # the chip's position the run compiled from
     base: object = None  # the line it compiled from (line.LineState), its own edits made
+    live: object = None  # (rules, constraints): what it does where no stretch applies
 
     @staticmethod
     def initial() -> Script:
@@ -140,7 +142,9 @@ class Script:
         return Script([Event(Start(), (RerunAction(first=True),))])
 
     def text(self) -> str:
-        return "\n".join([str(e) for e in self.events] + [st.text() for st in self.stretches])
+        live = [] if self.live is None else ["where no compiled stretch applies, at any chip position and in any mode: "
+                                             "the mode rules at the chip, keeping " + "; ".join(map(str, self.live[1])) + ", on the line as it is."]
+        return "\n".join([str(e) for e in self.events] + [st.text() for st in self.stretches] + live)
 
     def rerun_triggers(self) -> list[Start | ChipIn | TransitionCount | Edited | Uncovered]:
         return [e.trigger for e in self.events if any(isinstance(a, RerunAction) for a in e.actions)]

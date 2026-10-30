@@ -202,7 +202,7 @@ class ModeRulesTest(unittest.TestCase):
         sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5, constraints=[KeepOn(future)]),
                          Chip([(0, 0), (20, 20)]), ModeTimeline(0, "1"))
         sim.start()
-        self.assertIn("put Future 100% on (0, +inf) (moved with the chip if it is past 0 by then)", sim.script.text())
+        self.assertIn("put Future 100% on (0, +inf) (what the constraints ask for then, if the chip or the line went on from 0)", sim.script.text())
         sim.advance(4)
         check_log(sim.log, rs)
         line = sim.state.line
@@ -321,6 +321,39 @@ class FifteenMinuteBreaksTest(unittest.TestCase):
         self.assertEqual(sim.state.line.presence("Break15") & Region.of(Interval.closed(0, 700)),
                          self.every_135(135, 270, 405, 540, 675))
         self.assertTrue(any(ch.source == "script" for ch in sim.log.changes))
+
+
+    def _back_to_mode_1(self, rules):
+        """Mode 2 from 130, mode 1 again at 140, inside the break; no generator run
+        completes after the first. What the breaks are around there, the chip at 160."""
+        rs = parse_rules(rules)
+        chip = Chip([(0, 0)])
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 240), 0.5, constraints=[FifteenMinuteBreaks()]),
+                         chip, ModeTimeline(0, "1", [(130, "2"), (140, "1")]))
+        sim.background = True
+        sim.start()
+        r = sim.request
+        sim.complete(r.id, *r.gen.run(r.state, r.chip, r.known))
+        while sim.t < 160:
+            chip.extend(sim.t + 1, sim.t + 1)
+            sim.advance(sim.t + 1)
+        check_log(sim.log, rs)
+        return sim.state.line.presence("Break15") & Region.of(Interval.closed(100, 200))
+
+    def test_back_to_mode_1_inside_a_break(self):
+        """It holds whatever the runs had time for: the script cuts the break at the chip
+        and drags a new one."""
+        b = self._back_to_mode_1(["Break15 → NoScreen", "mode 1 → no NoScreen", "mode 2 → NoScreen"])
+        self.assertEqual(b, Region.of(IntervalSet.of(Interval.closed_open(130, 140), Interval.closed(160, 175))))
+
+    def test_back_to_mode_1_inside_a_break_all_the_rules(self):
+        """The same with the rules of UI/examples/fifteen_minute_break_modes.py."""
+        b = self._back_to_mode_1(["Break15 → NoScreen",
+                                  "NoScreen → (NoComputerUnlocked or NotOnComputer) & (NoPhoneUnlocked or NotOnPhone)",
+                                  "NotOnComputer → no NoComputerUnlocked", "NotOnPhone → no NoPhoneUnlocked",
+                                  "mode 1 → no NoScreen", "mode 2 → NoScreen & NoComputerUnlocked & NoPhoneUnlocked",
+                                  "mode 3 → NoScreen & (NotOnComputer or NotOnPhone)"])
+        self.assertEqual(b, Region.of(IntervalSet.of(Interval.closed_open(130, 140), Interval.closed(160, 175))))
 
 
 class GuaranteesTest(unittest.TestCase):

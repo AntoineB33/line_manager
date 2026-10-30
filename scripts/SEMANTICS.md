@@ -613,6 +613,15 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     moved by d (`Simulation._align`, `test_late_script_moved`). Any other line,
     for example with a user's element at a fixed position, takes the stretches as
     they are.
+  - **Constraints.** A constraint holds whatever a run had time for (a run can be
+    cancelled by the next, again and again). So a generator with constraints gives
+    its script an instruction of its own for the positions where no stretch applies
+    (`Script.live`): the mode rules with the constraints kept, on the line as it is,
+    at any position and in any mode, with no run needed (`Simulation._live`). The chip
+    back in mode 1 inside a break cuts it at that very position and drags a new one
+    (`test_back_to_mode_1_inside_a_break`). `Uncovered` then answers a mode the run did
+    not compile only, not another line. The script's constraint edit is asked again
+    where it fires (`ConstraintEditAction.now`).
   - **Stopped.** A step of the simulation, a generator run included, can be
     stopped from another thread (`solver.STOP`, Pause in the window): the long
     loops raise `Interrupted`, and the step is undone (`Simulation.snapshot`,

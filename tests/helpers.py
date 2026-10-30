@@ -9,6 +9,7 @@ from fractions import Fraction as F
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 from guards import claims_on, left_side, same_dict, user_claims  # noqa: E402
+from line import GEN  # noqa: E402
 from intervals import INF, Interval, IntervalSet, Pos  # noqa: E402
 from region import Region  # noqa: E402
 from solver import EMPTY, lhs_region, solve, union  # noqa: E402
@@ -102,8 +103,8 @@ def check_log(log, rs, modes=None) -> int:
             left = left_side(ch.chip, closed=False)
             assert ch.before.line.same_on(ch.after.line, left), "M1 line"
             assert same_dict(claims_on(ch.before.claims, left), claims_on(ch.after.claims, left)), "M1 claims"
-            away = ch.at.complement()
-            assert same_dict(claims_on(ch.before.claims, away), claims_on(ch.after.claims, away)), "M1 away from the chip"
+            away = ch.at.complement()  # (the script's own claims may change there: its constraints, kept after the chip)
+            assert same_dict(_not_gen(claims_on(ch.before.claims, away)), _not_gen(claims_on(ch.after.claims, away))),                 "M1 away from the chip"
             assert same_dict(user_claims(ch.before.claims), user_claims(ch.after.claims)), "N2 (mode rules)"
         if ch.source != "script":
             continue
@@ -113,3 +114,8 @@ def check_log(log, rs, modes=None) -> int:
         assert same_dict(claims_on(ch.before.claims, left), claims_on(ch.after.claims, left)), "N1 claims"
         assert same_dict(user_claims(ch.before.claims), user_claims(ch.after.claims)), "N2"
     return n
+
+
+def _not_gen(d: dict) -> dict:
+    """The claims of claims_on but the generated script's."""
+    return {k: r for k, r in d.items() if (k[2][1] if k[0] == "pos" else k[2]) != GEN}

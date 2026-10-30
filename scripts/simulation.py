@@ -16,7 +16,9 @@ through the positions chip([t0, t1)), all with one mode, and each stretch of the
 script for that mode whose line is the one compiled for it changes the line as the
 chip goes through it (logged as a continuous change, source "mode"). Where no stretch
 applies (another mode, another line), the mode rules do nothing until a run compiles
-one. Sweeps are cut at the multiples of half the smallest rule offset.
+one, unless the script has constraints to keep: then it applies them there itself, on
+the line as it is (`Script.live`). Sweeps are cut at the multiples of half the
+smallest rule offset.
 
 A simulation can also go step by step (the interactive program, UI/app.py):
 `start()` is the first instant, `advance(t)` runs it up to time t (starting it if
@@ -40,6 +42,7 @@ from generator import RulesGenerator, RunStats
 from guards import check_script_edit
 from intervals import EPS, INF, Interval, Num, Pos
 from line import GEN, USER, Claims, LineState, Op
+from mode_rules import ModeRules, Run
 from modes import ModeTimeline
 from region import Region
 from solver import Line
@@ -144,6 +147,7 @@ class Simulation:
         h = self.rules.smallest_offset
         self.grid = h / 2 if h else None
         self._stretch = None  # (stretch, the state it made last, the next position): the one the chip goes through
+        self._live_rules: dict[str, ModeRules] = {}  # the compiled rules of `Script.live`, per mode
         self._shift = None
         self._missed = None  # (script, state): no stretch of that script takes over on that line
         self.background = False  # runs of the generator complete later (`complete`)
@@ -188,6 +192,7 @@ class Simulation:
     def _set_script(self, t: Fraction, c: Fraction, why: str, script: Script, stats: RunStats) -> None:
         self.script = script
         self._stretch = None
+        self._live_rules = {}
         self._shift = None  # how far the script's stretches are moved: decided when they are first needed
         self._since_install = 0
         self._was_true = [False] * len(script.events)
@@ -339,7 +344,7 @@ class Simulation:
                     if isinstance(a, EditAction):
                         self._edit(t, list(a.ops), GEN, "script")
                     elif isinstance(a, ConstraintEditAction):
-                        self._edit(t, a.at(self.chip.position(t)), GEN, "script")
+                        self._edit(t, a.now(self.state, self.chip.position(t)), GEN, "script")
                     elif isinstance(a, RerunAction):
                         rerun = ("start" if a.first else "user edit" if isinstance(ev.trigger, Edited)
                                  else "uncovered" if isinstance(ev.trigger, Uncovered) else "script")
@@ -360,8 +365,9 @@ class Simulation:
         hi = x if c1 == c0 else (Pos(c1) if self.chip.first_time(c1) < t1 else Pos(c1) - EPS)
         while x <= hi:
             st = self._stretch_at(mode, x, hi)
-            if st is None:
-                return  # no stretch acts on the rest: the mode rules do nothing there (script.Uncovered)
+            if st is None:  # no stretch acts on the rest
+                self._live(t0, mode, x, hi)  # (without it the mode rules do nothing there: script.Uncovered)
+                return
             d = self._shift
             x = max(x, st.a + d)
             end = st.b + d if st.b + d < hi else hi
@@ -372,6 +378,21 @@ class Simulation:
                 self.state = after
             x = end + EPS
             self._stretch = (st, after, x)
+
+    def _live(self, t0: Fraction, mode: str, x: Pos, hi: Pos) -> None:
+        """The script's instruction for the positions no stretch acts on (`Script.live`):
+        the mode rules, the constraints kept, on the line as it is. No run is needed."""
+        if self.script.live is None:
+            return
+        rs, constraints = self.script.live
+        mr = self._live_rules.get(mode) or self._live_rules.setdefault(mode, ModeRules(rs, mode, constraints))
+        for ev in mr.act(self.state, x, hi):
+            if isinstance(ev, Run):
+                t = max(t0, self.chip.first_time(ev.start.x))
+                self.log.changes.append(Change(t, ev.start, "mode", ev.before, ev.after, ev.at))
+                self.state = ev.after
+            else:
+                self.log.refused.append((t0, "mode", ev[1]))
 
     def _align(self, x: Pos) -> Fraction:
         """How far the script's stretches are moved, decided the first time they are needed
@@ -396,6 +417,8 @@ class Simulation:
             return False  # past what the run compiled: the run it asked for compiles that
         if not any(lo <= y <= hi and m == mode for lo, hi, m in covered):
             return True
+        if self.script.live is not None:
+            return False  # another line: the script's instruction goes on on it
         cur = self._stretch
         if cur is not None and cur[2] == x and cur[1] is self.state:
             return False  # going on through a stretch

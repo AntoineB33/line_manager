@@ -253,10 +253,11 @@ class Session:
     def edit_script(self, text: str, previous: Script) -> str:
         """The text of `previous`, changed by the user, replaces the script in place, and
         the run going on is cancelled. ScriptError if it is not correctly written."""
-        script = parse_script(text, previous)
+        script = parse_script(text, previous, self.rs)
         newer = self.sim.script is not previous
         self.close()
         self.sim.replace_script(script)
+        self.constraints = self.sim.gen.constraints = script.constraints  # the next runs keep them too
         self.script_edit = (self.sim.t, script)
         return "the generated script is replaced by your changes" + (" (it replaces a newer script than the one you opened)" if newer else "")
 

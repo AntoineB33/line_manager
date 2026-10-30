@@ -202,7 +202,8 @@ class ModeRulesTest(unittest.TestCase):
         sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5, constraints=[KeepOn(future)]),
                          Chip([(0, 0), (20, 20)]), ModeTimeline(0, "1"))
         sim.start()
-        self.assertIn("put Future 100% on (0, +inf) (what the constraints ask for then, if the chip or the line went on from 0)", sim.script.text())
+        self.assertIn("keep put Future 100% on chip + (0, +inf)", sim.script.text())
+        self.assertIn("if the chip is at or after 0, then satisfy the constraints.", sim.script.text())
         sim.advance(4)
         check_log(sim.log, rs)
         line = sim.state.line
@@ -211,7 +212,7 @@ class ModeRulesTest(unittest.TestCase):
         self.assertTrue(line.presence("B").contains(5))
         self.assertTrue(any(ch.source == "script" for ch in sim.log.changes))
         script, _ = sim.gen.run(sim.state, F(4), ModeTimeline(0, "1").known(4))
-        self.assertNotIn("Future", " ".join(str(e) for e in script.events))  # already kept: no edit
+        self.assertNotIn("satisfy", " ".join(str(e) for e in script.events))  # already kept: no edit
 
     def test_stopped_step(self):
         """STOP set (Pause) while the generator compiles the mode rules: the step raises

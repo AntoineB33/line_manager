@@ -20,8 +20,8 @@ from script_text import ScriptError, _op, parse_script, position, region  # noqa
 RULES = ["Break15 → NoScreen", "mode 1 → no NoScreen", "mode 2 → NoScreen"]
 
 
-def session() -> Session:
-    s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2), [FifteenMinuteBreaks()])
+def session(length=15) -> Session:
+    s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2), [FifteenMinuteBreaks(length=length)])
     s.sim.background = False
     s.sim.start()
     return s
@@ -64,10 +64,18 @@ class ParseTest(unittest.TestCase):
         before = s.sim.script
         script = parse_script(s.script_text(), before)
         self.assertEqual(script.text(), before.text())
-        self.assertTrue(all(a is b for a, b in zip(script.stretches, before.stretches)))
-        self.assertEqual(len(script.stretches), len(before.stretches))
-        self.assertIs(script.live, before.live)
-        self.assertEqual(script.events[0].actions, before.events[0].actions)
+        self.assertEqual(script.events, before.events)
+        self.assertEqual(script.covered, before.covered)
+        self.assertEqual(script.live, before.live)
+        self.assertEqual(len(script.stretches), len(before.stretches))  # the shortcuts still apply
+        self.assertIs(script.constraints[0], before.constraints[0])
+
+    def test_the_text_is_all_there_is(self):
+        """Nothing hidden: read with nothing to go from, the text says the same script."""
+        s = session()
+        text = s.sim.script.text()
+        self.assertEqual(parse_script(text, Script()).text(), text)
+        self.assertNotIn("compiled", text)
 
     def test_an_event_of_each_kind(self):
         text = "\n".join(["if the chip is in [1, 5/2) and mode is 2, then put A 50% on [3, 4], take B off (4, +inf).",
@@ -75,7 +83,10 @@ class ParseTest(unittest.TestCase):
                           "if 1 mode transition happened, then put no A on {7}; run the generator again.",
                           "if the user edits the line, then take no A off [1, 2].",
                           "if the program starts, then run the generator once, as soon as possible.",
-                          "if the chip is at or after 2, then put A 100% on [1, 2] repeating every 10 to the right ...."])
+                          "if the chip is at or after 2, then satisfy the constraints.",
+                          "if the chip is at or after 2, then put A 100% on [1, 2] repeating every 10 to the right ....",
+                          "if the chip is in [3+ε, 4] and mode is 7, then apply the mode rules.",
+                          "elsewhere, apply the mode rules."])
         script = parse_script(text, Script())
         self.assertEqual(script.text(), text)
         self.assertEqual(script.events[0].trigger, ChipIn(F(1), F(5, 2), "2"))
@@ -83,15 +94,16 @@ class ParseTest(unittest.TestCase):
         self.assertIsInstance(script.events[3].trigger, Edited)
         self.assertIsInstance(script.events[4].trigger, Start)
         self.assertEqual(script.events[1].actions, (RerunAction(),))
+        self.assertEqual(script.covered, [(Pos(3, 1), Pos(4), "7")])
+        self.assertTrue(script.live)
 
     def test_deleted_lines_are_gone(self):
         s = session()
         before = s.sim.script
-        keep = [ln for ln in before.text().splitlines() if "run the generator again" not in ln and not ln.startswith(Script.LIVE) and "compiled there" not in ln]
-        script = parse_script("\n".join(keep), before)
-        self.assertEqual(script.text(), "\n".join(keep))
+        script = parse_script("\n".join(ln for ln in before.text().splitlines() if "mode rules" not in ln and "run the generator" not in ln), before)
         self.assertEqual(script.stretches, [])
-        self.assertIsNone(script.live)
+        self.assertEqual(script.covered, [])
+        self.assertFalse(script.live)
 
     def test_nothing_is_an_empty_script(self):
         self.assertEqual(parse_script("Generated script at time 0, chip at 0 (mode 1).\n\n(empty script)\n", Script()).events, [])
@@ -100,33 +112,23 @@ class ParseTest(unittest.TestCase):
         for line in ("nonsense", "if the chip is somewhere, then run the generator again.", "if the chip is at or after 3, then dance.",
                      "if the chip is in [5, 3), then run the generator again.", "if 0 mode transitions happened, then run the generator again.",
                      "if the chip is at or after 3, then put A 101% on [1, 2].", "if the chip is at or after 3, then put A 100% on [2, 1].",
-                     "if the chip is at or after 3, then put A 100% on [1, 2] repeating every 1 to the right ...."):
+                     "if the chip is at or after 3, then put A 100% on [1, 2] repeating every 1 to the right ....",
+                     "if the chip is in [5, 3] and mode is 1, then apply the mode rules.", "elsewhere, dance.",
+                     "keep something", "keep Break15 on (chip, chip + 0] with NoScreen, as early as possible, none within 120 after as much NoScreen",
+                     "keep Break15 on (chip, chip + 15] with NoScreen, as early as possible, none within 120 after as much Other"):
             with self.assertRaises(ScriptError, msg=line):
                 parse_script(line, Script())
+
+    def test_a_kind_the_rules_do_not_know(self):
+        s = session()
+        with self.assertRaises(ScriptError) as e:
+            s.edit_script(s.script_text().replace("15", "16"), s.sim.script)
+        self.assertIn("Break16 is not in the rules", str(e.exception))
 
     def test_every_line_is_told(self):
         with self.assertRaises(ScriptError) as e:
             parse_script("Generated script at time 0, chip at 0 (mode 1).\n\nnonsense\nif the user edits the line, then run the generator again.\nbad", Script())
         self.assertEqual([n for n, _ in e.exception.errors], [3, 5])
-
-    def test_what_a_run_compiled_is_not_rewritten(self):
-        s = session()
-        before = s.sim.script
-        for old, new in ((before.stretches[0].text(), before.stretches[0].text() + " and more"),
-                         (before.live_text(), before.live_text() + " and more"),
-                         ("(what the constraints ask for then", "(what the constraints want")):
-            text = before.text().replace(old, new)
-            if old.startswith("(what"):  # the edit changed, the parentheses kept
-                text = before.text().replace("put Break15 100% on (0, 1]", "put Break15 100% on (0, 2]")
-            with self.assertRaises(ScriptError, msg=old):
-                parse_script(text, before)
-
-    def test_a_constraint_edit_becomes_a_plain_edit(self):
-        s = session()
-        before = s.sim.script
-        line = "if the chip is at or after 0, then put A 100% on [50, 60]."
-        script = parse_script("\n".join([line] + before.text().splitlines()[1:]), before)
-        self.assertEqual(script.events[0].actions, (EditAction((Op.put("A", Region.of(Interval.closed(50, 60))),)),))
 
 
 class ReplaceTest(unittest.TestCase):
@@ -140,6 +142,43 @@ class ReplaceTest(unittest.TestCase):
         s.tick(F(2))
         self.assertTrue(s.sim.state.line.presence("A").contains(55))
 
+    def test_breaks_of_16_minutes(self):
+        """The number in the text is the rule: the break the chip drags, the next ones,
+        the next runs', and the one the chip is in."""
+        def check(s, start):
+            b = s.sim.state.line.presence("Break15")
+            self.assertTrue(b.contains(start + 8) and b.contains(start + 16), str(b))
+            self.assertFalse(b.contains(start - 1) or b.contains(start + 17), str(b))
+            self.assertTrue(b.contains(start + 136 + 16) and not b.contains(start + 136 - 1), str(b))  # one every 16 + 120
+
+        s = session()
+        s.tick(F(3))
+        s.edit_script(s.script_text().replace("chip + 15]", "chip + 16]"), s.sim.script)
+        self.assertIn("chip + 16]", s.sim.script.text())
+        s.tick(F(1))
+        check(s, 4)
+        s.tick(F(20))  # through the next runs
+        self.assertGreater(len(s.sim.log.runs), 1)
+        self.assertIn("chip + 16]", s.sim.script.text())
+        check(s, 24)
+        s.set_mode("2")
+        s.tick(F(1))
+        s.tick(F(20))
+        self.assertTrue(s.sim.state.line.presence("Break15").contains(40))  # the chip went through it, whole
+        self.assertFalse(s.sim.state.line.presence("Break15").contains(41))
+
+    def test_a_break_going_on_grows(self):
+        """Mode 2, the chip in a break of 15: with 16 in the text, it lasts 16."""
+        s = session()
+        s.tick(F(1))
+        s.set_mode("2")
+        s.tick(F(1))
+        s.edit_script(s.script_text().replace("chip + 15]", "chip + 16]"), s.sim.script)
+        s.tick(F(1))
+        b = s.sim.state.line.presence("Break15")
+        self.assertTrue(b.contains(17))
+        self.assertFalse(b.contains(18))
+
     def test_not_correctly_written_nothing_changes(self):
         s = session()
         before = s.sim.script
@@ -147,13 +186,23 @@ class ReplaceTest(unittest.TestCase):
             s.edit_script(s.script_text() + "nonsense\n", before)
         self.assertIs(s.sim.script, before)
 
+    def test_deleted_elsewhere_no_mode_rules_there(self):
+        """What is written is what is done: the mode rules apply on [0, 2] only."""
+        s = session()
+        before = s.sim.script
+        text = "\n".join(ln for ln in before.text().splitlines() if "mode rules" not in ln and "run the generator" not in ln)
+        s.edit_script(text + "\nif the chip is in [0, 2] and mode is 1, then apply the mode rules.", before)
+        s.tick(F(4))
+        b = s.sim.state.line.presence("Break15")
+        self.assertFalse(b.contains(1))
+        self.assertTrue(b.contains(3))  # eaten: not dragged
+
     def test_what_an_event_did_is_not_done_again(self):
         s = session()
         before = s.sim.script
         s.tick(F(3))
         n = len(s.sim.log.changes)
         s.edit_script(before.text(), before)
-        self.assertFalse(any(c.source == "script" for c in s.sim.log.changes[n:]))
         s.tick(F(1))
         self.assertFalse(any(c.source == "script" for c in s.sim.log.changes[n:]))
 

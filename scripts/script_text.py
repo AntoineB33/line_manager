@@ -1,19 +1,12 @@
-"""A generated script read back from its text (`Script.text`), changed by the user.
+"""A generated script read from its text (`Script.text`), changed by the user.
 
-`parse_script(text, previous)` gives the script the text says, or raises ScriptError
-saying which lines are not correctly written. `previous` is the script the text was
-written from.
+`parse_script(text, previous, rules)` gives the script the text says, or raises
+ScriptError saying which lines are not correctly written. Every line of the text can be
+changed, added or deleted: what is written is what the script does. `previous` is the
+script the text was written from, whose shortcuts are kept where they still apply.
 
-- An event ("if <trigger>, then <actions>.") can be changed, added or deleted. Triggers
-  and actions are written as `Script.text` writes them.
-- The compiled stretches ("if the chip is ..., mode is m and the line is the one
-  compiled there, then ...") and the last instruction ("where no compiled stretch
-  applies, ...") are what the run compiled, and the text only describes them: each can
-  be kept as it is or deleted, not rewritten.
-- The same for the constraints' edit: changed, it is a plain edit (without the text in
-  parentheses).
-- The lines at the top of the text, down to the first empty line, tell about the script
-  and are not read.
+The lines at the top of the text, down to the first empty line, tell about the script
+and are not read.
 """
 
 from __future__ import annotations
@@ -22,16 +15,17 @@ import re
 from dataclasses import replace
 from fractions import Fraction
 
+from constraints import FifteenMinuteBreaks, KeepOn
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import Op
 from region import ONE, Region
-from script import ChipIn, ConstraintEditAction, Edited, EditAction, Event, RerunAction, Script, Start, TransitionCount, Uncovered
+from script import MODE_RULES, ChipIn, ConstraintEditAction, Edited, EditAction, Event, RerunAction, Script, Start, TransitionCount, Uncovered
 
 _POS = re.compile(r"(?P<x>-?\d+(?:/\d+)?)?(?:(?P<s>[+-])?(?P<k>\d*)ε)?$")
-_COMPILED = re.compile(r"if the chip is .*, mode is \S+ and the line is the one compiled there, then ")
+_BREAKS = re.compile(r"keep (\S+) on \(chip, chip \+ (\S+)\] with (\S+), as early as possible, none within (\S+) after as much (\S+)$")
+_APPLY = re.compile(rf"if the chip is in \[([^,]+), ([^,]+)\] and mode is (\w+), then {MODE_RULES}\.?$")
 _OP = re.compile(r"put no (?P<no>\S+) on (?P<nw>.+)$|put (?P<k>\S+) (?P<v>[^ %]+)% on (?P<w>.+)$"
                  r"|take no (?P<tn>\S+) off (?P<tnw>.+)$|take (?P<t>\S+) off (?P<tw>.+)$")
-_LATER = " (what the constraints ask for then"
 
 
 class ScriptError(ValueError):
@@ -143,16 +137,31 @@ def _op(text: str) -> Op:
     return Op.take(m["t"], region(m["tw"]))
 
 
-def _action(text: str, known: dict):
-    if text in known:
-        return known[text]
+def _action(text: str):
     if text == "run the generator again":
         return RerunAction()
     if text == "run the generator once, as soon as possible":
         return RerunAction(first=True)
-    if _LATER in text:
-        raise ValueError("the constraints' edit cannot be changed; without the text in parentheses it is a plain edit")
+    if text == str(ConstraintEditAction()):
+        return ConstraintEditAction()
     return EditAction(tuple(_op(p) for p in re.split(r", (?=put |take )", text)))
+
+
+def _constraint(line: str, rules):
+    m = _BREAKS.match(line)
+    if m:
+        kind, length, ns, pause, ns2 = m.groups()
+        if ns != ns2:
+            raise ValueError(f"the same kind is expected, not {ns} and {ns2}")
+        for k in (kind, ns):
+            if rules is not None and k not in rules.order:
+                raise ValueError(f"{k} is not in the rules")
+        length, pause = _number(length), _number(pause)
+        if length <= 0 or pause < 0:
+            raise ValueError("a length > 0, and a pause >= 0")
+        return FifteenMinuteBreaks(kind, ns, length, pause)
+    op = _op(line[len("keep "):].replace(" on chip + ", " on ", 1))
+    return KeepOn(op)
 
 
 def _number(text: str) -> Fraction:
@@ -183,39 +192,44 @@ def _trigger(text: str):
     return ChipIn(lo, hi, m[4])
 
 
-def _event(line: str, known: dict) -> Event:
+def _event(line: str) -> Event:
     m = re.fullmatch(r"if (.+?), then (.+)", line)
     if not m:
         raise ValueError('an instruction is written "if <condition>, then <what to do>."')
     body = m[2]
     if body.endswith("....") or (body.endswith(".") and not body.endswith("...")):
         body = body[:-1]  # the end of the sentence
-    return Event(_trigger(m[1]), tuple(_action(a.strip(), known) for a in body.split("; ")))
+    return Event(_trigger(m[1]), tuple(_action(a.strip()) for a in body.split("; ")))
 
 
-def parse_script(text: str, previous: Script) -> Script:
+def parse_script(text: str, previous: Script, rules=None) -> Script:
     lines = text.splitlines()
     first = 0
     if lines and lines[0].startswith("Generated script at time"):
         first = next((i for i, s in enumerate(lines) if not s.strip()), len(lines))
-    known = {str(a): a for ev in previous.events for a in ev.actions}
-    compiled = {st.text(): st for st in previous.stretches}
-    events, kept, live, errors = [], [], None, []
+    was = {str(k): k for k in previous.constraints}
+    events, covered, constraints, live, errors = [], [], [], False, []
     for i, raw in enumerate(lines[first:], first + 1):
         line = raw.strip()
         if not line or line == "(empty script)":
             continue
-        if line in compiled:
-            kept.append(compiled[line])
-        elif previous.live is not None and line == previous.live_text():
-            live = previous.live
-        elif _COMPILED.match(line) or line.startswith(Script.LIVE):
-            errors.append((i, "what a run compiled can be kept as it is or deleted, not rewritten"))
-        else:
-            try:
-                events.append(_event(line, known))
-            except ValueError as e:
-                errors.append((i, str(e)))
+        try:
+            m = _APPLY.match(line)
+            if m:
+                a, b = position(m[1]), position(m[2])
+                if type(a) is not Pos or type(b) is not Pos or b < a:
+                    raise ValueError(f"no position is in [{m[1]}, {m[2]}]")
+                covered.append((a, b, m[3]))
+            elif line.rstrip(".") == f"elsewhere, {MODE_RULES}":
+                live = True
+            elif line.startswith("keep "):
+                constraints.append(was.get(line) or _constraint(line, rules))
+            else:
+                events.append(_event(line))
+        except ValueError as e:
+            errors.append((i, str(e)))
     if errors:
         raise ScriptError(errors)
-    return replace(previous, events=events, stretches=[st for st in previous.stretches if any(st is k for k in kept)], live=live)
+    same = list(map(str, constraints)) == list(was)
+    kept = [st for st in previous.stretches if same and any(st.mode == m and a <= st.a and st.b <= b for a, b, m in covered)]
+    return replace(previous, events=events, stretches=kept, covered=covered, live=live, constraints=tuple(constraints))

@@ -598,15 +598,15 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     and each stretch between two of them is checked once, to its end. On a stretch
     the line's ends are fixed or move with the chip (above): the first and middle
     checks give which ones move, and the last check must be exactly that line,
-    else the positions there are solved one by one. Each run becomes stretches of
-    the script (`mode_rules.Stretch`): "if the chip is in [a, b], mode is m and the
-    line is the one compiled there, then …", written from the chip. As the chip
+    else the positions there are solved one by one. Each run becomes stretches
+    (`mode_rules.Stretch`), a shortcut kept with the script: the script's text says
+    "if the chip is in [a, b] and mode is m, then apply the mode rules". As the chip
     goes through a stretch, the simulation only reads the line from it: a break
     that the chip drags in mode 1 costs nothing per step
-    (`test_compiled_by_the_generator`). Where the modes or the line differ from
-    what a run compiled, no stretch applies and the mode rules do nothing; the
-    script's `Uncovered` event then runs the generator again
-    (`test_unpredicted_modes`).
+    (`test_compiled_by_the_generator`). Where the line differs from the one compiled,
+    the same is computed on the line as it is. Where the modes differ from what
+    the text says, the mode rules do nothing, and the script's `Uncovered` event runs
+    the generator again (`test_unpredicted_modes`).
   - **Moved scripts.** The rules are the same at every position. A script put in
     place with the chip d after the position its run compiled from (the run took
     that long), on the line the run compiled from moved by d, applies its stretches
@@ -614,22 +614,19 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     for example with a user's element at a fixed position, takes the stretches as
     they are.
   - **Constraints.** A constraint holds whatever a run had time for (a run can be
-    cancelled by the next, again and again). So a generator with constraints gives
-    its script an instruction of its own for the positions where no stretch applies
-    (`Script.live`): the mode rules with the constraints kept, on the line as it is,
-    at any position and in any mode, with no run needed (`Simulation._live`). The chip
-    back in mode 1 inside a break cuts it at that very position and drags a new one
-    (`test_back_to_mode_1_inside_a_break`). `Uncovered` then answers a mode the run did
-    not compile only, not another line. The script's constraint edit is asked again
-    where it fires (`ConstraintEditAction.now`).
-  - **The user's script.** The script's text can be changed (the file "Generated
-    script" opens, saved): `script_text.parse_script` reads it and
+    cancelled by the next, again and again). So the script of a generator with
+    constraints writes them (`keep ...`) and says "elsewhere, apply the mode rules": no
+    run is needed. The chip back in mode 1 inside a break cuts it at that very position
+    and drags a new one (`test_back_to_mode_1_inside_a_break`).
+  - **The script is its text.** What the text says is what the script does (script.py):
+    the mode rules apply where a line says so, on the line as it is; what a run
+    compiled ahead is only a shortcut. So the user can change any line (the file
+    "Generated script" opens, saved): `script_text.parse_script` reads it and
     `Simulation.replace_script` puts it in place, or `ScriptError` says which lines are
-    not correctly written and the script in place stays. Events can be changed, added
-    and deleted; what a run compiled (stretches, the instruction where none applies,
-    the constraints' edit) can only be kept or deleted, its text being a description.
-    The run going on is cancelled, or its script would replace the user's; the
-    events that were there stay as they were, and the next run replaces it all.
+    not correctly written and the script in place stays. A `keep` line changed is the
+    generator's constraint from then on, for the next runs too. The run going on is
+    cancelled, or its script would replace the user's; the events that were there stay
+    as they were, and the next run replaces the rest.
   - **Stopped.** A step of the simulation, a generator run included, can be
     stopped from another thread (`solver.STOP`, Pause in the window): the long
     loops raise `Interrupted`, and the step is undone (`Simulation.snapshot`,
@@ -670,7 +667,7 @@ returns a script made of events.
 - `Start`: the initial script's only trigger: the program starts.
 - `Edited`: fires at each edit of the user. A user edit runs the generator only
   through it; a change of rules or problems runs the new generator.
-- `Uncovered`: the chip is where no stretch of the script applies (§7).
+- `Uncovered`: the chip is where the script does not apply the mode rules (§7).
 
 **Actions:**
 

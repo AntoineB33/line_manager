@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from fractions import Fraction
 
-from intervals import EPS, INF, Interval, IntervalSet, Pos
+from intervals import EPS, INF, Interval, IntervalSet, Pos, _fmt
 from line import LineState, Op
 from region import ONE, ZERO, Region
 
@@ -75,7 +75,8 @@ class FifteenMinuteBreaks:
         self.length, self.pause = Fraction(length), Fraction(pause)
 
     def __str__(self) -> str:
-        return f"{self.brk}: {self.length} of {self.ns}, as early as possible, none within {self.pause} after {self.length} of {self.ns}"
+        return (f"keep {self.brk} on (chip, chip + {_fmt(self.length)}] with {self.ns}, as early as possible, "
+                f"none within {_fmt(self.pause)} after as much {self.ns}")
 
     def breaks(self, state: LineState, c: Fraction) -> Region:
         """The breaks there must be after the chip at c (those going on included)."""
@@ -92,7 +93,10 @@ class FifteenMinuteBreaks:
         # the breaks going on at the chip (begun before it: the frozen past) stay whole; one
         # the chip has eaten up to its position (mode 1: no "no screen" there) moves on
         going = [iv for iv in now.on(cp - L - 1, cp + L + 1).intervals if iv.lo < cp < iv.hi]
-        placed = [(iv.lo, iv.hi) for iv in going]
+        # (as long as a break is: the line may be from when breaks were shorter)
+        ruled = state.claims.negative(self.ns) | state.claims.negative(self.brk) | state.claims.off(self.brk)
+        placed = [(iv.lo, iv.lo + L if iv.hi < iv.lo + L and (Region.of(Interval._mk(iv.hi, iv.lo + L)) & ruled).is_empty() else iv.hi)
+                  for iv in going]
         ahead = [r for r in (known & _after(c), ruled_out) if r]
         if any(not r.is_bounded() for r in ahead):  # "no screen" or a ban without end: no break past its start
             end = min(r.hi for r in ahead if not r.is_bounded())

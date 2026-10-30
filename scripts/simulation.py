@@ -10,15 +10,13 @@ evaluated at once). A user edit runs the generator only through the script's eve
 of that instant, through its trigger (logged as "start").
 
 Only the user (the edits and the mode) and the generated script modify the line.
-The script carries out the mode rules through the stretches its run compiled
-(script.Script.stretches, mode_rules.Stretch): between two instants the chip goes
-through the positions chip([t0, t1)), all with one mode, and each stretch of the
-script for that mode whose line is the one compiled for it changes the line as the
-chip goes through it (logged as a continuous change, source "mode"). Where no stretch
-applies (another mode, another line), the mode rules do nothing until a run compiles
-one, unless the script has constraints to keep: then it applies them there itself, on
-the line as it is (`Script.live`). Sweeps are cut at the multiples of half the
-smallest rule offset.
+The script carries out the mode rules where its text says so: between two instants the
+chip goes through the positions chip([t0, t1)), all with one mode, and the mode rules
+change the line as the chip goes through them (logged as a continuous change, source
+"mode"), through the stretches its run compiled ahead where the line is the one
+compiled for them (script.Script.stretches, mode_rules.Stretch), or else computed on the
+line as it is. Where the text does not say so, the mode rules do nothing. Sweeps are cut
+at the multiples of half the smallest rule offset.
 
 A simulation can also go step by step (the interactive program, UI/app.py):
 `start()` is the first instant, `advance(t)` runs it up to time t (starting it if
@@ -147,7 +145,7 @@ class Simulation:
         h = self.rules.smallest_offset
         self.grid = h / 2 if h else None
         self._stretch = None  # (stretch, the state it made last, the next position): the one the chip goes through
-        self._live_rules: dict[str, ModeRules] = {}  # the compiled rules of `Script.live`, per mode
+        self._live_rules: dict[str, ModeRules] = {}  # the mode rules the script applies itself, per mode
         self._shift = None
         self._missed = None  # (script, state): no stretch of that script takes over on that line
         self.background = False  # runs of the generator complete later (`complete`)
@@ -203,9 +201,10 @@ class Simulation:
         """The user's script (script_text.py) replaces the one in place, and the run going
         on is cancelled (its script would replace the user's). An event that was already
         there stays as it was (what it did is not done again), the others are evaluated
-        at the next instant."""
+        at the next instant; with other constraints, those that satisfy them too."""
+        same = list(map(str, script.constraints)) == list(map(str, self.script.constraints))
         seen = {str(e): i for i, e in enumerate(self.script.events)}
-        at = [seen.get(str(e)) for e in script.events]
+        at = [seen.get(str(e)) if same or not any(isinstance(a, ConstraintEditAction) for a in e.actions) else None for e in script.events]
         self._was_true = [i is not None and self._was_true[i] for i in at]
         self._fired = [i is not None and self._fired[i] for i in at]
         self.script = script
@@ -360,7 +359,8 @@ class Simulation:
                     if isinstance(a, EditAction):
                         self._edit(t, list(a.ops), GEN, "script")
                     elif isinstance(a, ConstraintEditAction):
-                        self._edit(t, a.now(self.state, self.chip.position(t)), GEN, "script")
+                        c = self.chip.position(t)
+                        self._edit(t, [o for k in self.script.constraints for o in k.ops(self.state, c)], GEN, "script")
                     elif isinstance(a, RerunAction):
                         rerun = ("start" if a.first else "user edit" if isinstance(ev.trigger, Edited)
                                  else "uncovered" if isinstance(ev.trigger, Uncovered) else "script")
@@ -373,7 +373,7 @@ class Simulation:
 
     def _sweep(self, t0: Fraction, t1: Fraction) -> None:
         """The script's stretches act on the chip positions of [t0, t1)."""
-        if t1 <= t0 or not self.script.stretches:
+        if t1 <= t0 or not (self.script.covered or self.script.live):
             return
         c0, c1 = self.chip.position(t0), self.chip.position(t1)
         mode = self.modes.mode_at(c0)
@@ -382,7 +382,7 @@ class Simulation:
         while x <= hi:
             st = self._stretch_at(mode, x, hi)
             if st is None:  # no stretch acts on the rest
-                self._live(t0, mode, x, hi)  # (without it the mode rules do nothing there: script.Uncovered)
+                self._apply(t0, mode, x, hi)
                 return
             d = self._shift
             x = max(x, st.a + d)
@@ -395,13 +395,18 @@ class Simulation:
             x = end + EPS
             self._stretch = (st, after, x)
 
-    def _live(self, t0: Fraction, mode: str, x: Pos, hi: Pos) -> None:
-        """The script's instruction for the positions no stretch acts on (`Script.live`):
-        the mode rules, the constraints kept, on the line as it is. No run is needed."""
-        if self.script.live is None:
+    def _apply(self, t0: Fraction, mode: str, x: Pos, hi: Pos) -> None:
+        """The mode rules on [x, hi], the constraints kept, on the line as it is, where the
+        script says so (each part of its text on its positions)."""
+        s = self.script
+        if s.live:
+            self._apply_on(t0, mode, x, hi)
             return
-        rs, constraints = self.script.live
-        mr = self._live_rules.get(mode) or self._live_rules.setdefault(mode, ModeRules(rs, mode, constraints))
+        for a, b in sorted((max(lo, x), min(b, hi)) for lo, b, m in s.covered if m == mode and lo <= hi and b >= x):
+            self._apply_on(t0, mode, a, b)
+
+    def _apply_on(self, t0: Fraction, mode: str, x: Pos, hi: Pos) -> None:
+        mr = self._live_rules.get(mode) or self._live_rules.setdefault(mode, ModeRules(self.rules, mode, self.script.constraints))
         for ev in mr.act(self.state, x, hi):
             if isinstance(ev, Run):
                 t = max(t0, self.chip.first_time(ev.start.x))
@@ -421,9 +426,8 @@ class Simulation:
         return self._shift
 
     def _uncovered_at(self, mode: str, x: Pos) -> bool:
-        """The chip at x in this mode is where no stretch of the script applies: the run
-        did not compile this mode there, or the line is not the one it compiled (past
-        the end of what it compiled, the run it asked for is the one to wait for)."""
+        """The chip at x in this mode is where the script does not apply the mode rules
+        (past the end of what it says, the run it asked for is the one to wait for)."""
         covered = self.script.covered
         if not covered:
             return False
@@ -431,19 +435,7 @@ class Simulation:
         y = x - d  # where the run compiled it
         if y > max(hi for _, hi, _ in covered):
             return False  # past what the run compiled: the run it asked for compiles that
-        if not any(lo <= y <= hi and m == mode for lo, hi, m in covered):
-            return True
-        if self.script.live is not None:
-            return False  # another line: the script's instruction goes on on it
-        cur = self._stretch
-        if cur is not None and cur[2] == x and cur[1] is self.state:
-            return False  # going on through a stretch
-        if self._inside(mode, x) is not None:
-            return False
-        if any(st.mode == mode and st.plan is not None and st.a < y <= st.b for st in self.script.stretches):
-            return True  # in a stretch, on a line it does not make there
-        nxt = next((st for st in self.script.stretches if st.mode == mode and st.a >= y), None)
-        return nxt is not None and not _same_state(_moved(nxt.before, d, self.state.history), self.state)
+        return not any(lo <= y <= hi and m == mode for lo, hi, m in covered) and not self.script.live
 
     def _inside(self, mode: str, x: Pos):
         """The stretch of the script whose positions include the chip at x, if the line is

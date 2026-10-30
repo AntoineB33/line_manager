@@ -415,6 +415,30 @@ class Simulation:
             else:
                 self.log.refused.append((t0, "mode", ev[1]))
 
+    def ahead(self):
+        """The state as a function of the chip's position p, from where it is, for the
+        window to show them together: p -> the state, or None where the formula of the
+        run the chip goes through does not say it. None if the script does not change the
+        line as the chip goes (the state stays)."""
+        c = self.chip.position(self.t)
+        mode, x = self.modes.mode_at(c), Pos(c)
+        s = self.script
+        if not (s.live or any(lo <= x <= hi and m == mode for lo, hi, m in s.covered)):
+            return None
+        state, history = self.state, self.state.history
+        cur = self._stretch
+        if cur is not None and cur[1] is state and cur[2] == x and cur[0].mode == mode and cur[0].plan is not None:
+            plan, d = cur[0].plan, self._shift
+            def at(p):
+                st = plan.exact(p - d) if p - d <= cur[0].b else None
+                return None if st is None else _moved(st, d, history)
+            return at
+        mr = self._live_rules.get(mode)
+        plan = mr.plan if mr is not None else None
+        if plan is not None and plan.last is state and plan.next == x:
+            return plan.exact
+        return lambda p: None
+
     def _align(self, x: Pos) -> Fraction:
         """How far the script's stretches are moved, decided the first time they are needed
         (the chip at x): by how far the chip went while the run computed, if the line is

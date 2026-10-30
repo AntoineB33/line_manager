@@ -1,7 +1,9 @@
 """The window of the line manager (tkinter, in the standard library).
 
 The line around the chip, one row per kind, with the revealed modes above it. The chip
-moves smoothly at its speed; Pause stops it, Slower and Faster halve and double its
+moves smoothly at its speed, and each frame shows the line at the chip's position of
+that frame, from the formula of the script (Simulation.ahead): the pixels are the only
+rounding; where the formula is not known yet, the chip waits for the step. Pause stops it, Slower and Faster halve and double its
 speed, and the mode buttons change the mode from the chip on. Dashed blue lines show where the generator runs again (its script's rerun
 triggers), blue ticks where it ran. "Generated script" opens the current script in a
 text file (saved with changes, it replaces the script in place, or the window says why
@@ -13,10 +15,10 @@ status line says when one is going on. Rules and edits are typed in the command 
 rules is accepted (the mode buttons are disabled).
 
 The simulation runs in a thread of its own, so the window never waits for it. Each
-step lets as much time run as has passed since the previous one (1/20 s to 1/2 s, in
-twentieths of a second), so the chip keeps its speed while the generator or the mode
-rules compute; the window slides the chip toward where the step being computed takes
-it, and waits there if the step is not done yet. Pause stops
+step lets as much time run as has passed since the previous one (up to 1/2 s), so the
+chip keeps its speed while the generator or the mode rules compute. A frame takes the
+chip from the end of the last step by the time passed since (it waits where the formula
+stops, for the step). Pause stops
 a step being computed (solver.STOP): it is undone, and computed again after Play.
 The GIL's switch interval is shortened (`run`) so that the drawing is not starved by
 the simulation's thread.
@@ -36,6 +38,7 @@ from fractions import Fraction as F
 from tkinter import font as tkfont, messagebox
 
 from app import EDITS, PAUSED, ScriptError
+from intervals import EPS, Pos
 from solver import STOP
 
 STEP, MAX_STEP = F(1, 20), F(1, 2)  # the time of a step, in seconds
@@ -54,18 +57,19 @@ class App:
         self.jobs: queue.Queue = queue.Queue()
         self.out: queue.Queue = queue.Queue()
         self.snap = None
-        self.heading = None  # (wall time, from, to, duration): the step being computed
+        self.shown = None  # (chip, line, claims): what the last frame showed
+        self.wall = None  # when the chip was where the last step left it (None: it is not moving)
         self.stopping = False
         self._build()
         self.post(lambda: None)
         if session.initial_refused:
             self.log(f"the initial state is refused: {session.initial_refused}")
         self.log('Press Play to move the chip. Type "help" below for the commands.')
-        self.opened: dict[str, list] = {}  # path -> [when it was last read, its text, the script it was written from]
+        self.opened: dict[str, list] = {}  # path -> [its text, the script it was written from]
         self.next_watch = 0.0
         self.worker = threading.Thread(target=self._work, daemon=True)
         self.worker.start()
-        self.root.after(40, self._poll)
+        self.root.after(16, self._poll)
 
     # ------------------------------------------------------------ the window
 
@@ -111,7 +115,7 @@ class App:
         self.paused = not self.paused
         if self.paused:
             STOP.set()  # the step being computed stops, and is undone
-            self.heading = None
+            self.wall = None
         self.play.configure(text="▶ Play" if self.paused else "❚❚ Pause")
 
     def speed(self, factor: F) -> None:
@@ -164,7 +168,7 @@ class App:
                                          delete=False) as f:
             f.write(self.snap["script"])
             path = f.name
-        self.opened[path] = [os.stat(path).st_mtime_ns, self.snap["script"], self.snap["script_object"]]
+        self.opened[path] = [self.snap["script"], self.snap["script_object"]]
         self.log(f"generated script written to {path}")
         try:
             if sys.platform.startswith("win"):
@@ -179,21 +183,18 @@ class App:
         thread (`_edited`), which replaces the script or says why it does not."""
         for path, seen in list(self.opened.items()):
             try:
-                mtime = os.stat(path).st_mtime_ns
-                if mtime == seen[0]:
-                    continue
                 with open(path, encoding="utf-8-sig") as f:
                     text = f.read()
             except OSError:
                 continue  # being saved, or gone
             except UnicodeDecodeError:
-                seen[0] = mtime
-                self.show_script_error(f"{path} is not in UTF-8: the generated script stays as it is.")
+                if seen[0] is not None:
+                    seen[0] = None
+                    self.show_script_error(f"{path} is not in UTF-8: the generated script stays as it is.")
                 continue
-            seen[0] = mtime
-            if text.strip() != seen[1].strip():
-                seen[1] = text
-                self.post(lambda text=text, script=seen[2]: self._edited(text, script))
+            if text.strip() and text.strip() != (seen[0] or "").strip():  # (empty: being saved)
+                seen[0] = text
+                self.post(lambda text=text, script=seen[1]: self._edited(text, script))
 
     def _edited(self, text: str, script):
         try:
@@ -245,30 +246,31 @@ class App:
                 self.out.put(msg)
             busy |= len(self.s.sim.log.runs) != n
             if not self.s.sim.started:  # the initial script: the generator runs as soon as possible
-                self.heading = None
+                self.wall = None
                 self._publish()
                 STOP.clear()
                 self.s.begin()
                 busy = True
                 last = time.monotonic()
             elif self.paused:
-                self.heading = None
+                self.wall = None
+                busy = True
                 last = began
             else:
-                dt = min(max(F(round((began - last) * 20), 20), STEP), MAX_STEP)
+                dt = min(max(F(round((began - last) * 1000), 1000), F(1, 1000)), MAX_STEP)
                 last = began
-                x0 = self.s.position
-                self.heading = (began, x0, x0 + self.s.speed * dt, float(dt))
                 STOP.clear()
                 try:
                     if self.paused:  # paused meanwhile
-                        self.heading = None
+                        self.wall = None
                     elif not self.s.tick(dt):
-                        self.heading = None
+                        self.wall = None
                         self.out.put("paused: the step being computed is undone")
+                    else:
+                        self.wall = began
                     busy = True
                 except Exception as e:
-                    self.paused, self.heading = True, None
+                    self.paused, self.wall = True, None
                     self.out.put(f"the chip stops: {e}")
                     self.out.put(("paused",))
             if busy or self.snap is None:
@@ -283,7 +285,7 @@ class App:
         self.snap = {"t": s.sim.t, "x": s.position, "mode": s.mode(), "speed": s.speed, "line": s.sim.state.line,
                      "claims": s.sim.state.claims, "kinds": s.kinds(), "reruns": reruns, "other": other,
                      "past": s.past_runs(), "modes": s.known_modes(), "script": s.script_text(), "script_object": s.sim.script,
-                     "mode_names": list(s.mode_names), "running": s.running() is not None}
+                     "mode_names": list(s.mode_names), "running": s.running() is not None, "ahead": s.sim.ahead(), "wall": self.wall}
 
     # ------------------------------------------------------------ drawing (the window's thread)
 
@@ -307,16 +309,34 @@ class App:
                 self.log(msg)
         if self.snap is not None:
             self.draw(self.snap)
-        self.root.after(40, self._poll)
+        self.root.after(16, self._poll)
 
     def draw(self, sn: dict) -> None:
         c = self.canvas
         c.delete("all")
         w = max(c.winfo_width(), 300)
         x, span = sn["x"], self.span
-        head = self.heading
-        if head is not None and head[1] == x:  # on its way to where the step takes it
-            x = x + (head[2] - x) * F(min(1.0, (time.monotonic() - head[0]) / head[3])).limit_denominator(1000)
+        line, claims = sn["line"], sn["claims"]
+        if sn["wall"] is None:
+            self.shown = None
+        else:  # one position for the chip and the line, the time passed since the step
+            shown = self.shown
+            p = x + sn["speed"] * F(min(time.monotonic() - sn["wall"], float(MAX_STEP))).limit_denominator(1000)
+            if shown is not None and p < shown[0]:
+                p = shown[0]
+            if p > x and sn["ahead"] is not None:
+                try:
+                    state = sn["ahead"](Pos(p) - EPS)  # (the chip has gone through what is before it)
+                except Exception:  # (a step going on can stop what it reads)
+                    state = None
+                if state is not None:
+                    line, claims = state.line, state.claims
+                elif shown is not None and shown[0] >= x:  # the formula stops there: the chip waits for the step
+                    p, line, claims = shown
+                else:
+                    p = x
+            self.shown = (p, line, claims)
+            x = p
         left = x - span / 4
         right = left + span
         X = lambda p: LEFT + float((p - left) / span) * (w - LEFT - RIGHT)
@@ -325,13 +345,16 @@ class App:
         self._mode_buttons(sn["mode_names"], sn["mode"])
         self.speed_label.configure(text=f"speed: {_num(sn['speed'])} per second")
         when = [f"chip at {_num(p)}" for p in sn["reruns"]] + sn["other"]
-        self.status.configure(text=f"time {float(sn['t']):.2f} s    chip at {float(x):.3f}    mode {sn['mode']}    "
+        t = sn["t"] + (x - sn["x"]) / sn["speed"]
+        self.status.configure(text=f"time {float(t):.2f} s    chip at {float(x):.3f}    mode {sn['mode']}    "
                                    f"generator runs again: {' or '.join(when) if when else 'not planned'}"
                                    + ("    (a generator run is going on)" if sn["running"] else ""))
         # the modes: revealed up to the chip, unknown after
         c.create_text(LEFT - 6, TOP + MODE_H / 2, text="modes", anchor="e")
         names = sorted({m for _, _, m in sn["modes"]})
-        for lo, hi, m in sn["modes"]:
+        for i, (lo, hi, m) in enumerate(sn["modes"]):
+            if i == len(sn["modes"]) - 1:  # the mode at the chip goes on up to where the frame shows it
+                hi = max(hi, x)
             a, b = max(lo, left), min(hi, right)
             if a < b:
                 c.create_rectangle(X(a), TOP, X(b), TOP + MODE_H, fill=MODE_COLORS[names.index(m) % len(MODE_COLORS)], outline="#b2bec3")
@@ -341,7 +364,6 @@ class App:
             c.create_rectangle(X(x), TOP, X(right), TOP + MODE_H, fill="#f5f6fa", outline="#dcdde1", stipple="gray25")
             c.create_text((X(x) + X(right)) / 2, TOP + MODE_H / 2, text="not revealed yet", fill="#7f8fa6")
         # one row per kind: its percentages, and under them who placed it
-        line, claims = sn["line"], sn["claims"]
         for i, k in enumerate(kinds):
             y = TOP + MODE_H + 8 + i * ROW_H
             color = COLORS[i % len(COLORS)]
@@ -395,13 +417,13 @@ class App:
 
 
 def _ivs(reg, a, b):
-    """The (lo, hi) real parts of the intervals of reg within [a - 1, b + 1)."""
-    return [(iv.lo.x, iv.hi.x) for iv in reg.on(a - 1, b + 1).intervals]
+    """The (lo, hi) real parts of the intervals of reg, cut to [a, b] (the graph)."""
+    return [(max(iv.lo.x, a), min(iv.hi.x, b)) for iv in reg.on(a - 1, b + 1).intervals if iv.lo.x <= b and iv.hi.x >= a]
 
 
 def _bar(c, x1, y1, x2, y2, fill) -> None:
     if x2 - x1 < 2:  # a point, or almost
-        x1, x2 = x1 - 1, x1 + 1
+        x1, x2 = max(x1 - 1, LEFT), max(x1 + 1, LEFT + 2)
     c.create_rectangle(x1, y1, x2, y2, fill=fill, outline="")
 
 

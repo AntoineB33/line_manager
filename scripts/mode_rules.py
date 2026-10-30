@@ -382,7 +382,12 @@ class _Plan:
 
     def state_at(self, p: Pos) -> LineState:
         """The state with the run on [m + ε, p], p checked."""
-        for a, b, line, states in self.pieces:
+        s = self.exact(p)
+        return s if s is not None else self.mr.with_run(self.state0, self.decision, Region.of(_iv(self.a0, p)))
+
+    def exact(self, p: Pos) -> LineState | None:
+        """That state, where the run's formula gives it with nothing to solve; else None."""
+        for a, b, line, states in list(self.pieces):
             if a <= p <= b:
                 if p in states:
                     return states[p]
@@ -396,7 +401,7 @@ class _Plan:
                     except _NotAffine:
                         pass
                 break
-        return self.mr.with_run(self.state0, self.decision, Region.of(_iv(self.a0, p)))
+        return None
 
 class _NotAffine(Exception):
     pass

@@ -4,7 +4,8 @@ The line around the chip, one row per kind, with the revealed modes above it. Th
 moves smoothly at its speed; Pause stops it, Slower and Faster halve and double its
 speed, and the mode buttons change the mode from the chip on. Dashed blue lines show where the generator runs again (its script's rerun
 triggers), blue ticks where it ran. "Generated script" opens the current script in a
-text file: at first only "run the generator once, as soon as possible", which the
+text file (saved with changes, it replaces the script in place, or the window says why
+it is not correctly written): at first only "run the generator once, as soon as possible", which the
 first step asks for, paused or not. A generator run goes on in a process of its own
 (Session.runs), paused or not, while the chip moves with the script in place; the
 status line says when one is going on. Rules and edits are typed in the command box
@@ -32,9 +33,9 @@ import threading
 import time
 import tkinter as tk
 from fractions import Fraction as F
-from tkinter import font as tkfont
+from tkinter import font as tkfont, messagebox
 
-from app import EDITS, PAUSED
+from app import EDITS, PAUSED, ScriptError
 from solver import STOP
 
 STEP, MAX_STEP = F(1, 20), F(1, 2)  # the time of a step, in seconds
@@ -60,6 +61,8 @@ class App:
         if session.initial_refused:
             self.log(f"the initial state is refused: {session.initial_refused}")
         self.log('Press Play to move the chip. Type "help" below for the commands.')
+        self.opened: dict[str, list] = {}  # path -> [when it was last read, its text, the script it was written from]
+        self.next_watch = 0.0
         self.worker = threading.Thread(target=self._work, daemon=True)
         self.worker.start()
         self.root.after(40, self._poll)
@@ -161,6 +164,7 @@ class App:
                                          delete=False) as f:
             f.write(self.snap["script"])
             path = f.name
+        self.opened[path] = [os.stat(path).st_mtime_ns, self.snap["script"], self.snap["script_object"]]
         self.log(f"generated script written to {path}")
         try:
             if sys.platform.startswith("win"):
@@ -169,6 +173,37 @@ class App:
                 subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", path])
         except OSError as e:
             self.log(f"cannot open {path}: {e}")
+
+    def _watch(self) -> None:
+        """A file of `open_script` saved with changes: the text goes to the simulation's
+        thread (`_edited`), which replaces the script or says why it does not."""
+        for path, seen in list(self.opened.items()):
+            try:
+                mtime = os.stat(path).st_mtime_ns
+                if mtime == seen[0]:
+                    continue
+                with open(path, encoding="utf-8-sig") as f:
+                    text = f.read()
+            except OSError:
+                continue  # being saved, or gone
+            except UnicodeDecodeError:
+                seen[0] = mtime
+                self.show_script_error(f"{path} is not in UTF-8: the generated script stays as it is.")
+                continue
+            seen[0] = mtime
+            if text.strip() != seen[1].strip():
+                seen[1] = text
+                self.post(lambda text=text, script=seen[2]: self._edited(text, script))
+
+    def _edited(self, text: str, script):
+        try:
+            return self.s.edit_script(text, script)
+        except ScriptError as e:
+            return ("script error", f"The generated script is not correctly written, it stays as it is:\n{e}")
+
+    def show_script_error(self, msg: str) -> None:
+        self.log(msg)
+        messagebox.showerror("Generated script", msg)
 
     def log(self, msg: str) -> None:
         if not msg:
@@ -247,7 +282,7 @@ class App:
             self.out.put(msg)
         self.snap = {"t": s.sim.t, "x": s.position, "mode": s.mode(), "speed": s.speed, "line": s.sim.state.line,
                      "claims": s.sim.state.claims, "kinds": s.kinds(), "reruns": reruns, "other": other,
-                     "past": s.past_runs(), "modes": s.known_modes(), "script": s.script_text(),
+                     "past": s.past_runs(), "modes": s.known_modes(), "script": s.script_text(), "script_object": s.sim.script,
                      "mode_names": list(s.mode_names), "running": s.running() is not None}
 
     # ------------------------------------------------------------ drawing (the window's thread)
@@ -255,6 +290,9 @@ class App:
     def _poll(self) -> None:
         if self.stopping:
             return
+        if time.monotonic() >= self.next_watch:
+            self.next_watch = time.monotonic() + 0.5
+            self._watch()
         while True:
             try:
                 msg = self.out.get_nowait()
@@ -263,6 +301,8 @@ class App:
             if msg == ("paused",):
                 self.paused = False
                 self.toggle()
+            elif isinstance(msg, tuple):
+                self.show_script_error(msg[1])
             elif isinstance(msg, str):
                 self.log(msg)
         if self.snap is not None:

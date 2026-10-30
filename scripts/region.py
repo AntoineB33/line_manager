@@ -58,6 +58,12 @@ def _constant(pattern: IntervalSet, period: Pos) -> bool:
     return not pattern or pattern == _window(ZERO, period)
 
 
+def _group(s: IntervalSet) -> str:
+    """What repeats, as text: in parentheses if it is several intervals (what repeats is
+    then told from what is before it)."""
+    return f"({s})" if len(s.intervals) > 1 else str(s)
+
+
 def _last(core: IntervalSet, default) -> Pos:
     """A bound h with core ⊆ (-inf, h)."""
     if not core:
@@ -325,11 +331,11 @@ class Region:
         if self.left == _window(ZERO, self.pl):
             shown = shown | IntervalSet.of(Interval(-INF, self.lo, False, False))
         elif self.left:
-            tails.append(f"... {self.left.shift(self.lo - self.pl)} repeating every {self.pl} to the left")
+            tails.append(f"... {_group(self.left.shift(self.lo - self.pl))} repeating every {self.pl} to the left")
         if self.right == _window(ZERO, self.pr):
             shown = shown | IntervalSet.of(Interval(self.hi, INF, True, False))
         elif self.right:
-            tails.append(f"{self.right.shift(self.hi)} repeating every {self.pr} to the right ...")
+            tails.append(f"{_group(self.right.shift(self.hi))} repeating every {self.pr} to the right ...")
         parts = [t for t in tails if t.startswith("...")] + ([str(shown)] if shown else []) + [t for t in tails if not t.startswith("...")]
         return " U ".join(parts) if parts else "{}"
 

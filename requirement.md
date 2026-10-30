@@ -33,7 +33,7 @@ This generated script has events that trigger continuous edits of the line or a 
 A generated rule must never:
 - change the left side of the chip and what is at the position of the chip.
 - remove elements added by the user.
-At the absolute start of the program, the generated script is only an instruction to run the rules generator once as soon as possible. The generated script is changed only when the generator completes a run. If the generator is called to run again while it is already running, the previous run is cancelled and the new one starts.
+At the absolute start of the program, the generated script is only an instruction to run the rules generator once as soon as possible. The generated script is changed only when the generator completes a run or by the user. If the generator is called to run again while it is already running, the previous run is cancelled and the new one starts.
 
 Example:
 if the optimization problem is a simple presence ratio target for each kind of element, the generated script looks like this:
@@ -44,7 +44,7 @@ if the optimization score becomes less than $z$, then the generator runs again.
 if the chip is between $x_7$ and $x_8$ and mode is 2, then the generator runs again.
 ...
 
-The "allocated resources quantity" hyperparameter in (0, 1) balances between resource usage economy (0) and optimization problem solving (1). When the hyperparameter is lower, then a rules generator run will be faster and use less CPU resources to solve the optimization problems, and the generated script will trigger less frequently a new rules generator run.
+The "allocated resources quantity" hyperparameter in (0, 1) balances between resource usage economy (0) and optimization problem solving (1). When the hyperparameter is lower, then a rules generator run will be faster and use less CPU resources to solve the optimization problems, and the current generated script will trigger less frequently a new rules generator run.
 
 The "probability finder" program is used to find probability rules in the mode transitions pattern. This helps the rules generator being more performant with a low allocated resources quantity hyperparameter.
 

@@ -1,7 +1,8 @@
 """Generated scripts: events that trigger edits of the line or a new generator run.
 
 At the start of the program the script is only an instruction to run the rules
-generator once, as soon as possible (`Script.initial`).
+generator once, as soon as possible (`Script.initial`). The user can change the script
+through its text (script_text.py, Simulation.replace_script).
 
 Triggers
 - Start(): true from the start of the program; it fires once, at the first instant.
@@ -42,6 +43,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from fractions import Fraction
+from typing import ClassVar
 
 from intervals import INF, Interval, Num, _fmt
 from line import Op
@@ -136,15 +138,19 @@ class Script:
     base: object = None  # the line it compiled from (line.LineState), its own edits made
     live: object = None  # (rules, constraints): what it does where no stretch applies
 
+    LIVE: ClassVar[str] = "where no compiled stretch applies"
+
     @staticmethod
     def initial() -> Script:
         """The script at the start of the program: run the generator once, as soon as possible."""
         return Script([Event(Start(), (RerunAction(first=True),))])
 
     def text(self) -> str:
-        live = [] if self.live is None else ["where no compiled stretch applies, at any chip position and in any mode: "
-                                             "the mode rules at the chip, keeping " + "; ".join(map(str, self.live[1])) + ", on the line as it is."]
-        return "\n".join([str(e) for e in self.events] + [st.text() for st in self.stretches] + live)
+        return "\n".join([str(e) for e in self.events] + [st.text() for st in self.stretches] + ([self.live_text()] if self.live else []))
+
+    def live_text(self) -> str:
+        return f"{self.LIVE}, at any chip position and in any mode: the mode rules at the chip, keeping " + \
+            "; ".join(map(str, self.live[1])) + ", on the line as it is."
 
     def rerun_triggers(self) -> list[Start | ChipIn | TransitionCount | Edited | Uncovered]:
         return [e.trigger for e in self.events if any(isinstance(a, RerunAction) for a in e.actions)]

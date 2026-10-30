@@ -199,6 +199,22 @@ class Simulation:
         self._fired = [False] * len(script.events)
         self.log.runs.append((t, c, why, script, stats))
 
+    def replace_script(self, script: Script) -> None:
+        """The user's script (script_text.py) replaces the one in place, and the run going
+        on is cancelled (its script would replace the user's). An event that was already
+        there stays as it was (what it did is not done again), the others are evaluated
+        at the next instant."""
+        seen = {str(e): i for i, e in enumerate(self.script.events)}
+        at = [seen.get(str(e)) for e in script.events]
+        self._was_true = [i is not None and self._was_true[i] for i in at]
+        self._fired = [i is not None and self._fired[i] for i in at]
+        self.script = script
+        self.request = None
+        self._stretch = None
+        self._live_rules = {}
+        self._shift = None
+        self._since_install = 0
+
     def _cond(self, i: int, t: Fraction) -> bool:
         trig = self.script.events[i].trigger
         if isinstance(trig, Start):

@@ -44,7 +44,8 @@ from modes import ModeTimeline  # noqa: E402
 from problems import MinimumLengthProblem, PresenceRatioProblem  # noqa: E402,F401 (for the example scripts)
 from region import Region  # noqa: E402
 from rules import RuleError, is_hidden, parse_rules  # noqa: E402
-from script import ChipIn, RerunAction, TransitionCount  # noqa: E402
+from script import ChipIn, RerunAction, Script, TransitionCount  # noqa: E402
+from script_text import ScriptError, parse_script  # noqa: E402,F401 (ScriptError: for the window)
 from simulation import Chip, Simulation  # noqa: E402
 from solver import Interrupted  # noqa: E402
 
@@ -114,6 +115,7 @@ class Session:
         self.sim = Simulation(LineState.empty(), self.generator(self.rs), self.chip, self.modes)
         self.sim.background = True
         self._running = None  # (request id, process): the generator run going on
+        self.script_edit = None  # (time, script): the last script the user changed
         atexit.register(self.close)
         self._done: queue.Queue = queue.Queue()  # (request id, script, stats or the error) of completed runs
         self.edits: list[str] = []  # the user's edits, as typed, oldest first
@@ -242,9 +244,21 @@ class Session:
             head.append(f"Last generator run: from chip {c} ({why}), completed at time {t}; it chose {stats.chosen}.")
         else:
             head.append("The generator has not run yet.")
+        if self.script_edit is not None and self.script_edit[1] is self.sim.script:
+            head.append(f"Changed by the user at time {self.script_edit[0]}.")
         if self.running():
             head.append(self.running().capitalize() + ": this script stays until it completes.")
         return "\n".join(head) + "\n\n" + (self.sim.script.text() or "(empty script)") + "\n"
+
+    def edit_script(self, text: str, previous: Script) -> str:
+        """The text of `previous`, changed by the user, replaces the script in place, and
+        the run going on is cancelled. ScriptError if it is not correctly written."""
+        script = parse_script(text, previous)
+        newer = self.sim.script is not previous
+        self.close()
+        self.sim.replace_script(script)
+        self.script_edit = (self.sim.t, script)
+        return "the generated script is replaced by your changes" + (" (it replaces a newer script than the one you opened)" if newer else "")
 
     def news(self) -> list[str]:
         """What happened since the last call: generator runs that edit, refusals."""

@@ -622,6 +622,14 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     (`test_back_to_mode_1_inside_a_break`). `Uncovered` then answers a mode the run did
     not compile only, not another line. The script's constraint edit is asked again
     where it fires (`ConstraintEditAction.now`).
+  - **The user's script.** The script's text can be changed (the file "Generated
+    script" opens, saved): `script_text.parse_script` reads it and
+    `Simulation.replace_script` puts it in place, or `ScriptError` says which lines are
+    not correctly written and the script in place stays. Events can be changed, added
+    and deleted; what a run compiled (stretches, the instruction where none applies,
+    the constraints' edit) can only be kept or deleted, its text being a description.
+    The run going on is cancelled, or its script would replace the user's; the
+    events that were there stay as they were, and the next run replaces it all.
   - **Stopped.** A step of the simulation, a generator run included, can be
     stopped from another thread (`solver.STOP`, Pause in the window): the long
     loops raise `Interrupted`, and the step is undone (`Simulation.snapshot`,

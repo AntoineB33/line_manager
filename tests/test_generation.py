@@ -596,14 +596,14 @@ class StepByStepTest(unittest.TestCase):
         sim.start()
         first = sim.request
         self.assertIsNotNone(first)
-        self.assertIn("the program starts", sim.script.text())  # the initial script, until the run completes
+        self.assertNotIn("the program starts", sim.script.text())  # the first script of the run is there at once
         self.assertIsNone(sim.edit_now([Op.put("A", Interval.closed(2, 3))]))
         self.assertIs(sim.request, first)  # the initial script does not answer edits
         chip.extend(1, 1)
         sim.advance(1)
         script, stats = first.gen.run(first.state, first.chip, first.known)
         self.assertTrue(sim.complete(first.id, script, stats))
-        self.assertIs(sim.script, script)
+        self.assertEqual(sim.script.events, script.events)
         self.assertEqual([(t, c) for t, c, _, _, _ in sim.log.runs], [(1, 0)])  # completed at time 1, from chip 0
         self.assertIsNone(sim.request)
         self.assertIsNone(sim.edit_now([Op.put("A", Interval.closed(5, 6))]))  # its script answers edits
@@ -613,13 +613,14 @@ class StepByStepTest(unittest.TestCase):
         third = sim.request
         self.assertNotEqual(third.id, second.id)  # a newer call: the older run's script is not used
         script2, stats2 = second.gen.run(second.state, second.chip, second.known)
+        before = sim.script
         self.assertFalse(sim.complete(second.id, script2, stats2))
-        self.assertIs(sim.script, script)
+        self.assertIs(sim.script, before)
 
     def test_late_script_moved(self):
-        """A run computes from chip 0 while the chip goes to 3 (background mode, the line
-        empty meanwhile): its script, put in place at 3, finds the line it compiled from
-        moved by 3, and its stretches apply moved by 3: the break is dragged."""
+        """A run computes from chip 0 while the chip goes to 3 (background mode): the script
+        published at the start of the run keeps the constraint meanwhile, and the run's
+        script, put in place at 3, goes on from the line as it is: the break is dragged."""
         rs = parse_rules(["Future → S or no S", "S → R", "S → B on [0, 2] of p", "S → no R on (0, 6] of p", "mode 1 → no B"])
         future = Op.put("Future", Interval(0, INF, False, False))
         chip = Chip([(0, 0)])
@@ -631,11 +632,10 @@ class StepByStepTest(unittest.TestCase):
         req = sim.request
         chip.extend(3, 3)
         sim.advance(3)
-        self.assertFalse(sim.state.line.kinds())  # nothing yet: the initial script only asks for a run
+        self.assertTrue(sim.state.line.presence("Future").contains(5))  # the constraint holds without the run
         script, stats = req.gen.run(req.state, req.chip, req.known)
         self.assertTrue(sim.complete(req.id, script, stats))
-        self.assertEqual(sim._shift, 3)
-        self.assertEqual(sim.state.line.presence("Future"), Region.of(Interval(3, INF, False, False)))
+        self.assertTrue(sim.state.line.presence("Future").contains(4))
         chip.extend(7, 7)
         sim.advance(7)
         check_log(sim.log, rs)

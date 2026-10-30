@@ -23,7 +23,7 @@ from script import MODE_RULES, ChipIn, ConstraintEditAction, Edited, EditAction,
 
 _POS = re.compile(r"(?P<x>-?\d+(?:/\d+)?)?(?:(?P<s>[+-])?(?P<k>\d*)ε)?$")
 _BREAKS = re.compile(r"keep (\S+) on \(chip, chip \+ (\S+)\] with (\S+), as early as possible, none within (\S+) after as much (\S+)$")
-_APPLY = re.compile(rf"if the chip is in \[([^,]+), ([^,]+)\] and mode is (\w+), then {MODE_RULES}\.?$")
+_APPLY = re.compile(rf"if the chip is in \[([^,]+), ([^,]+)\](?: and mode is (\w+))?, then {MODE_RULES}\.?$")
 _OP = re.compile(r"put no (?P<no>\S+) on (?P<nw>.+)$|put (?P<k>\S+) (?P<v>[^ %]+)% on (?P<w>.+)$"
                  r"|take no (?P<tn>\S+) off (?P<tnw>.+)$|take (?P<t>\S+) off (?P<tw>.+)$")
 
@@ -240,5 +240,5 @@ def parse_script(text: str, previous: Script, rules=None) -> Script:
     if errors:
         raise ScriptError(errors)
     same = list(map(str, constraints)) == list(was)
-    kept = [st for st in previous.stretches if same and any(st.mode == m and a <= st.a and st.b <= b for a, b, m in covered)]
+    kept = [st for st in previous.stretches if same and any(m in (st.mode, None) and a <= st.a and st.b <= b for a, b, m in covered)]
     return replace(previous, events=events, stretches=kept, covered=covered, live=live, constraints=tuple(constraints))

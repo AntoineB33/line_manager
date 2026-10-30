@@ -5,13 +5,11 @@ import os
 import sys
 import unittest
 from fractions import Fraction as F
-from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from helpers import Interval, Region  # noqa: E402
 
-import generator  # noqa: E402
 from constraints import FifteenMinuteBreaks  # noqa: E402
 from generator import PACE, RulesGenerator  # noqa: E402
 from line import LineState, Op  # noqa: E402
@@ -56,11 +54,6 @@ class StagesTest(unittest.TestCase):
             for a, b in zip(xs, xs[1:]):
                 self.assertGreaterEqual(b - a, PACE)
 
-    def test_the_speed_of_the_chip(self):
-        g = gen(H=120)
-        g.speed = F(3)
-        self.assertEqual(stages(g)[0][1].definitive, 30)
-
     def test_definitive(self):
         """Every next script gives the same instructions before the frontier, whatever
         the modes: its lines stay, and what it adds is after the frontier."""
@@ -89,34 +82,30 @@ class StagesTest(unittest.TestCase):
         self.assertTrue(all(not s.stretches for s, _ in out[:-1]))
         self.assertTrue(out[-1][0].stretches)
 
-    def test_out_of_time_it_publishes_what_it_has(self):
-        """An approximation: a lower score, the constraints as they are."""
-        g = gen(H=120, rules=["Break15 → NoScreen", "mode 1 → no NoScreen"], constraints=[FifteenMinuteBreaks()])
-        g.paced = True
-        clock = iter(range(0, 10 ** 6, 11))
-        with mock.patch.object(generator.time, "monotonic", lambda: next(clock)):
-            out = stages(g)
-        self.assertEqual(len(out), len(stages(gen(H=120))))
-        self.assertTrue(all(not edits(s) for s, _ in out))
-        self.assertTrue(all(any("keep Break15" in ln for ln in s.text().splitlines()) for s, _ in out))
-
 
 class PublishTest(unittest.TestCase):
-    def simulation(self):
-        g = gen(q=F(9, 10), H=120)
+    def simulation(self, **k):
+        g = gen(q=F(9, 10), H=120, **k)
         chip = Chip([(0, 0)])
         sim = Simulation(LineState.empty(), g, chip, ModeTimeline(0, "1"))
         sim.background = True
+        g.paced = True
         sim.start()
         return sim, chip
 
+    def run_of(self, sim):
+        r = sim.request
+        return r, list(r.gen.stages(r.state, r.chip, r.known, r.previous))
+
+    def go(self, sim, chip, t):
+        chip.extend(t, t)
+        sim.advance(t)
+
     def test_published_as_they_come(self):
         sim, chip = self.simulation()
-        req = sim.request
-        out = list(req.gen.stages(req.state, req.chip, req.known))
-        for k, (script, stats) in enumerate(out[:-1]):
+        req, out = self.run_of(sim)
+        for script, stats in out[:-1]:
             self.assertTrue(sim.publish(req.id, script, stats))
-            self.assertIs(sim.script, script)
             self.assertIs(sim.request, req)  # the run goes on
             self.assertEqual(sim.definitive, stats.definitive)
             self.assertEqual(len(sim.log.runs), 0)
@@ -126,8 +115,7 @@ class PublishTest(unittest.TestCase):
 
     def test_a_cancelled_run_publishes_nothing(self):
         sim, chip = self.simulation()
-        old = sim.request
-        out = list(old.gen.stages(old.state, old.chip, old.known))
+        old, out = self.run_of(sim)
         sim._install(sim.t, "script")
         self.assertIsNot(sim.request, old)
         before = sim.script
@@ -136,19 +124,64 @@ class PublishTest(unittest.TestCase):
 
     def test_what_a_stage_did_is_not_done_again(self):
         sim, chip = self.simulation()
-        req = sim.request
-        out = list(req.gen.stages(req.state, req.chip, req.known))
-        made = [s for s, _ in out if edits(s)]
-        self.assertGreater(len(made), 1)
+        req, out = self.run_of(sim)
+        self.assertGreater(len([s for s, _ in out if edits(s)]), 1)
         for script, stats in out[:-1]:
             sim.publish(req.id, script, stats)
-        chip.extend(1, 1)
-        sim.advance(1)
+        self.go(sim, chip, 1)
         n = sum(1 for ch in sim.log.changes if ch.source == "script")
         self.assertTrue(sim.complete(req.id, *out[-1]))
-        added = len([e for e in out[-1][0].events if str(e) not in map(str, out[-2][0].events)])
-        self.assertLessEqual(sum(1 for ch in sim.log.changes if ch.source == "script") - n, added)
+        self.assertLessEqual(sum(1 for ch in sim.log.changes if ch.source == "script") - n, 1)
         self.assertEqual(sum(1 for r in sim.log.refused if r[1] == "script"), 0)
+
+    def test_the_script_at_the_start_needs_no_run(self):
+        """It is there at the instant of the call, with nothing from the run."""
+        sim, chip = self.simulation(rules=["Break15 → NoScreen", "mode 1 → no NoScreen"], constraints=[FifteenMinuteBreaks()])
+        self.assertIsNotNone(sim.request)
+        self.assertEqual(sim.definitive, 10)
+        text = sim.script.text()
+        self.assertIn("keep Break15", text)
+        self.assertIn("if the chip is in [0, 10], then apply the mode rules.", text)
+        self.assertNotIn("the program starts", text)
+        self.assertTrue(sim.state.line.presence("Break15").contains(5))  # the constraint holds at once
+
+    def test_the_run_that_never_answers(self):
+        """The pace and the constraints hold, and the run ends, with nothing from the run."""
+        sim, chip = self.simulation(rules=["Break15 → NoScreen", "mode 1 → no NoScreen"], constraints=[FifteenMinuteBreaks()])
+        req = sim.request
+        seen = []
+        for t in range(1, 125):
+            self.go(sim, chip, t)
+            if sim.request is req:
+                seen.append(sim.definitive)
+                self.assertGreaterEqual(sim.definitive, 10 + (t // 10) * PACE)
+        self.assertIsNot(sim.request, req)
+        self.assertEqual(sim.log.runs[0][4].chosen, "the script in place, as a last resort")
+        b = sim.state.line.presence("Break15")
+        self.assertTrue(b.contains(130) and not b.contains(120))  # dragged all along
+
+    def test_a_late_script_counts_after_the_frontier(self):
+        sim, chip = self.simulation()
+        req, out = self.run_of(sim)
+        self.go(sim, chip, 25)
+        self.assertEqual(sim.definitive, 30)
+        script = out[0][0]
+        self.assertTrue(edits(script))
+        sim.publish(req.id, script, out[0][1])
+        self.assertGreaterEqual(sim.definitive, 30)  # (its triggers may have asked for a new run at once)
+        before = Region.of(Interval(-10 ** 6, 30, True, True))
+        for o in edits(sim.script):
+            self.assertTrue((o.region & before).is_empty(), str(o))
+
+    def test_nothing_before_the_frontier_changes_after_the_first_script(self):
+        sim, chip = self.simulation()
+        first = sim.script
+        req, out = self.run_of(sim)
+        before = Region.of(Interval(-10 ** 6, 10, True, True))
+        for script, stats in out:
+            for o in edits(script):
+                self.assertTrue((o.region & before).is_empty(), str(o))
+            self.assertIn("if the chip is in [0, 10], then apply the mode rules.", script.text())
 
 
 if __name__ == "__main__":

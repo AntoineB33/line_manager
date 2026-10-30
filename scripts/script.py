@@ -10,7 +10,7 @@ Lines
 - if <trigger>, then <actions>.
 - if the chip is in [a, b] and mode is m, then apply the mode rules: the mode rules, the
   constraints kept, as the chip goes through these positions in that mode, on the line
-  as it is (each edit at the chip, continuous).
+  as it is (each edit at the chip, continuous). Without a mode: in any mode.
 - elsewhere, apply the mode rules: the same at all the other positions and modes.
 
 Triggers
@@ -191,7 +191,8 @@ class Script:
 
     def text(self) -> str:
         return "\n".join([str(k) for k in self.constraints] + [str(e) for e in self.events] +
-                         [f"if the chip is in [{lo}, {hi}] and mode is {m}, then {MODE_RULES}." for lo, hi, m in self.covered] +
+                         [f"if the chip is in [{lo}, {hi}]" + (f" and mode is {m}" if m is not None else "") + f", then {MODE_RULES}."
+                          for lo, hi, m in self.covered] +
                          ([f"elsewhere, {MODE_RULES}."] if self.live else []))
 
     def rerun_triggers(self) -> list:

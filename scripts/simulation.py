@@ -34,10 +34,10 @@ modes from the chip on were changed (ModeTimeline.replace).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 
-from generator import RulesGenerator, RunStats
+from generator import PACE, PACE_TIME, RulesGenerator, RunStats
 from guards import check_script_edit
 from intervals import EPS, INF, Interval, Num, Pos
 from line import GEN, USER, Claims, LineState, Op
@@ -46,7 +46,7 @@ from modes import ModeTimeline
 from region import Region
 from solver import Line
 from resolve import Refused, owned_by_others, apply_edit, rebuild
-from script import ConstraintEditAction, ChipIn, EditAction, PresenceAbove, RerunAction, ScoreBelow, Script, Start, TransitionCount, Uncovered, Edited, score
+from script import ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Start, TransitionCount, Uncovered, Edited, score
 
 
 class Chip:
@@ -117,6 +117,8 @@ class RunRequest:
     known: object
     gen: RulesGenerator
     published: bool = False  # a script of this run is in place
+    previous: object = None  # the script in place when it started
+    pace_at: Fraction = Fraction(0)  # the time at which the script must be definitive further
 
 
 @dataclass
@@ -160,11 +162,11 @@ class Simulation:
         """What a step changes, to go back to it (`restore`) if the step is interrupted."""
         return (self.state, len(self.log.changes), len(self.log.refused), len(self.log.runs), self.script,
                 self.revealed, self._since_install, list(self._was_true), list(self._fired), self.t, self.started,
-                len(self.chip.points), self._stretch, self.request, self._shift)
+                len(self.chip.points), self._stretch, self.request, self._shift, self.definitive)
 
     def restore(self, snap: tuple) -> None:
         (self.state, nc, nr, nu, self.script, self.revealed, self._since_install, self._was_true, self._fired,
-         self.t, self.started, npts, self._stretch, self.request, self._shift) = snap
+         self.t, self.started, npts, self._stretch, self.request, self._shift, self.definitive) = snap
         del self.log.changes[nc:], self.log.refused[nr:], self.log.runs[nu:], self.chip.points[npts:]
 
     def known(self, t: Fraction):
@@ -174,7 +176,8 @@ class Simulation:
         c = self.chip.position(t)
         if self.background:
             self._requests += 1
-            self.request = RunRequest(self._requests, t, c, why, self.state, self.known(t), self.gen)
+            self.request = RunRequest(self._requests, t, c, why, self.state, self.known(t), self.gen, previous=self.script)
+            self.first_script()
             return
         script, stats = self.gen.run(self.state, c, self.known(t))
         self._set_script(t, c, why, script, stats)
@@ -185,10 +188,66 @@ class Simulation:
         req = self.request
         if req is None or req.id != request_id:
             return False
+        self._set_script(self.t, req.chip, req.why, self._fit(script) if req.published else script, stats, keep=req.published)
         self.request = None
-        self._set_script(self.t, req.chip, req.why, script, stats, keep=req.published)
         self._after_edits(self.t, False, False, req.why)
         return True
+
+    def first_script(self) -> None:
+        """At the start of a run, at once and whatever the run does: the script in place,
+        changed a little, definitive on the PACE after the chip: the mode rules there in any
+        mode, the constraints of the generator, and the rest as it is."""
+        req, s = self.request, self.script
+        x = req.chip + PACE
+        constraints = tuple(getattr(self.gen, "constraints", ())) or s.constraints
+        events = [e for e in s.events if not isinstance(e.trigger, Start)]
+        if constraints and not any(isinstance(a, ConstraintEditAction) for e in events for a in e.actions):
+            events.insert(0, Event(ChipIn(req.chip, INF), (ConstraintEditAction(),)))
+        covered = [(lo, hi, m) for lo, hi, m in s.covered if m is not None]
+        if self.rules.mode_rules:
+            covered.insert(0, (Pos(req.chip), Pos(x), None))
+        script = replace(s, events=events, covered=covered, constraints=constraints, live=s.live or bool(constraints and self.rules.mode_rules))
+        req.published, req.pace_at = True, req.time + PACE_TIME
+        self._carry(script)
+        self.script = script
+        self._reset()
+        self.definitive = x
+
+    def keep_pace(self, t: Fraction) -> None:
+        """A run that did not get further in time is overtaken by the script in place, its
+        last resort: definitive PACE further, whatever the run does. At the end of the run
+        that way, the run is over."""
+        req = self.request
+        while req is not None and req.published and t >= req.pace_at:
+            self.definitive += PACE
+            req.pace_at += PACE_TIME
+            self.script = self._fit(self.script)
+            if self.definitive >= req.chip + getattr(self.gen, "horizon", 0):
+                self.request = None
+                self.log.runs.append((t, req.chip, req.why, self.script, RunStats(chosen="the script in place, as a last resort")))
+                return
+
+    def _fit(self, script: Script) -> Script:
+        """The script with the frontier of the run: its edits that are new after it, and the
+        mode rules up to it in any mode."""
+        x, now = Pos(self.definitive), {str(e) for e in self.script.events}
+        before = Region.of(Interval(-INF, x, False, True))
+        events = []
+        for e in script.events:
+            actions = []
+            for a in e.actions:
+                if isinstance(a, EditAction) and str(e) not in now:
+                    ops = tuple(o for o in (Op(o.action, o.kind, o.region - before, o.value) for o in a.ops) if not o.region.is_empty())
+                    if ops:
+                        actions.append(EditAction(ops))
+                else:
+                    actions.append(a)
+            if actions:
+                events.append(Event(e.trigger, tuple(actions)))
+        covered = [(lo, hi, m) for lo, hi, m in script.covered if m is not None]
+        if self.rules.mode_rules and self.request is not None:
+            covered.insert(0, (Pos(self.request.chip), x, None))
+        return replace(script, events=events, covered=covered)
 
     def publish(self, request_id: int, script: Script, stats: RunStats) -> bool:
         """The run asked for by `request` found a script and goes on: it replaces the one in
@@ -196,11 +255,13 @@ class Simulation:
         req = self.request
         if req is None or req.id != request_id:
             return False
-        req.published = True
+        script = self._fit(script)  # (up to the frontier as it was: this script goes further)
+        if stats.definitive is not None and stats.definitive > self.definitive:
+            self.definitive, req.pace_at = stats.definitive, self.t + PACE_TIME
+            script = replace(script, covered=[(lo, Pos(stats.definitive), m) if m is None else (lo, hi, m) for lo, hi, m in script.covered])
         self._carry(script)
         self.script = script
         self._reset()
-        self.definitive = stats.definitive
         self._after_edits(self.t, False, False, req.why)
         return True
 
@@ -227,7 +288,8 @@ class Simulation:
             self._fired = [False] * len(script.events)
         self.script = script
         self._reset()
-        self.definitive = stats.definitive
+        if stats.definitive is not None:
+            self.definitive = max(stats.definitive, self.definitive or stats.definitive)
         self.log.runs.append((t, c, why, script, stats))
 
     def replace_script(self, script: Script) -> None:
@@ -370,6 +432,8 @@ class Simulation:
                         cands.append(self.chip.first_time(x))
         if self.grid and self.rules.mode_rules:
             cands.append(self.chip.first_time((c // self.grid + 1) * self.grid))
+        if self.request is not None and self.request.published:
+            cands.append(self.request.pace_at)
         later = [x for x in cands if x > t]
         return min(later, default=INF)
 
@@ -381,6 +445,7 @@ class Simulation:
 
     def _after_edits(self, t: Fraction, first: bool, edited: bool, why: str, run: bool = False) -> None:
         self.started = True
+        self.keep_pace(t)
         c = self.chip.position(t)
         revealed = sum(1 for p, _ in self.modes.transitions if p <= c)
         self._since_install += revealed - self.revealed
@@ -450,8 +515,12 @@ class Simulation:
         if s.live:
             self._apply_on(t0, mode, x, hi)
             return
-        for a, b in sorted((max(lo, x), min(b, hi)) for lo, b, m in s.covered if m == mode and lo <= hi and b >= x):
-            self._apply_on(t0, mode, a, b)
+        last = None  # (they may overlap, and a position is gone through once)
+        for a, b in sorted((max(lo, x), min(b, hi)) for lo, b, m in s.covered if m in (mode, None) and lo <= hi and b >= x):
+            a = a if last is None else max(a, last + EPS)
+            if a <= b:
+                self._apply_on(t0, mode, a, b)
+                last = b
 
     def _apply_on(self, t0: Fraction, mode: str, x: Pos, hi: Pos) -> None:
         mr = self._live_rules.get(mode) or self._live_rules.setdefault(mode, ModeRules(self.rules, mode, self.script.constraints))
@@ -471,7 +540,7 @@ class Simulation:
         c = self.chip.position(self.t)
         mode, x = self.modes.mode_at(c), Pos(c)
         s = self.script
-        if not (s.live or any(lo <= x <= hi and m == mode for lo, hi, m in s.covered)):
+        if not (s.live or any(lo <= x <= hi and m in (mode, None) for lo, hi, m in s.covered)):
             return None
         state, history = self.state, self.state.history
         cur = self._stretch
@@ -507,7 +576,7 @@ class Simulation:
         y = x - d  # where the run compiled it
         if y > max(hi for _, hi, _ in covered):
             return False  # past what the run compiled: the run it asked for compiles that
-        return not any(lo <= y <= hi and m == mode for lo, hi, m in covered) and not self.script.live
+        return not any(lo <= y <= hi and m in (mode, None) for lo, hi, m in covered) and not self.script.live
 
     def _inside(self, mode: str, x: Pos):
         """The stretch of the script whose positions include the chip at x, if the line is

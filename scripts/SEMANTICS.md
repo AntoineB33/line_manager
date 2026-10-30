@@ -616,17 +616,25 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     constraints writes them (`keep ...`) and says "elsewhere, apply the mode rules": no
     run is needed. The chip back in mode 1 inside a break cuts it at that very position
     and drags a new one (`test_back_to_mode_1_inside_a_break`).
-  - **Progressive runs.** A run publishes its scripts as it finds them
-    (`RulesGenerator.stages`, `Simulation.publish`, `Simulation.complete` for the last).
-    Its frontiers are c + 10 s of the chip's movement, then steps of at least 10 up to
-    c + H, 1 + ⌈q (H − first) / 10⌉ of them: a lower q has fewer stages and a shorter run,
-    and a horizon within the first frontier has one stage. A stage only adds an edit on
-    the positions between the last frontier and its own, so the lines for the positions
-    before a frontier never change, whatever the modes: that is "definitive". The rest
-    of the script (constraints, modes rules, reruns, the watches) is decided at the first
-    stage. A stage has its share of the budget of the run, and stops at 10 s with the best
-    edit found (an approximation: only the score is lower, the constraints are the
-    script's whatever the edits). The compiled shortcut comes with the last script.
+  - **Progressive runs.** At the start of a run the simulation itself publishes a first
+    script (`Simulation.first_script`): the script in place, with the generator's
+    constraints and the mode rules in any mode on the 10 after the chip. It needs nothing
+    from the run, so it is there at once. The run then publishes its scripts as it finds
+    them (`RulesGenerator.stages`, `Simulation.publish`, `Simulation.complete` for the
+    last), from the same snapshot: frontiers from c + 10 up to c + H, 1 + ⌈q (H − 10) / 10⌉
+    of them, so a lower q has fewer stages and a shorter run. A stage only adds an edit
+    between the last frontier and its own, so the lines before a frontier never change,
+    whatever the modes: that is "definitive". A run in a process of its own edits nothing
+    in the first 10 after c. The pace does not depend on the run: at each 10 s without
+    a new frontier, the simulation moves it 10 further with the script in place
+    (`Simulation.keep_pace`), and what the run sends later only counts after it
+    (`Simulation._fit`). A published script does not undo what happened; if the line went
+    away from it, its triggers ask for a new run. The run ends with its last script,
+    or when the script in place has reached c + H, and the compiled shortcut comes with
+    the last script.
+  - **Calculations are instantaneous.** A step lets the time that passed run, however
+    long, and a click counts from the position of the chip when it was made, so the
+    result of a slow edit is what it would have been at once (`gui._up_to`).
   - **The script is its text.** What the text says is what the script does (script.py):
     the mode rules apply where a line says so, on the line as it is; what a run
     compiled ahead is only a shortcut. So the user can change any line (the file

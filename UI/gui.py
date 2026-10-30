@@ -15,10 +15,12 @@ status line says when one is going on. Rules and edits are typed in the command 
 rules is accepted (the mode buttons are disabled).
 
 The simulation runs in a thread of its own, so the window never waits for it. Each
-step lets as much time run as has passed since the previous one (up to 1/2 s), so the
-chip keeps its speed while the generator or the mode rules compute. A frame takes the
-chip from the end of the last step by the time passed since (it waits where the formula
-stops, for the step). Pause stops
+step lets as much time run as has passed since the previous one, so whatever a
+calculation takes, the line ends up as if it had taken no time. A frame takes the chip
+from the end of the last step by the time passed since, and never stops for a
+calculation: where the formula stops, or while an edit computes, the line goes on as it
+was shown, and takes its place when the step is done. A click counts from where the chip
+was when it was made (`_up_to`). Pause stops
 a step being computed (solver.STOP): it is undone, and computed again after Play.
 The GIL's switch interval is shortened (`run`) so that the drawing is not starved by
 the simulation's thread.
@@ -41,7 +43,7 @@ from app import EDITS, PAUSED, ScriptError
 from intervals import EPS, Pos
 from solver import STOP
 
-STEP, MAX_STEP = F(1, 20), F(1, 2)  # the time of a step, in seconds
+STEP = F(1, 20)  # the time of a step, in seconds
 COLORS = ["#2e86de", "#10ac84", "#ee5253", "#ff9f43", "#5f27cd", "#01a3a4", "#c44569", "#8395a7", "#576574", "#b33939"]
 MODE_COLORS = ["#dfe6e9", "#ffeaa7", "#c7ecee", "#fab1a0", "#d6a2e8", "#badc58"]
 OWNERS = {"user": ("#2d3436", "you"), "generated": ("#e17055", "the generated script"), "mode": ("#8e44ad", "the mode rules")}
@@ -127,7 +129,8 @@ class App:
         if self.paused:
             self.log(PAUSED)
             return
-        self.post(lambda: PAUSED if self.paused else self.s.set_mode(m))
+        at = time.monotonic()
+        self.post(lambda: PAUSED if self.paused else self._up_to(at) or self.s.set_mode(m))
 
     def _mode_buttons(self, names: list[str], current: str) -> None:
         """The mode buttons, disabled while the chip is paused (no edit then)."""
@@ -156,7 +159,8 @@ class App:
             if self.paused:
                 self.log(PAUSED)
                 return
-            self.post(lambda: PAUSED if self.paused else self.s.command(cmd))
+            at = time.monotonic()
+            self.post(lambda: PAUSED if self.paused else self._up_to(at) or self.s.command(cmd))
         else:
             self.post(lambda: self.s.command(cmd))
 
@@ -225,8 +229,16 @@ class App:
         """Run job() in the simulation's thread; what it returns is shown."""
         self.jobs.put(job)
 
+    def _up_to(self, at: float) -> None:
+        """The simulation goes up to this time, for what happened then to happen there."""
+        dt = F(round((at - self.last) * 1000), 1000)
+        if dt > 0 and self.wall is not None:
+            self.last = self.last + float(dt)
+            if self.s.tick(dt):
+                self.wall = self.last
+
     def _work(self) -> None:
-        last = time.monotonic()
+        self.last = time.monotonic()
         while not self.stopping:
             began = time.monotonic()
             busy = False
@@ -251,14 +263,14 @@ class App:
                 STOP.clear()
                 self.s.begin()
                 busy = True
-                last = time.monotonic()
+                self.last = time.monotonic()
             elif self.paused:
                 self.wall = None
                 busy = True
-                last = began
+                self.last = began
             else:
-                dt = min(max(F(round((began - last) * 1000), 1000), F(1, 1000)), MAX_STEP)
-                last = began
+                dt = max(F(round((began - self.last) * 1000), 1000), F(1, 1000))
+                self.last = began
                 STOP.clear()
                 try:
                     if self.paused:  # paused meanwhile
@@ -321,7 +333,7 @@ class App:
             self.shown = None
         else:  # one position for the chip and the line, the time passed since the step
             shown = self.shown
-            p = x + sn["speed"] * F(min(time.monotonic() - sn["wall"], float(MAX_STEP))).limit_denominator(1000)
+            p = x + sn["speed"] * F(time.monotonic() - sn["wall"]).limit_denominator(1000)
             if shown is not None and p < shown[0]:
                 p = shown[0]
             if p > x and sn["ahead"] is not None:
@@ -331,10 +343,8 @@ class App:
                     state = None
                 if state is not None:
                     line, claims = state.line, state.claims
-                elif shown is not None and shown[0] >= x:  # the formula stops there: the chip waits for the step
-                    p, line, claims = shown
-                else:
-                    p = x
+                elif shown is not None and shown[0] >= x:  # the formula stops there: the line stays as shown, for the step
+                    line, claims = shown[1:]
             self.shown = (p, line, claims)
             x = p
         left = x - span / 4

@@ -48,7 +48,6 @@ The hyperparameter q in (0, 1):
 from __future__ import annotations
 
 import math
-import time
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 
@@ -84,7 +83,7 @@ class RunStats:
 
 
 PACE = Fraction(10)  # a run makes the script definitive this far further ...
-PACE_TIME = 10  # ... every this many seconds
+PACE_TIME = Fraction(10)  # ... every this many seconds (Simulation.keep_pace sees to it)
 
 
 def budget(q: float) -> int:
@@ -116,14 +115,13 @@ class RulesGenerator:
         self.q = q
         self.use_probability = use_probability
         self.constraints = tuple(constraints)
-        self.speed = Fraction(1)  # the chip's, in units per second
-        self.paced = False  # a stage of a run stops at PACE_TIME (time is not exact: not in tests)
+        self.paced = False  # in a process of its own: the instant script holds PACE after the chip
 
     def frontiers(self, c: Fraction) -> list:
-        """Where the stages of a run from c make the script definitive: 10 s of the chip's
-        movement, then steps of at least PACE up to c + H, as many as q allows (the lower q,
-        the shorter the run). None for a run that reaches c + H at once."""
-        first = c + PACE_TIME * self.speed
+        """Where the stages of a run from c make the script definitive: c + PACE, then steps
+        of at least PACE up to c + H, as many as q allows (the lower q, the shorter the run).
+        None for a run that reaches c + H at once."""
+        first = c + PACE
         rest = c + self.horizon - first
         if rest <= 0:
             return [None]
@@ -136,11 +134,15 @@ class RulesGenerator:
             pass
         return out
 
-    def stages(self, state: LineState, chip, known: ModeKnowledge):
+    def stages(self, state: LineState, chip, known: ModeKnowledge, previous: Script | None = None):
         """The scripts of a run, as they are found, each with its stats. Each stage only adds
         an edit on the positions after the last frontier and up to its own, so the lines of
         the script for the positions before a frontier never change (the score, the mode
-        rules and the constraints of the script are decided at the first stage)."""
+        rules and the constraints of the script are decided at the first stage).
+
+        `paced`: the run has published its instant script (Simulation.first_script): up to
+        c + PACE it says what that script says, the mode rules in any mode and the edits of
+        `previous` that are still to come, and the stages go on from there."""
         c = Fraction(chip)
         H = self.horizon
         ctx = _Context(self, state, c, known)
@@ -158,13 +160,21 @@ class RulesGenerator:
                 base, keep, stats.constraints = state, None, why
         frontiers = self.frontiers(c)
         D = rerun_distance(self.q, H)
-        covered = self.predicted(ctx, c + D / 6) if self.rules.mode_rules else []
+        predicted = self.predicted(ctx, c + D / 6) if self.rules.mode_rules else []
+        covered, carried = predicted, []
+        lo = c
+        if self.paced:
+            lo = c + PACE
+            if self.rules.mode_rules:
+                covered = [(Pos(c), Pos(lo), None)] + predicted
+            carried = [e for e in (previous.events if previous else ()) if any(isinstance(a, EditAction) for a in e.actions)
+                       and (not isinstance(e.trigger, ChipIn) or e.trigger.hi > c)]
+            frontiers = frontiers[1:] or [lo]
         live = bool(self.constraints and self.rules.mode_rules)  # a constraint holds whatever a run had time for
         best_key, best_label, current = ctx.score(base), "no-op", base
         stats.work, stats.valid = 1, 1
         edits: list[Event] = []  # one for each stage that edits
         after_edits: list[Event] | None = None
-        lo = c
         for i, hi in enumerate(frontiers):
             ctx.state = current
             ops, key, label, after = self._stage(ctx, state, current, lo, hi, stats, best_key, len(frontiers) - i)
@@ -182,14 +192,14 @@ class RulesGenerator:
                     after_edits.append(Event(Uncovered(), (RerunAction(),)))
             final = i == len(frontiers) - 1
             stretches = []
-            if final and covered:
+            if final and predicted:
                 # the text does not depend on what is compiled ahead, a shortcut: a lower q
                 # compiles less (q D(q) grows with q), and the chip computes the rest
                 end = c + D / 6 * Fraction(str(self.q))
-                ahead = [(a, min(b, Pos(end)), m) for a, b, m in covered if a <= end]
+                ahead = [(a, min(b, Pos(end)), m) for a, b, m in predicted if a <= end]
                 stretches, stats.refused = compile_runs(self.rules, current, ahead, self.constraints)
             stats.chosen, stats.key, stats.final, stats.definitive = best_label, best_key, final, hi
-            events = ([Event(ChipIn(c, INF), (keep,))] if keep is not None else []) + edits + after_edits
+            events = ([Event(ChipIn(c, INF), (keep,))] if keep is not None else []) + carried + edits + after_edits
             yield Script(events, stretches, covered, c, current, live, self.constraints), replace(stats)
             lo = hi
 
@@ -199,7 +209,6 @@ class RulesGenerator:
         best = ((), best_key, "no-op", base)
         where = None if hi is None else Region.of(Interval(lo, hi, False, True))
         limit = stats.work + max(1, (stats.budget - stats.work) // left)
-        deadline = time.monotonic() + PACE_TIME if self.paced else None
         seen = {""}
         for label, ops in ctx.candidates():
             if where is not None:
@@ -208,7 +217,7 @@ class RulesGenerator:
             if key in seen:
                 continue  # the no-op, or an edit already built
             seen.add(key)
-            if stats.work >= min(limit, stats.budget) or (deadline is not None and time.monotonic() >= deadline):
+            if stats.work >= min(limit, stats.budget):
                 break
             stats.work += 1
             try:

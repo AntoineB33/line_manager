@@ -998,7 +998,7 @@ class Lattice:
         self.rays = (Ray(self.lp.mirror_spec, self.pat(self.kmin - 1), self.ray_vars[0], W),
                      Ray(spec, self.pat(self.kmax + 1), self.ray_vars[1], W))
         self.assign: dict[tuple[int, int], int] = {}
-        if not self._dfs(0):
+        if not self._dfs():
             return False
         self.walks = (self.rays[0].walk(self._boundary(0)), self.rays[1].walk(self._boundary(1)))
         return True
@@ -1008,17 +1008,31 @@ class Lattice:
         ks = range(self.kmax - W + 1, self.kmax + 1) if side else range(self.kmin + W - 1, self.kmin - 1, -1)
         return tuple(tuple(self.assign.get((k, oi), 0) for oi in self.ray_vars[side]) for k in ks)
 
-    def _dfs(self, i: int) -> bool:
-        if i == len(self.vars):
-            return self.rays[0].good(self._boundary(0)) and self.rays[1].good(self._boundary(1))
-        k, oi = self.vars[i]
+    def _dfs(self) -> bool:
+        """The first choices that work, in the order of `vars`. With its own stack: a line
+        can have more choices than Python can have nested calls."""
         spec, R2 = self.lp.spec, self.R2
-        for t in range(spec.n_opts[oi]):
-            self.assign[(k, oi)] = t
-            _, _, _, bad = spec.evaluate(self.pat, self._choose_core, k - 2 * R2, k + 2 * R2, k - R2, k + R2)
-            if not bad and self._dfs(i + 1):
-                return True
-        del self.assign[(k, oi)]
+        n = len(self.vars)
+        tried = [0] * (n + 1)  # at each depth, the operands already tried
+        i = 0
+        while i >= 0:
+            if i == n:
+                if self.rays[0].good(self._boundary(0)) and self.rays[1].good(self._boundary(1)):
+                    return True
+                i -= 1
+                continue
+            k, oi = self.vars[i]
+            found = False
+            while tried[i] < spec.n_opts[oi] and not found:
+                self.assign[(k, oi)] = tried[i]
+                tried[i] += 1
+                found = not spec.evaluate(self.pat, self._choose_core, k - 2 * R2, k + 2 * R2, k - R2, k + R2)[3]
+            if found:
+                i += 1
+            else:
+                del self.assign[(k, oi)]
+                tried[i] = 0
+                i -= 1
         return False
 
     def _choose_core(self, k, oi):

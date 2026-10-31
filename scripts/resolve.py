@@ -88,6 +88,7 @@ from solver import EMPTY, Conflict, Line, Problem, Undetermined, close, kinds_of
 
 MAX_OPTIONS = 64  # combinations kept per requirement (the smallest first)
 MAX_DEPTH = 400  # rules followed back from one requirement; beyond: whole elements (fast)
+MAX_WINDOWS = 40  # times a window around an edit grows (each time twice as far)
 
 
 class Refused(Exception):
@@ -145,13 +146,17 @@ def _pointwise(rs: RuleSet, state: LineState, rec: Record) -> LineState:
 
 
 def _near(rs: RuleSet, state: LineState, rec: Record, kinds: set) -> LineState | None:
-    """The state when the rules have distances, solved on a window around the edit, or
-    None for the long way. An exact window needs (`RuleSet.monotone`, no cycle, one state
-    where nothing gave way):
-    - an edit that only adds: the lines it allows were all allowed before, so whatever
-      stays possible on the left of it stays chosen. An edit that takes something away
-      can change a choice anywhere on the left through a chain that looks the same from
-      the window: it goes the long way;
+    """The state when the rules have distances, solved on a window around the edit that
+    grows, on each side, until it finds what did not change: the work follows the change,
+    however much is on the line. None for the long way.
+
+    An exact window needs (`RuleSet.monotone`, no cycle, a state where nothing gave way):
+    - that what stays possible on the left of the edit stays chosen. It does if the edit
+      only adds: the lines it allows were all allowed before. It does also, whatever the
+      edit, if no choice has to look ahead (`RuleSet.one_way`, `_never_stuck`): each one
+      depends only on what is on its left, near it. Otherwise an edit that takes
+      something away can change a choice anywhere on the left, through a chain that
+      looks the same from the window: it goes the long way;
     - two zones as long as a chain of rules, one on each side, where the window gives the
       old line. What is outside the zones then cannot see the difference, and each choice
       inside is the first one possible.
@@ -160,21 +165,44 @@ def _near(rs: RuleSet, state: LineState, rec: Record, kinds: set) -> LineState |
     if rs.cyclic or not rs.monotone or not state.claims.clean or where.left or where.right or not where.core:
         return None
     claims = _claims_of(state, rec, kinds)
-    if not _only_adds(state.claims.on(where), claims.on(where)):
+    if not _only_adds(state.claims.on(where), claims.on(where)) and not (rs.one_way and _never_stuck(rs, state.claims, claims)):
         return None
     step = (len(rs.order) + 2) * max(rs.reach, 1)
-    lo, hi = where.core.intervals[0].lo.x, where.core.intervals[-1].hi.x
-    for margin in (4 * step, 16 * step, 64 * step):
-        a, b = lo - margin, hi + margin
+    ends = [r for d in state.line.vals.values() for r in d.values()]
+    first, last = min((r.inf() for r in ends), default=0), max((r.sup() for r in ends), default=0)
+    a = where.core.intervals[0].lo.x - 4 * step
+    b = where.core.intervals[-1].hi.x + 4 * step
+    grow_a, grow_b = 8 * step, 8 * step
+    for _ in range(MAX_WINDOWS):
         try:
             part = solve(rs, claims.on(Region.of(Interval.closed(a, b))).problem())
         except (Conflict, Undetermined, IncompatiblePeriods):
             return None
-        zones = Region.of(Interval.closed(a + step, a + 2 * step)) | Region.of(Interval.closed(b - 2 * step, b - step))
-        if _on(state.line, zones) == _on(part, zones):
+        left = Region.of(Interval.closed(a + step, a + 2 * step))
+        right = Region.of(Interval.closed(b - 2 * step, b - step))
+        same_left, same_right = _on(state.line, left) == _on(part, left), _on(state.line, right) == _on(part, right)
+        if same_left and same_right:
             inner = Region.of(Interval.closed(a + step, b - step))
             return LineState(claims, _spliced(state.line, part, inner), state.history + (rec,))
+        if (a < first or same_left) and (b > last or same_right) and a < first and b > last:
+            return None  # the window has the whole line
+        if not same_left:
+            a, grow_a = a - grow_a, 2 * grow_a
+        if not same_right:
+            b, grow_b = b + grow_b, 2 * grow_b
     return None
+
+
+def _never_stuck(rs: RuleSet, before: Claims, after: Claims) -> bool:
+    """With these claims, an operand of each "or" can always be chosen (`RuleSet.one_way`):
+    nothing claimed is forbidden by its elements, and nothing claimed forbids them."""
+    for c in (before, after):
+        for k, d in c.pos.items():
+            if k in rs.blocked or (k in rs.free and any(v != 100 for v, _ in d)):
+                return False
+        if any(k in rs.free for k in c.neg) or any(k in rs.free for k in c.taken):
+            return False
+    return True
 
 
 def _only_adds(before: Claims, after: Claims) -> bool:
@@ -275,20 +303,28 @@ def _local_line(rs: RuleSet, line: Line, claims: Claims, where: Region, temp: di
 
 
 def _claims_of(state: LineState, rec: Record, kinds: set) -> Claims:
-    """The claims with the edit `rec`, newest, of these kinds: the others stay as they are."""
+    """The claims with the edit `rec`, newest, of these kinds: the others stay as they are,
+    and these ones too outside the positions of the edit, which decides nothing there."""
+    where = rec.footprint
     above, clear = Claims(), {}
     for r in reversed(state.history + (rec,)):
-        if any(k in r.claims.pos or k in r.claims.neg or k in r.claims.taken or k in r.clear for k in kinds):
-            c, cl = _below(_only(r.claims, kinds), {k: v for k, v in r.clear.items() if k in kinds}, above, clear)
+        if any(k in r.claims.pos or k in r.claims.neg or k in r.claims.taken or k in r.clear for k in kinds) and r.footprint & where:
+            here = {k: v & where for k, v in r.clear.items() if k in kinds and v & where}
+            c, cl = _below(_only(r.claims, kinds).on(where), here, above, clear)
             _add(clear, cl)
             above = above.merged(c)
-    above = above.merged(_below(_only(owned_by_others(state.claims), kinds), {}, above, clear)[0])
+    above = above.merged(_below(_only(owned_by_others(state.claims), kinds).on(where), {}, above, clear)[0])
     claims = state.claims.copy()
     for k in kinds:
         for mine, theirs in ((claims.pos, above.pos), (claims.neg, above.neg), (claims.taken, above.taken)):
+            d = {}
+            _keep(d, k, mine.get(k, {}), where)
+            for key, r in theirs.get(k, {}).items():
+                got = d.setdefault(k, {})
+                got[key] = got[key] | r if key in got else r
             mine.pop(k, None)
-            if k in theirs:
-                mine[k] = theirs[k]
+            if k in d:
+                mine[k] = d[k]
     return claims
 
 

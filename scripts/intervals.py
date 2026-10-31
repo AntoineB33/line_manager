@@ -297,6 +297,102 @@ class Interval:
     __repr__ = __str__
 
 
+def _few(a: tuple, b: tuple) -> bool:
+    return 16 * len(a) < len(b)
+
+
+def _reaching(ivs: tuple, x) -> int:
+    """The first interval that ends at x or after (the intervals are sorted, apart)."""
+    lo, hi = 0, len(ivs)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if ivs[mid].hi < x:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+def _beyond(ivs: tuple, x) -> int:
+    """The first interval that starts after x."""
+    lo, hi = 0, len(ivs)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if x < ivs[mid].lo:
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+
+
+def _on_few(many: tuple, few: tuple) -> list[Interval]:
+    """many & few."""
+    out: list[Interval] = []
+    for y in few:
+        i, j = _reaching(many, y.lo), _beyond(many, y.hi)
+        if i >= j:
+            continue
+        first, last = many[i], many[j - 1]
+        if i == j - 1:
+            out.append(Interval._mk(first.lo if first.lo >= y.lo else y.lo, first.hi if first.hi <= y.hi else y.hi))
+        else:
+            out.append(Interval._mk(first.lo if first.lo >= y.lo else y.lo, first.hi))
+            out.extend(many[i + 1:j - 1])
+            out.append(Interval._mk(last.lo, last.hi if last.hi <= y.hi else y.hi))
+    return out
+
+
+def _without_few(many: tuple, few: tuple) -> list[Interval]:
+    """many - few."""
+    out: list[Interval] = []
+    pos, rest = 0, None  # what is left of the interval before many[pos]
+    for y in few:
+        if rest is not None:
+            if rest.hi < y.lo:
+                out.append(rest)
+            else:
+                if _valid(rest.lo, y.lo - EPS):
+                    out.append(Interval._mk(rest.lo, y.lo - EPS))
+                if _valid(y.hi + EPS, rest.hi):
+                    rest = Interval._mk(y.hi + EPS, rest.hi)
+                    continue
+            rest = None
+        i = max(_reaching(many, y.lo), pos)
+        j = max(_beyond(many, y.hi), i)
+        out.extend(many[pos:i])
+        if i < j:
+            if _valid(many[i].lo, y.lo - EPS):
+                out.append(Interval._mk(many[i].lo, y.lo - EPS))
+            if _valid(y.hi + EPS, many[j - 1].hi):
+                rest = Interval._mk(y.hi + EPS, many[j - 1].hi)
+        pos = j
+    if rest is not None:
+        out.append(rest)
+    out.extend(many[pos:])
+    return out
+
+
+def _with_few(many: tuple, few: tuple) -> list[Interval]:
+    """many | few: what touches an interval joins it."""
+    out: list[Interval] = []
+    pos = 0
+    for y in few:
+        lo, hi = y.lo, y.hi
+        if out and lo <= out[-1].hi + EPS:  # the interval before reaches this one
+            lo, hi = out[-1].lo, hi if hi >= out[-1].hi else out[-1].hi
+            out.pop()
+        i = max(_reaching(many, lo - EPS), pos)
+        j = max(_beyond(many, hi + EPS), i)
+        out.extend(many[pos:i])
+        if i < j:
+            lo = lo if lo <= many[i].lo else many[i].lo
+            hi = hi if hi >= many[j - 1].hi else many[j - 1].hi
+        out.append(Interval._mk(lo, hi))
+        pos = j
+    out.extend(many[pos:])
+    return out
+
+
 class IntervalSet:
     __slots__ = ("intervals",)
 
@@ -356,18 +452,25 @@ class IntervalSet:
         return hash(self.intervals)
 
     def contains(self, x) -> bool:
-        return any(iv.lo <= x <= iv.hi for iv in self.intervals)
+        i = _reaching(self.intervals, x)
+        return i < len(self.intervals) and self.intervals[i].lo <= x
 
     def issubset(self, other: IntervalSet) -> bool:
         return (self - other).is_empty()
 
-    # algebra
+    # algebra: a few intervals against many only look at what they touch, the rest is
+    # copied as one slice, so the cost of a small change does not depend on the set
     def __or__(self, other: IntervalSet) -> IntervalSet:
         if not other.intervals:
             return self
         if not self.intervals:
             return other
-        return IntervalSet(self.intervals + other.intervals)
+        a, b = self.intervals, other.intervals
+        if _few(a, b):
+            a, b = b, a
+        if _few(b, a):
+            return IntervalSet._sorted(_with_few(a, b))
+        return IntervalSet(a + b)
 
     def complement(self) -> IntervalSet:
         out: list[Interval] = []
@@ -384,6 +487,10 @@ class IntervalSet:
     def __and__(self, other: IntervalSet) -> IntervalSet:
         out: list[Interval] = []
         a, b = self.intervals, other.intervals
+        if _few(a, b):
+            a, b = b, a
+        if _few(b, a):
+            return IntervalSet._sorted(_on_few(a, b))
         i = j = 0
         while i < len(a) and j < len(b):
             x, y = a[i], b[j]
@@ -400,6 +507,11 @@ class IntervalSet:
     def __sub__(self, other: IntervalSet) -> IntervalSet:
         if not other.intervals or not self.intervals:
             return self
+        a, b = self.intervals, other.intervals
+        if _few(b, a):
+            return IntervalSet._sorted(_without_few(a, b))
+        if _few(a, b):  # only what is between the first and the last interval of self matters
+            other = IntervalSet._sorted(b[_reaching(b, a[0].lo):_beyond(b, a[-1].hi)])
         return self & other.complement()
 
     def __add__(self, other: IntervalSet) -> IntervalSet:

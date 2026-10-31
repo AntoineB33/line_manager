@@ -656,14 +656,23 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     whatever the left sides read, `not` included (`RuleSet.pointwise`), only the older edits
     that touch the positions of the edit are computed again, on those positions
     (`resolve._pointwise`). What gives way there loses only those positions.
-  - **Edits solved on a window.** With distances, an edit that only adds is solved on a
-    window around it, and kept if the window gives the old line on a zone on each side, as
-    long as a chain of rules (`resolve._near`; the window grows three times at most). The
-    lines the edit allows were all allowed before, so what stays possible on its left stays
-    chosen, and beyond the zones nothing can see the difference. An edit that takes
-    something away goes the long way: it can change a choice anywhere on its left, through a
-    chain that looks the same from the window. So do rules with `not` or left edges and
-    distances, cycles, and states where an older edit gave way.
+  - **Edits solved on a window.** With distances, an edit is solved on a window around it,
+    kept if the window gives the old line on a zone on each side, as long as a chain of
+    rules (`resolve._near`). Otherwise the window grows, twice as far each time and only on
+    the side that still differs: the work follows the change, not the line. Beyond the zones
+    nothing can see the difference, and what stays possible on the left of the edit stays
+    chosen if the edit only adds, since the lines it allows were all allowed before. An edit
+    that takes something away needs more: that no choice has to look ahead
+    (`RuleSet.one_way`, `resolve._never_stuck`), each "or" having an operand that nothing can
+    stop, and every position acting towards the right or on itself. Otherwise it goes the
+    long way, as it can change a choice anywhere on its left, through a chain that looks the
+    same from the window. So do rules with `not` or left edges and distances, cycles, and
+    states where an older edit gave way.
+  - **Nothing is copied one interval at a time.** Interval sets are sorted, so a few
+    intervals against many find their place by bisection and the rest is copied as one
+    slice (`intervals._few`). The claims of an edit are computed on its own positions
+    (`resolve._claims_of`). The process of the edits keeps its own state, and only what
+    changed goes there and back (`state_delta.py`).
   - **Elements nothing reads.** An edit of kinds no rule mentions solves nothing
     (`resolve._apart`): only their intervals are computed, from the edits that have them.
     If no constraint or problem reads them either, it needs no process, and the generator's

@@ -1,6 +1,7 @@
 """What makes an edit fast gives what the long way gives."""
 
 import os
+import pickle
 import random
 import sys
 import unittest
@@ -12,8 +13,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "UI"))
 
 from helpers import Interval, IntervalSet, Region  # noqa: E402
 
+import intervals  # noqa: E402
 import resolve  # noqa: E402
 import solver  # noqa: E402
+import state_delta  # noqa: E402
 from solver import Line  # noqa: E402
 from constraints import FifteenMinuteBreaks  # noqa: E402
 from line import GEN, USER, LineState, Op  # noqa: E402
@@ -188,7 +191,7 @@ class NearTest(unittest.TestCase):
             for _ in range(rng.randint(3, 7)):
                 a = rng.randint(-20, 90)
                 iv = Interval.closed(a, a + rng.randint(0, 25))
-                history.append([rng.choice([Op.put, Op.put, Op.put, Op.put_no, Op.put_no, Op.take])(rng.choice("ABCD"), iv)])
+                history.append([rng.choice([Op.put, Op.put, Op.put, Op.put_no, Op.put_no, Op.take, Op.take_no])(rng.choice("ABCD"), iv)])
             self.assertEqual(result(rs, history), long_way(rs, history), ([str(r) for r in rs.rules], [str(o) for o in map(lambda h: h[0], history)]))
             checked += 1
         self.assertGreater(checked, 100)
@@ -214,14 +217,44 @@ class NearTest(unittest.TestCase):
         after = apply_edit(rs, state, [Op.put_no("B", Interval.point(3))], USER)
         self.assertTrue(after.line.presence("C").contains(1000))
 
-    def test_taking_away_goes_the_long_way(self):
-        """A "no B" gone can change a choice far on the left, through a chain the same
-        near the edit."""
+    def test_more_choices_than_nested_calls(self):
         rs = parse_rules(["A → B or C", "C → no B 1 unit on the right"])
+        limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(600)
+        try:
+            state = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, 800))], USER)
+        finally:
+            sys.setrecursionlimit(limit)
+        self.assertEqual(state.line.presence("B"), Region.of(Interval.closed(0, 800)))
+
+    def test_the_work_follows_the_change(self):
+        """Adding C at 5 changes A's positions after it, up to its end: not the line."""
+        rs = parse_rules(["A → B or C", "C → no B 1 unit on the right"])
+        state = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, 1000))], USER)
+        with mock.patch.object(resolve, "rebuild", side_effect=AssertionError("the long way")):
+            after = apply_edit(rs, state, [Op.put("C", Interval.point(5))], USER)
+        self.assertEqual(after.line, solver.solve(rs, after.claims.problem()))
+
+    def test_taking_away_follows_the_change_too(self):
+        """Nothing can stop C here, so no choice looks ahead."""
+        rs = parse_rules(["A → B or C", "C → no B 1 unit on the right"])
+        self.assertTrue(rs.one_way)
         state = LineState.empty()
-        for ops in ([Op.put("A", Interval.closed(0, 200))], [Op.put_no("B", Interval.point(3))], [Op.take_no("B", Interval.point(3))]):
+        for ops in ([Op.put("A", Interval.closed(0, 200))], [Op.put_no("B", Interval.point(3))]):
             state = apply_edit(rs, state, ops, USER)
+        with mock.patch.object(resolve, "rebuild", side_effect=AssertionError("the long way")):
+            state = apply_edit(rs, state, [Op.take_no("B", Interval.point(3))], USER)
         self.assertEqual(state.line.presence("B"), Region.of(Interval.closed(0, 200)))
+
+    def test_only_when_no_choice_looks_ahead(self):
+        for rules in (["A → B or C", "B → no C 1 unit on the right", "C → no B 1 unit on the right"],
+                      ["A → B or C", "C → no B 1 unit on the left"],
+                      ["A → B or C", "C → D", "X → no D", "X → no B"], ["A → B or C", "C → no B", "X → B"]):
+            self.assertFalse(parse_rules(rules).one_way, rules)
+        rs = parse_rules(["A → B or C", "C → no B 1 unit on the right"])
+        for claim in ([Op.put_no("C", Interval.point(3))], [Op.put("B", Interval.point(3))]):
+            state = apply_edit(rs, LineState.empty(), claim, USER)
+            self.assertFalse(resolve._never_stuck(rs, state.claims, state.claims))
 
 
 class PointwiseTest(unittest.TestCase):
@@ -274,6 +307,74 @@ class PointwiseTest(unittest.TestCase):
         with mock.patch.object(resolve, "solve", counted):
             apply_edit(rs, state, [Op.put("A", Interval.closed(5000, 5010))], USER)
         self.assertLessEqual(count[0], 3)
+
+
+class IntervalsTest(unittest.TestCase):
+    """A few intervals against many give what the plain way gives."""
+
+    def test_the_same_as_the_plain_way(self):
+        rng = random.Random(73)
+
+        def some(n):
+            out = []
+            for _ in range(n):
+                a = F(rng.randint(-200, 200), 2)
+                b = a + F(rng.randint(1, 9), 2)
+                out.append(rng.choice([Interval.closed, Interval.open, Interval.closed_open])(a, b))
+            return IntervalSet(out)
+
+        for _ in range(600):
+            many, few = some(rng.randint(40, 120)), some(rng.randint(1, 3))
+            if rng.random() < .3:
+                many = many | IntervalSet.up_to(F(-150))
+            for x, y in ((many, few), (few, many)):
+                fast = (x | y, x & y, x - y)
+                with mock.patch.object(intervals, "_few", lambda a, b: False):
+                    self.assertEqual(fast, (x | y, x & y, x - y))
+
+
+class DeltaTest(unittest.TestCase):
+    """What goes to the process of the edits is what changed, and it gives the same state."""
+
+    def same(self, a, b):
+        self.assertEqual(a.line, b.line)
+        self.assertTrue(a.claims.same(b.claims))
+        self.assertEqual(a.claims.clean, b.claims.clean)
+        self.assertEqual(len(a.history), len(b.history))
+
+    def test_it_gives_the_new_state(self):
+        rng = random.Random(79)
+        tail = Region(135, 135, IntervalSet(), right=IntervalSet.of(Interval.closed_open(0, 15)), pr=F(135))
+        for _ in range(40):
+            rs = parse_rules(rng.sample(NearTest.POOL, 3))
+            states, state = [LineState.empty()], LineState.empty()
+            for k in range(8):
+                a = rng.randint(0, 60)
+                where = tail if rng.random() < .1 else Interval.closed(a, a + rng.randint(0, 9))
+                try:
+                    state = apply_edit(rs, state, [rng.choice([Op.put, Op.put_no, Op.take])(rng.choice("ABCD"), where)], USER)
+                    states.append(state)
+                except Refused:
+                    pass
+            for old, new in zip(states, states[1:]):
+                self.same(state_delta.patched(old, state_delta.changes(old, new)), new)
+            self.same(state_delta.patched(states[-1], state_delta.changes(states[-1], states[0])), states[0])  # back
+
+    def test_its_size_does_not_depend_on_the_line(self):
+        rs = parse_rules(EXAMPLE)
+        sizes = []
+        for n in (50, 500):
+            state = apply_edit(rs, LineState.empty(), [Op.put("NoScreen", Interval.closed(4 * k, 4 * k + 1)) for k in range(n)], USER)
+            after = apply_edit(rs, state, [Op.put("NoScreen", Interval.closed(10 ** 6, 10 ** 6 + 1))], USER)
+            sizes.append(len(pickle.dumps(state_delta.changes(state, after))))
+            self.same(state_delta.patched(state, state_delta.changes(state, after)), after)
+        self.assertLess(sizes[1], 2 * sizes[0])
+
+    def test_it_does_not_depend_on_where_the_edit_is(self):
+        rs = parse_rules(EXAMPLE)
+        state = apply_edit(rs, LineState.empty(), [Op.put("NoScreen", Interval.closed(4 * k, 4 * k + 1)) for k in range(500)], USER)
+        after = apply_edit(rs, state, [Op.put("NoScreen", Interval.closed(1000, 1001))], USER)
+        self.assertLess(len(pickle.dumps(state_delta.changes(state, after))), 3000)
 
 
 class LocalTest(unittest.TestCase):

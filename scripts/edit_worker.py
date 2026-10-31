@@ -5,7 +5,9 @@ time limit it is ended, and the edit is refused whatever it was computing. It st
 ready between two edits, its imports done, so that an edit costs only its calculation.
 
 Writes a first pickled value when it is ready, then reads pickled jobs from stdin, each
-a name of JOBS with its arguments, and writes the pickled answer of each to stdout.
+a name of JOBS with the rules, the state and its other arguments, and writes the pickled
+answer of each to stdout. The state is kept here: a job and the answer of an edit only
+carry what changed (state_delta.py).
 """
 
 import os
@@ -15,8 +17,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from intervals import Pos  # noqa: E402
+from line import LineState  # noqa: E402
 from mode_rules import ModeRules  # noqa: E402
 from simulation import user_edit  # noqa: E402
+from state_delta import changes, patched  # noqa: E402
 
 
 def mode_change(rules, state, mode, x, constraints):
@@ -31,10 +35,17 @@ if __name__ == "__main__":
     out = sys.stdout.buffer
     pickle.dump("ready", out)
     out.flush()
+    state = LineState.empty()
     while True:
         try:
-            name, args = pickle.load(sys.stdin.buffer)
+            name, rules, change, args = pickle.load(sys.stdin.buffer)
         except EOFError:
             break
-        pickle.dump(JOBS[name](*args), out)
+        state = patched(state, change)
+        answer = JOBS[name](rules, state, *args)
+        if name == "edit":
+            after, why = answer
+            answer = (None if after is None or why else changes(state, after), why)
+            state = state if answer[0] is None else after
+        pickle.dump(answer, out)
         out.flush()

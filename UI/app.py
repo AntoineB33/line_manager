@@ -47,6 +47,7 @@ from script import ChipIn, RerunAction, Script, TransitionCount  # noqa: E402
 from script_text import ScriptError, parse_script  # noqa: E402,F401 (ScriptError: for the window)
 from simulation import EDIT_LIMIT, Chip, Simulation  # noqa: E402
 from solver import Interrupted  # noqa: E402
+from state_delta import changes, patched  # noqa: E402
 
 WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "generator_worker.py")
 EDIT_WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "edit_worker.py")
@@ -100,6 +101,7 @@ class Calculator:
                                      stderr=subprocess.DEVNULL, creationflags=flags)
         self.answers: queue.Queue = queue.Queue()
         self.ready = False
+        self.state = LineState.empty()  # what the process has
         threading.Thread(target=self._read, args=(self.proc, self.answers), daemon=True).start()
 
     @staticmethod
@@ -110,12 +112,13 @@ class Calculator:
         except (EOFError, OSError, ValueError, pickle.UnpicklingError):
             answers.put(FAILED)
 
-    def ask(self, name: str, *args):
-        """The answer of the job, or TOO_LONG."""
+    def ask(self, name: str, rules, state: LineState, *args):
+        """The answer of the job, or TOO_LONG. Only what changed of the state goes to the
+        process and back (state_delta.py)."""
         if not self.ready:
             self.ready = self.answers.get(timeout=READY_LIMIT) == "ready"
         try:
-            self.proc.stdin.write(pickle.dumps((name, args)))
+            self.proc.stdin.write(pickle.dumps((name, rules, changes(self.state, state), args)))
             self.proc.stdin.flush()
             answer = self.answers.get(timeout=EDIT_LIMIT)
         except (OSError, ValueError, queue.Empty):
@@ -124,6 +127,13 @@ class Calculator:
             self.close()
             self.start()
             return TOO_LONG
+        self.state = state
+        if name == "edit":
+            change, why = answer
+            if change is None:
+                return None, why
+            self.state = patched(state, change)
+            return self.state, why
         return answer
 
     def close(self) -> None:

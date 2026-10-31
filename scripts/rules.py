@@ -405,6 +405,7 @@ class RuleSet:
         self.monotone = all(_reads_presence(r.lhs) and all(o.anchor == "p" for o in r.lits()) for r in self.element)
         self.pointwise = all(o.is_point and not o.rel and o.anchor == "p" for r in self.element for o in r.lits())
         self.local = self.monotone and self.pointwise
+        self._one_way()
         # how far from the ε part of what it starts from a chain of rules can place: an open
         # end adds ±1, and a chain goes through each kind once (a cycle: `moving`, `drifts`)
         opened = [1 for r in self.rules for o in r.lits() for e in (o.where.lo, o.where.hi) if e not in (math.inf, -math.inf) and e.k]
@@ -415,6 +416,48 @@ class RuleSet:
                           for r in self.element for o in r.lits() for k in r.lhs.kinds())
         sizes = [e for e in ends if e] + [o.where.length for r in self.rules for o in r.lits() if 0 < o.where.length < math.inf]
         self.smallest_offset = min(sizes, default=None)
+
+    def _one_way(self) -> None:
+        """one_way: no choice has to look ahead, so each one depends only on what is on its
+        left, near it. Every position acts towards the right or on itself, and each "or"
+        has an operand that nothing can stop: nothing forbids it or what it places
+        (`free`). Choosing anything then leaves that operand possible further on. The
+        claims must not stop it either: `resolve._never_stuck`, with `blocked`, what those
+        operands forbid, which must not be placed for sure."""
+        lits = [o for r in self.element for o in r.lits()]
+        forbidden = {o.kind for o in lits if o.negated}
+        places: dict[str, set] = {}
+        blocks: dict[str, set] = {}
+        for r in self.element:
+            for k in r.lhs.kinds():
+                places.setdefault(k, set()).update(o.kind for o in r.lits() if not o.negated)
+                blocks.setdefault(k, set()).update(o.kind for o in r.lits() if o.negated)
+
+        def reached(k):
+            seen, todo = set(), [k]
+            while todo:
+                x = todo.pop()
+                if x not in seen:
+                    seen.add(x)
+                    todo.extend(places.get(x, ()))
+            return seen
+
+        self.free, self.blocked = set(), set()
+        self.one_way = bool(self.monotone) and not self.cyclic and all(
+            o.anchor == "p" and o.where.lo >= 0 and o.value in (None, 100) for o in lits)
+        sure = {o.kind for r in self.element for it in r.rhs if not it.is_or for o in it.options if not o.negated}
+        for r in self.element:
+            for it in r.rhs:
+                if not it.is_or:
+                    continue
+                safe = [o.kind for o in it.options if not o.negated and not reached(o.kind) & forbidden]
+                if not safe:
+                    self.one_way = False
+                    continue
+                self.free |= reached(safe[-1])
+                self.blocked |= {t for k in reached(safe[-1]) for t in blocks.get(k, ())}
+        if self.blocked & sure:
+            self.one_way = False
 
     def kinds(self) -> list[str]:
         return list(self.order)

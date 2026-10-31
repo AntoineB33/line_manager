@@ -53,7 +53,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 
 from intervals import EPS, INF, Interval, IntervalSet, Pos
-from region import ZERO, IncompatiblePeriods, Region
+from region import ZERO, IncompatiblePeriods, Region, flcm
 from rules import Atom, Not, RuleSet, is_hidden, lattice_step
 
 sys.setrecursionlimit(20000)
@@ -1056,7 +1056,7 @@ class LatticeProblem:
         """regions[kind] holds Regions under keys: 'claims' {value: Region}, 'fixed',
         'exact' {value: Region}, 'forbidden'."""
         self.kinds, self.kinds_in, self.regions = kinds, kinds_in, regions
-        self.g = lattice_step(o for _, it, _ in lrules for o in it.options) or Fraction(1)
+        self.g = lattice_step(o for _, it, _ in lrules for o in it.options) or self._free_step(regions)
         self.spec = Spec(kinds, kinds_in, self.g, lrules, cyclic=cyclic)
         self.mirror_spec = Spec(kinds, kinds_in, self.g, lrules, mirror=True, cyclic=cyclic)
         self.W = self.spec.rho + 1  # history a ray state keeps
@@ -1085,6 +1085,24 @@ class LatticeProblem:
         # the intervals of each region on the window that matters
         a, b = -self.T - 4 * self.g, self.T + 4 * self.g
         self._ivs = {id(reg): reg.on(a, b).intervals for reg in all_regions}
+
+    @staticmethod
+    def _free_step(regions: dict) -> Fraction:
+        """The step when no rule has a distance: a position acts on no other one, so any step
+        is exact, and the longer the fewer positions to go through: the common period of
+        what repeats (it repeats in one step), else longer than the line."""
+        period, far = None, Fraction(1)
+        for d in regions.values():
+            for reg in (r for v in d.values() for r in (v.values() if isinstance(v, dict) else [v])):
+                if not reg:
+                    continue
+                far = max(far, abs(reg.lo.x) + 1, abs(reg.hi.x) + 1)
+                for pat, p in ((reg.left, reg.pl), (reg.right, reg.pr)):
+                    if pat and pat != IntervalSet.of(Interval(ZERO, p, True, False)):
+                        if p.k:
+                            return Fraction(1)
+                        period = p.x if period is None else flcm(period, p.x)
+        return period or 2 * far
 
     def pieces(self) -> list[tuple[IntervalSet, Pos]]:
         """(residues, representative) covering [0, g)."""

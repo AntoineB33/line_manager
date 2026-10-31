@@ -53,6 +53,27 @@ EDIT_LIMIT = 2  # the seconds an edit of the user can take: beyond, it is refuse
 LAST_RESORT = PACE_TIME - EDIT_LIMIT  # (so that an edit going on never delays the pace)
 
 
+def against_constraints(rules, state: LineState, c: Fraction, constraints) -> str | None:
+    """Why the constraints the script must satisfy cannot hold on this line, if so."""
+    ops = [o for k in constraints for o in k.ops(state, c)]
+    if not ops:
+        return None
+    try:
+        why = check_script_edit(state, apply_edit(rules, state, ops, GEN), c)
+    except Refused as e:
+        why = str(e)
+    return f"it contradicts the constraints: {why}" if why else None
+
+
+def user_edit(rules, state: LineState, ops, owner, c: Fraction, constraints) -> tuple:
+    """(the state after an edit of the user, why it is refused, if so)."""
+    try:
+        after = apply_edit(rules, state, ops, owner)
+        return after, against_constraints(rules, after, c, constraints)
+    except (Refused, Undetermined) as e:
+        return None, str(e)
+
+
 class Chip:
     """Piecewise-linear trajectory through (t, x) points: t strictly increasing from 0,
     x non-decreasing; the chip stays at the last x afterwards."""
@@ -159,7 +180,9 @@ class Simulation:
         self.background = False  # runs of the generator complete later (`complete`)
         self.request: RunRequest | None = None  # the run asked for and not completed
         self.definitive = None  # how far the run's scripts are definitive
+        self.calculate = None  # (job, *args) -> its answer, the user's edits computed elsewhere
         self._edited = False  # the user edited at this instant
+        self._read_edited = False  # something that the rules, the constraints or the problems read
         self._requests = 0
 
     def snapshot(self) -> tuple:
@@ -210,18 +233,22 @@ class Simulation:
         covered = [(lo, hi, m) for lo, hi, m in s.covered if m is not None]
         if self.rules.mode_rules:
             covered.insert(0, (Pos(req.chip), Pos(x), None))
-        ops = getattr(self.gen, "first_edit", lambda *_: [])(self.state, req.chip)
-        if ops:
+        base = None
+        at = sum(1 for e in events if isinstance(e.trigger, ChipIn) and isinstance(e.actions[0], ConstraintEditAction))
+        for ops in getattr(self.gen, "first_edits", lambda *_: [])(self.state, req.chip):
             try:  # on top of what the constraints ask for, and they must still hold after it
-                asked = [o for k in constraints for o in k.ops(self.state, req.chip)]
-                base = apply_edit(self.rules, self.state, asked, GEN) if asked else self.state
+                if base is None:
+                    asked = [o for k in constraints for o in k.ops(self.state, req.chip)]
+                    base = apply_edit(self.rules, self.state, asked, GEN) if asked else self.state
                 after = apply_edit(self.rules, base, ops, GEN)
-                why = check_script_edit(base, after, req.chip) or                     ("it goes against the constraints" if any(k.ops(after, req.chip) for k in constraints) else None)
+                why = check_script_edit(base, after, req.chip) or \
+                    ("it goes against the constraints" if any(k.ops(after, req.chip) for k in constraints) else None)
             except (Refused, Undetermined) as e:
                 why = str(e)
             if not why:
-                at = sum(1 for e in events if isinstance(e.trigger, ChipIn) and isinstance(e.actions[0], ConstraintEditAction))
+                base = after
                 events.insert(at, Event(ChipIn(req.chip, req.chip + self.gen.horizon), (EditAction(tuple(ops)),)))
+                at += 1
         script = replace(s, events=events, covered=covered, constraints=constraints, live=s.live or bool(constraints and self.rules.mode_rules))
         req.published, req.pace_at, req.previous = True, req.time + LAST_RESORT, script
         self._carry(script)
@@ -323,7 +350,7 @@ class Simulation:
         if isinstance(trig, Start):
             return True
         if isinstance(trig, Edited):
-            return self._edited
+            return self._edited and (self._read_edited or not trig.only)
         if isinstance(trig, Uncovered):
             c = self.chip.position(t)
             return self._uncovered_at(self.modes.mode_at(c), Pos(c))
@@ -339,15 +366,23 @@ class Simulation:
 
     def _edit(self, t: Fraction, ops: list[Op], owner: str, source: str) -> bool:
         before = self.state
-        with limited(EDIT_LIMIT if self.background and source == "user" else None):
+        c = self.chip.position(t)
+        if source == "user":
+            alone = self._alone(ops)  # nothing reads it: nothing to compute, or to run
+            job = (self.rules, before, ops, owner, c, () if alone else self._constraints())
+            self._read_edited = self._read_edited or not alone
+            if alone:
+                after, why = user_edit(*job)
+            elif self.calculate is not None:
+                after, why = self.calculate("edit", *job)
+            else:
+                with limited(EDIT_LIMIT if self.background else None):
+                    after, why = user_edit(*job)
+        else:
             try:
                 after = apply_edit(self.rules, before, ops, owner)
-                why = None
-                if source == "script":
-                    why = check_script_edit(before, after, self.chip.position(t))
-                elif source == "user":
-                    why = self._against_constraints(after, self.chip.position(t))
-            except (Refused, Undetermined) as e:
+                why = check_script_edit(before, after, c)
+            except Refused as e:
                 why = str(e)
         if why:
             self.log.refused.append((t, source, why))
@@ -356,16 +391,12 @@ class Simulation:
         self.state = after
         return True
 
-    def _against_constraints(self, state: LineState, c: Fraction) -> str | None:
-        """Why the constraints the script must satisfy cannot hold on this line, if so."""
-        ops = [o for k in self.script.constraints or getattr(self.gen, "constraints", ()) for o in k.ops(state, c)]
-        if not ops:
-            return None
-        try:
-            why = check_script_edit(state, apply_edit(self.rules, state, ops, GEN), c)
-        except Refused as e:
-            why = str(e)
-        return f"it contradicts the constraints: {why}" if why else None
+    def _alone(self, ops) -> bool:
+        kinds = getattr(self.gen, "kinds_read", lambda: None)()
+        return kinds is not None and not any(o.kind in kinds for o in ops)
+
+    def _constraints(self) -> tuple:
+        return self.script.constraints or getattr(self.gen, "constraints", ())
 
     def run(self, end_time) -> Log:
         self.advance(end_time)
@@ -426,6 +457,7 @@ class Simulation:
         after = rebuild(self.rules, history, owned_by_others(before.claims), before.line)
         self.log.changes.append(Change(self.t, self.chip.position(self.t), "user", before, after))
         self.state = after
+        self._read_edited = True
         if not self.started:
             self.started = True
             self._instant(self.t, first=True, edits=[])
@@ -451,7 +483,7 @@ class Simulation:
         return min(later, default=INF)
 
     def _instant(self, t: Fraction, first: bool = False, edits: list[list[Op]] | None = None) -> None:
-        edited = False
+        edited = self._read_edited = False
         for ops in ([e.ops for e in self.user_edits if e.time == t] if edits is None else edits):
             edited |= self._edit(t, ops, USER, "user")
         self._after_edits(t, first, edited, "user edit")

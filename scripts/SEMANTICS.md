@@ -627,7 +627,8 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     whatever the modes: that is "definitive". A run in a process of its own edits nothing
     in the first 10 after c. The first script also puts the kind with the biggest ratio
     target not reached on those 10, if the constraints and the guards allow it
-    (`RulesGenerator.first_edit`). The pace does not depend on the run: at each 8 s without
+    (`RulesGenerator.first_edits`), and goes on with each kind at the chip that is not
+    there for its minimum length on the length before the chip. The pace does not depend on the run: at each 8 s without
     a new frontier, the simulation moves it 10 further with the script in place
     (`Simulation.keep_pace`; 8 so that an edit of 2 s going on never delays it), and what
     the run sends later only counts after it (`Simulation._fit`). The script's position
@@ -640,8 +641,14 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     the last script.
   - **Calculations are instantaneous.** A step lets the time that passed run, however
     long, and a click counts from the position of the chip when it was made, so the
-    result of a slow edit is what it would have been at once (`gui._up_to`). An edit is
-    refused beyond 2 s on the clock (`solver.limited`, at the checkpoints of the long loops).
+    result of a slow edit is what it would have been at once (`gui._up_to`). In the window
+    an edit or a mode change is computed in a process kept ready (`app.Calculator`,
+    `edit_worker.py`), ended at 2 s whatever it is computing, and refused. Elsewhere in the
+    background mode the limit holds at the checkpoints of the long loops (`solver.limited`).
+  - **Elements nothing reads.** An edit of kinds no rule mentions solves nothing
+    (`resolve._apart`): only their intervals are computed, from the edits that have them.
+    If no constraint or problem reads them either, it needs no process, and the generator's
+    scripts do not run again for it (`Edited(only)`).
   - **The script is its text.** What the text says is what the script does (script.py):
     the mode rules apply where a line says so, on the line as it is; what a run
     compiled ahead is only a shortcut. So the user can change any line (the file

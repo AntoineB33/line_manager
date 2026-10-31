@@ -40,6 +40,9 @@ class KeepOn:
     def __init__(self, op: Op) -> None:
         self.op = op
 
+    def kinds(self) -> set:
+        return {self.op.kind}
+
     def targets(self, state: LineState, c) -> dict:
         return {self.op.kind: self.op.region.shift(c) & _after(c)} if self.op.action == "put" else {}
 
@@ -78,6 +81,9 @@ class FifteenMinuteBreaks:
     def __str__(self) -> str:
         return (f"keep {self.brk} on (chip, chip + {_fmt(self.length)}] with {self.ns}, as early as possible, "
                 f"none within {_fmt(self.pause)} after as much {self.ns}")
+
+    def kinds(self) -> set:
+        return {self.brk, self.ns}
 
     def breaks(self, state: LineState, c: Fraction) -> Region:
         """The breaks there must be after the chip at c (those going on included)."""

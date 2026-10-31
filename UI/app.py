@@ -46,10 +46,14 @@ from region import Region  # noqa: E402
 from rules import RuleError, is_hidden, parse_rules  # noqa: E402
 from script import ChipIn, RerunAction, Script, TransitionCount  # noqa: E402
 from script_text import ScriptError, parse_script  # noqa: E402,F401 (ScriptError: for the window)
-from simulation import Chip, Simulation  # noqa: E402
+from simulation import EDIT_LIMIT, Chip, Simulation  # noqa: E402
 from solver import Interrupted  # noqa: E402
 
 WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "generator_worker.py")
+EDIT_WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "edit_worker.py")
+READY_LIMIT = 30  # the seconds a new process can take to start
+TOO_LONG = "it takes too long to compute"
+FAILED = object()
 
 HELP = """\
 Rules
@@ -84,6 +88,52 @@ PAUSED = "the chip is paused: press Play to edit"
 RESERVED = {"no", "at", "on", "everywhere", "mode"}
 
 
+class Calculator:
+    """The user's edits and mode changes computed in a process of its own, ready between
+    two of them (scripts/edit_worker.py). One that goes past EDIT_LIMIT is refused: the
+    process is ended, at any point of its calculation, and another one is started."""
+
+    def __init__(self) -> None:
+        self.proc = None
+        self.start()
+
+    def start(self) -> None:
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
+        self.proc = subprocess.Popen([sys.executable, EDIT_WORKER], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, creationflags=flags)
+        self.answers: queue.Queue = queue.Queue()
+        self.ready = False
+        threading.Thread(target=self._read, args=(self.proc, self.answers), daemon=True).start()
+
+    @staticmethod
+    def _read(proc, answers) -> None:
+        try:
+            while True:
+                answers.put(pickle.load(proc.stdout))
+        except (EOFError, OSError, ValueError, pickle.UnpicklingError):
+            answers.put(FAILED)
+
+    def ask(self, name: str, *args):
+        """The answer of the job, or TOO_LONG."""
+        if not self.ready:
+            self.ready = self.answers.get(timeout=READY_LIMIT) == "ready"
+        try:
+            self.proc.stdin.write(pickle.dumps((name, args)))
+            self.proc.stdin.flush()
+            answer = self.answers.get(timeout=EDIT_LIMIT)
+        except (OSError, ValueError, queue.Empty):
+            answer = FAILED
+        if answer is FAILED:
+            self.close()
+            self.start()
+            return TOO_LONG
+        return answer
+
+    def close(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.kill()
+
+
 class Session:
     def __init__(self, rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=0.5, constraints=(),
                  ) -> None:
@@ -116,6 +166,7 @@ class Session:
         self.sim.background = True
         self._running = None  # (request id, process): the generator run going on
         self.script_edit = None  # (time, script): the last script the user changed
+        self.calculator = None
         atexit.register(self.close)
         self._done: queue.Queue = queue.Queue()  # (request id, script, stats or the error) of completed runs
         self.edits: list[str] = []  # the user's edits, as typed, oldest first
@@ -124,6 +175,16 @@ class Session:
         self.initial_refused = self.sim.edit_now(ops) if ops else None  # the generator runs at `begin`
         if ops and not self.initial_refused:
             self.edits.append("; ".join(line))
+
+    def calculate_apart(self) -> None:
+        """The window's: the time limit of the user's edits holds whatever they compute."""
+        self.calculator = Calculator()
+        atexit.register(self.calculator.close)
+        self.sim.calculate = self._calculate
+
+    def _calculate(self, name: str, *args) -> tuple:
+        out = self.calculator.ask(name, *args)
+        return (None, out) if out == TOO_LONG else out
 
     def generator(self, rs) -> RulesGenerator:
         return RulesGenerator(rs, self.problems, self.q, constraints=self.constraints)
@@ -339,6 +400,8 @@ class Session:
         x = self.position
         if self.modes.mode_at(x) == m:
             return f"the mode is already {m}"
+        if self.calculator is not None and self.calculator.ask("mode", self.sim.rules, self.sim.state, m, x, self.sim._constraints()) == TOO_LONG:
+            return f"mode {m} refused: {TOO_LONG}"
         self.changes[x] = m
         initial, planned = self.planned
         initial = self.changes.get(self.modes.start, initial)

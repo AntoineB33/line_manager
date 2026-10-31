@@ -114,6 +114,9 @@ def apply_edit(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> Line
             raise Refused("N2: would remove or change an element added by the user")
         return after
     rec = Record.of(ops)
+    kinds = {op.kind for op in ops}
+    if not kinds & rs.ruled:
+        return _apart(state, rec, kinds)
     _alone(rs, rec.claims.problem())
     return rebuild(rs, state.history + (rec,), owned_by_others(state.claims), state.line)
 
@@ -147,10 +150,45 @@ class Record:
         return Record(c, clear, union(op.region for op in ops))
 
 
+def _apart(state: LineState, rec: Record, kinds: set) -> LineState:
+    """An edit of kinds no rule reads or places: nothing else can change and nothing can
+    be solved, so only their intervals are computed, from the edits that have them."""
+    history = state.history + (rec,)
+    above, clear = Claims(), {}
+    for r in reversed(history):
+        if any(k in r.claims.pos or k in r.claims.neg or k in r.claims.taken or k in r.clear for k in kinds):
+            c, cl = _below(_only(r.claims, kinds), {k: v for k, v in r.clear.items() if k in kinds}, above, clear)
+            _add(clear, cl)
+            above = above.merged(c)
+    above = above.merged(_below(_only(owned_by_others(state.claims), kinds), {}, above, clear)[0])
+    claims, vals = state.claims.copy(), dict(state.line.vals)
+    for k in kinds:
+        for mine, theirs in ((claims.pos, above.pos), (claims.neg, above.neg), (claims.taken, above.taken)):
+            mine.pop(k, None)
+            if k in theirs:
+                mine[k] = theirs[k]
+        vals.pop(k, None)
+        for (v, _), r in above.pos.get(k, {}).items():
+            d = vals.setdefault(k, {})
+            d[v] = d[v] | r if v in d else r
+    return LineState(claims, Line(vals), history)
+
+
+def _only(c: Claims, kinds: set) -> Claims:
+    out = Claims()
+    out.pos = {k: d for k, d in c.pos.items() if k in kinds}
+    out.neg = {k: d for k, d in c.neg.items() if k in kinds}
+    out.taken = {k: d for k, d in c.taken.items() if k in kinds}
+    return out
+
+
 def rebuild(rs: RuleSet, history: tuple, layer: Claims, old_line: Line) -> LineState:
     """The state of these edits of the user (oldest first): the newest first, each older
     one giving way to the newer ones, then the elements of the other owners (`layer`),
     which give way to all of them (old_line: the line before, for their losses)."""
+    fast = _no_contradiction(rs, history, layer)
+    if fast is not None:
+        return fast
     above, clear, line = Claims(), {}, None
     footprint = history[-1].footprint if history else EMPTY
     for rec in reversed(history):
@@ -164,6 +202,24 @@ def rebuild(rs: RuleSet, history: tuple, layer: Claims, old_line: Line) -> LineS
     if line is None:
         line = solve(rs, above.problem())
     return LineState(above, line, history)
+
+
+def _no_contradiction(rs: RuleSet, history: tuple, layer: Claims) -> LineState | None:
+    """The state when nothing has to give way through the rules, with one solve (one per
+    edit otherwise, each on all the newer ones): None if something has to, or if an edit
+    could contradict newer ones that the older ones then save (`RuleSet.monotone`)."""
+    if not rs.monotone:
+        return None
+    above, clear = Claims(), {}
+    for rec in reversed(history):
+        c, cl = _below(rec.claims, rec.clear, above, clear)
+        _add(clear, cl)
+        above = above.merged(c)
+    above = above.merged(_below(layer, {}, above, clear)[0])
+    try:
+        return LineState(above, solve(rs, above.problem()), history)
+    except (Conflict, Undetermined, IncompatiblePeriods):
+        return None
 
 
 def _below(c: Claims, clear: dict, above: Claims, above_clear: dict) -> tuple[Claims, dict]:

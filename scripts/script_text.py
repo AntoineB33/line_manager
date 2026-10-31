@@ -176,6 +176,8 @@ def _trigger(text: str):
         return Start()
     if text == str(Edited()):
         return Edited()
+    if text == str(Edited(True)):
+        return Edited(True)
     if text == str(Uncovered()):
         return Uncovered()
     m = re.fullmatch(r"(\d+) mode transitions? happened", text)

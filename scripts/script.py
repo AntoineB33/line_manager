@@ -20,7 +20,8 @@ Triggers
   becomes true (at installation if it is already true).
 - TransitionCount(k): fires once, when the k-th mode transition after the
   installation of the script is revealed.
-- Edited(): fires at each edit of the user (undo and clear included).
+- Edited(only): fires at each edit of the user (undo and clear included); with `only`, of
+  an element that a rule, a constraint or a problem of the generator reads.
 - Uncovered(): true while the chip is where the script does not apply the mode rules.
 - PresenceAbove(K, v, y, H, lo, hi, mode): true while the presence ratio of K at v% on
   (chip, chip + H] is above y, the chip in [lo, hi) and the mode at the chip `mode`.
@@ -101,8 +102,10 @@ class TransitionCount:
 
 @dataclass(frozen=True)
 class Edited:
+    only: bool = False
+
     def __str__(self) -> str:
-        return "the user edits the line"
+        return "the user edits what the rules, the constraints or the problems read" if self.only else "the user edits the line"
 
 
 @dataclass(frozen=True)

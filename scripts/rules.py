@@ -397,6 +397,10 @@ class RuleSet:
         self.or_rank = {a: n for n, a in enumerate(self.or_items)}
         ends = [abs(e.x) for r in self.rules for o in r.lits() for e in (o.where.lo, o.where.hi) if e not in (math.inf, -math.inf)]
         self.reach = max(ends, default=Fraction(0))
+        self.ruled = set(self.order) | {k for r in self.rules for k in r.lhs.kinds()} | {o.kind for r in self.rules for o in r.lits()}
+        # more elements can only add contradictions: left sides read presence, and no
+        # position depends on where an interval starts
+        self.monotone = all(_reads_presence(r.lhs) and all(o.anchor == "p" for o in r.lits()) for r in self.element)
         # how far from the ε part of what it starts from a chain of rules can place: an open
         # end adds ±1, and a chain goes through each kind once (a cycle: `moving`, `drifts`)
         opened = [1 for r in self.rules for o in r.lits() for e in (o.where.lo, o.where.hi) if e not in (math.inf, -math.inf) and e.k]
@@ -473,6 +477,12 @@ def _monotone(f, kinds: set) -> bool:
     if isinstance(f, Not):
         return not set(f.kinds()) & kinds
     return all(_monotone(p, kinds) for p in f.parts)
+
+
+def _reads_presence(f) -> bool:
+    if isinstance(f, Atom):
+        return f.op == "present"
+    return isinstance(f, (And, Or)) and all(_reads_presence(p) for p in f.parts)
 
 
 def lattice_step(lits) -> Fraction | None:

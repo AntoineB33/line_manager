@@ -55,6 +55,7 @@ MODE_H, ROW_H, BAR_H = 20, 30, 16
 class App:
     def __init__(self, root: tk.Tk, session) -> None:
         self.root, self.s = root, session
+        session.calculate_apart()
         self.paused = True
         self.span = F(24)  # the positions the window shows
         self.jobs: queue.Queue = queue.Queue()
@@ -222,6 +223,7 @@ class App:
     def close(self) -> None:
         self.stopping = True
         self.s.close()
+        self.s.calculator.close()
         self.root.destroy()
 
     # ------------------------------------------------------------ the simulation (its own thread)

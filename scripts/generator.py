@@ -119,16 +119,35 @@ class RulesGenerator:
         self.paced = False  # in a process of its own: the instant script holds PACE after the chip
         self.speed = Fraction(1)  # the chip's, for how far it goes during a run
 
-    def first_edit(self, state: LineState, c: Fraction) -> list[Op]:
-        """What the script at the start of a run can do at once for the ratio targets: the
-        kind with the biggest target not reached yet, on the PACE after the chip."""
-        best = None
+    def kinds_read(self):
+        """What the rules, the constraints and the problems read; None if that is not known."""
+        out = set(self.rules.ruled)
+        for k in self.constraints:
+            if not hasattr(k, "kinds"):
+                return None
+            out |= k.kinds()
+        for p, _ in self.problems:
+            out |= set(getattr(p, "targets", ())) | set(getattr(p, "lengths", ()))
+        return out
+
+    def first_edits(self, state: LineState, c: Fraction) -> list[list[Op]]:
+        """What the script at the start of a run can do at once, on the PACE after the chip:
+        - ratio targets: the kind with the biggest target not reached yet;
+        - minimum lengths: each kind at the chip that is not there for its length L on the
+          L before the chip goes on."""
+        best, short = None, []
+        cp = Pos(c)
         for p, _ in self.problems:
             for kind, r in sorted(getattr(p, "targets", {}).items()):
                 w = IntervalSet.of(Interval(c, c + p.horizon, False, True))
                 if state.line.integral(kind, w) / p.horizon < r and (best is None or r > best[0]):
                     best = (r, kind)
-        return [Op.put(best[1], Region.of(Interval(c, c + PACE, False, True)))] if best else []
+            for kind, L in sorted(getattr(p, "lengths", {}).items()):
+                pres = state.line.presence(kind)
+                if (pres.contains(cp) or pres.contains(cp - EPS)) and pres.measure_on(IntervalSet.of(Interval(c - L, c, False, True))) < L:
+                    short.append(kind)
+        on = Region.of(Interval(c, c + PACE, False, True))
+        return [[Op.put(k, on)] for k in ([best[1]] if best else []) + [k for k in short if not best or k != best[1]]]
 
     def frontiers(self, c: Fraction) -> list:
         """Where the stages of a run from c make the script definitive: c + PACE, then steps
@@ -212,7 +231,7 @@ class RulesGenerator:
                     after_edits.append(Event(ChipIn(c + next_run, INF), (RerunAction(),)))
                     after_edits.append(Event(TransitionCount(rerun_transitions(self.q)), (RerunAction(),)))
                     after_edits += self._watches(current, c, D, known.current_mode())
-                after_edits.append(Event(Edited(), (RerunAction(),)))
+                after_edits.append(Event(Edited(True), (RerunAction(),)))
                 if covered:
                     after_edits.append(Event(Uncovered(), (RerunAction(),)))
             final = i == len(frontiers) - 1

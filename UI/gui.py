@@ -24,7 +24,8 @@ was when it was made (`_up_to`). The time is the clock's, so a program put to sl
 the chip where it would have gone. Pause stops
 a step being computed (solver.STOP): it is undone, and computed again after Play.
 The GIL's switch interval is shortened (`run`) so that the drawing is not starved by
-the simulation's thread.
+the simulation's thread. `run` also writes what happens and the state in logs/
+(session_log.py).
 """
 
 from __future__ import annotations
@@ -37,24 +38,27 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+import traceback
 from fractions import Fraction as F
 from tkinter import font as tkfont, messagebox
 
 from app import EDITS, PAUSED, ScriptError
 from intervals import EPS, Pos
+from session_log import SessionLog
 from solver import STOP
 
 STEP = F(1, 20)  # the time of a step, in seconds
 COLORS = ["#2e86de", "#10ac84", "#ee5253", "#ff9f43", "#5f27cd", "#01a3a4", "#c44569", "#8395a7", "#576574", "#b33939"]
 MODE_COLORS = ["#dfe6e9", "#ffeaa7", "#c7ecee", "#fab1a0", "#d6a2e8", "#badc58"]
 OWNERS = {"user": ("#2d3436", "you"), "generated": ("#e17055", "the generated script"), "mode": ("#8e44ad", "the mode rules")}
-LEFT, RIGHT, TOP = 70, 20, 34
+MIN_LEFT, RIGHT, TOP = 70, 20, 34  # (the captions on the left may need more: `App._edge`)
+CAPTION = ("TkDefaultFont", 10, "bold")
 MODE_H, ROW_H, BAR_H = 20, 30, 16
 
 
 class App:
-    def __init__(self, root: tk.Tk, session) -> None:
-        self.root, self.s = root, session
+    def __init__(self, root: tk.Tk, session, file: SessionLog | None = None) -> None:
+        self.root, self.s, self.file = root, session, file
         session.calculate_apart()
         self.paused = True
         self.span = F(24)  # the positions the window shows
@@ -62,6 +66,7 @@ class App:
         self.out: queue.Queue = queue.Queue()
         self.snap = None
         self.shown = None  # (chip, line, claims): what the last frame showed
+        self.edge = (None, MIN_LEFT)  # (kinds, where the line starts for them)
         self.wall = None  # when the chip was where the last step left it (None: it is not moving)
         self.stopping = False
         self._build()
@@ -93,17 +98,17 @@ class App:
         tk.Button(bar, text="Zoom in", command=lambda: self.zoom(F(1, 2))).pack(side="left")
         tk.Button(bar, text="Generated script", command=self.open_script).pack(side="left", padx=(16, 0))
         self.mode_buttons: dict[str, tk.Button] = {}
-        self.selector_buttons: dict[tuple[int, str], tk.Button] = {}
+        self.selector_buttons: dict[tuple[int, str], tk.Button] = {}  # (selector, option)
         self.button_color = self.play.cget("background")
         if self.s.selectors:
             row = tk.Frame(r)
             row.pack(fill="x", padx=6, pady=(0, 4))
             for i, (name, options) in enumerate(self.s.selectors):
                 tk.Label(row, text=f"{name.capitalize()}:").pack(side="left", padx=(16 if i else 0, 2))
-                for letter, option in options.items():
-                    b = tk.Button(row, text=option, command=lambda i=i, letter=letter: self.select(i, letter))
+                for option in options:
+                    b = tk.Button(row, text=option, command=lambda i=i, option=option: self.select(i, option))
                     b.pack(side="left")
-                    self.selector_buttons[i, letter] = b
+                    self.selector_buttons[i, option] = b
         else:
             tk.Label(bar, text="Mode:").pack(side="left", padx=(16, 0))
             self.mode_bar = tk.Frame(bar)
@@ -132,6 +137,7 @@ class App:
             STOP.set()  # the step being computed stops, and is undone
             self.wall = None
         self.play.configure(text="▶ Play" if self.paused else "❚❚ Pause")
+        self.journal("pause" if self.paused else "play")
 
     def speed(self, factor: F) -> None:
         def change():
@@ -145,22 +151,22 @@ class App:
         at = time.time()
         self.post(lambda: PAUSED if self.paused else self._up_to(at) or self.s.set_mode(m))
 
-    def select(self, i: int, letter: str) -> None:
+    def select(self, i: int, option: str) -> None:
         if self.paused:
             self.log(PAUSED)
             return
         at = time.time()
-        self.post(lambda: PAUSED if self.paused else self._up_to(at) or self.s.select(i, letter))
+        self.post(lambda: PAUSED if self.paused else self._up_to(at) or self.s.select(i, option))
 
     def _show_choice(self, b: tk.Button, chosen: bool) -> None:
         """A button of the mode, disabled while the chip is paused (no edit then)."""
         b.configure(relief="sunken" if chosen else "raised", background="#ffeaa7" if chosen else self.button_color,
                     state="disabled" if self.paused else "normal")
 
-    def _mode_buttons(self, names: list[str], current: str) -> None:
+    def _mode_buttons(self, names: list[str], current: str, selection) -> None:
         if self.selector_buttons:
-            for (i, letter), b in self.selector_buttons.items():
-                self._show_choice(b, current[i] == letter)
+            for (i, option), b in self.selector_buttons.items():
+                self._show_choice(b, selection[i] == option)
             return
         if list(self.mode_buttons) != names:
             for b in self.mode_buttons.values():
@@ -237,15 +243,23 @@ class App:
         self.log(msg)
         messagebox.showerror("Generated script", msg)
 
+    def journal(self, msg: str) -> None:
+        """Written in logs/ with where the chip is."""
+        if self.file is not None:
+            sn = self.snap
+            self.file.event(f"[chip {float(sn['x']):.3f}, mode {sn['mode']}] {msg}" if sn else msg)
+
     def log(self, msg: str) -> None:
         if not msg:
             return
+        self.journal(msg)
         self.text.configure(state="normal")
         self.text.insert("end", msg + "\n")
         self.text.see("end")
         self.text.configure(state="disabled")
 
     def close(self) -> None:
+        self.journal("window closed")
         self.stopping = True
         self.s.close()
         self.s.calculator.close()
@@ -325,7 +339,10 @@ class App:
         self.snap = {"t": s.sim.t, "x": s.position, "mode": s.mode(), "speed": s.speed, "line": s.sim.state.line,
                      "claims": s.sim.state.claims, "kinds": s.kinds(), "reruns": reruns, "other": other,
                      "past": s.past_runs(), "modes": s.known_modes(), "script": s.script_text(), "script_object": s.sim.script,
-                     "mode_names": list(s.mode_names), "running": s.running() is not None, "ahead": s.sim.ahead(), "wall": self.wall}
+                     "mode_names": list(s.mode_names), "running": s.running() is not None, "ahead": s.sim.ahead(), "wall": self.wall,
+                     "selection": s.selection() if s.selectors else None}
+        if self.file is not None and self.file.state_due():
+            self.file.state(s.state_text())
 
     # ------------------------------------------------------------ drawing (the window's thread)
 
@@ -351,6 +368,13 @@ class App:
             self.draw(self.snap)
         self.root.after(16, self._poll)
 
+    def _edge(self, kinds: list[str]) -> int:
+        """Where the line starts: after the longest caption (measured once per list of kinds)."""
+        if self.edge[0] != kinds:
+            font = tkfont.Font(root=self.root, font=CAPTION)
+            self.edge = (list(kinds), max([MIN_LEFT] + [font.measure(k) + 14 for k in kinds]))
+        return self.edge[1]
+
     def draw(self, sn: dict) -> None:
         c = self.canvas
         c.delete("all")
@@ -375,12 +399,13 @@ class App:
                     line, claims = shown[1:]
             self.shown = (p, line, claims)
             x = p
+        kinds = sn["kinds"]
+        edge = self._edge(kinds)
         left = x - span / 4
         right = left + span
-        X = lambda p: LEFT + float((p - left) / span) * (w - LEFT - RIGHT)
-        kinds = sn["kinds"]
+        X = lambda p: edge + float((p - left) / span) * (w - edge - RIGHT)
         bottom = TOP + MODE_H + 8 + ROW_H * len(kinds)
-        self._mode_buttons(sn["mode_names"], sn["mode"])
+        self._mode_buttons(sn["mode_names"], sn["mode"], sn["selection"])
         self.speed_label.configure(text=f"speed: {_num(sn['speed'])} per second")
         when = [f"chip at {_num(p)}" for p in sn["reruns"]] + sn["other"]
         t = sn["t"] + (x - sn["x"]) / sn["speed"]
@@ -388,7 +413,7 @@ class App:
                                    f"generator runs again: {' or '.join(when) if when else 'not planned'}"
                                    + ("    (a generator run is going on)" if sn["running"] else ""))
         # the modes: revealed up to the chip, unknown after
-        c.create_text(LEFT - 6, TOP + MODE_H / 2, text="modes", anchor="e")
+        c.create_text(edge - 6, TOP + MODE_H / 2, text="modes", anchor="e")
         names = sorted({m for _, _, m in sn["modes"]})
         for i, (lo, hi, m) in enumerate(sn["modes"]):
             if i == len(sn["modes"]) - 1:  # the mode at the chip goes on up to where the frame shows it
@@ -405,15 +430,15 @@ class App:
         for i, k in enumerate(kinds):
             y = TOP + MODE_H + 8 + i * ROW_H
             color = COLORS[i % len(COLORS)]
-            c.create_text(LEFT - 6, y + BAR_H / 2, text=k, anchor="e", font=("TkDefaultFont", 10, "bold"))
-            c.create_line(LEFT, y + BAR_H / 2, w - RIGHT, y + BAR_H / 2, fill="#ecf0f1")
+            c.create_text(edge - 6, y + BAR_H / 2, text=k, anchor="e", font=CAPTION)
+            c.create_line(edge, y + BAR_H / 2, w - RIGHT, y + BAR_H / 2, fill="#ecf0f1")
             for v, reg in line.vals.get(k, {}).items():
                 fill = _blend(color, float(v) / 100)
                 for a, b in _ivs(reg, left, right):
-                    _bar(c, X(a), y, X(b), y + BAR_H, fill)
+                    _bar(c, X(a), y, X(b), y + BAR_H, fill, edge)
             for (v, owner), reg in claims.pos.get(k, {}).items():
                 for a, b in _ivs(reg, left, right):
-                    _bar(c, X(a), y + BAR_H + 2, X(b), y + BAR_H + 6, OWNERS.get(owner, ("#636e72", owner))[0])
+                    _bar(c, X(a), y + BAR_H + 2, X(b), y + BAR_H + 6, OWNERS.get(owner, ("#636e72", owner))[0], edge)
             for d in (claims.neg.get(k, {}), claims.taken.get(k, {})):
                 for owner, reg in d.items():
                     for a, b in _ivs(reg, left, right):
@@ -425,7 +450,7 @@ class App:
             c.create_line(X(p), bottom, X(p), bottom + 5, fill="#636e72")
             c.create_text(X(p), bottom + 14, text=_num(p), fill="#636e72")
             p += step
-        c.create_line(LEFT, bottom, w - RIGHT, bottom, fill="#636e72")
+        c.create_line(edge, bottom, w - RIGHT, bottom, fill="#636e72")
         # where the generator ran, and where it runs again
         for p in sn["past"]:
             if left <= p <= right:
@@ -441,17 +466,17 @@ class App:
         c.create_polygon(X(x) - 7, TOP - 16, X(x) + 7, TOP - 16, X(x), TOP - 4, fill="#d63031")
         # the legend
         y = bottom + 40
-        c.create_text(LEFT, y, anchor="w", fill="#2d3436",
+        c.create_text(edge, y, anchor="w", fill="#2d3436",
                       text="bar: lighter = lower percentage   under the bar, who placed it:")
-        xl = LEFT + 390
+        xl = edge + 390
         for color, who in OWNERS.values():
             c.create_rectangle(xl, y - 3, xl + 18, y + 3, fill=color, outline="")
             c.create_text(xl + 22, y, anchor="w", text=who)
             xl += 30 + 7 * len(who)
         c.create_line(xl, y, xl + 18, y, fill="#d63031", width=2, dash=(3, 2))
         c.create_text(xl + 22, y, anchor="w", text='"no K" or removed')
-        c.create_polygon(LEFT, y + 22, LEFT + 10, y + 22, LEFT + 5, y + 15, fill="#0984e3")
-        c.create_text(LEFT + 14, y + 18, anchor="w", text="the generator ran here      dashed blue: where it runs again      red: the chip")
+        c.create_polygon(edge, y + 22, edge + 10, y + 22, edge + 5, y + 15, fill="#0984e3")
+        c.create_text(edge + 14, y + 18, anchor="w", text="the generator ran here      dashed blue: where it runs again      red: the chip")
 
 
 def _ivs(reg, a, b):
@@ -459,9 +484,9 @@ def _ivs(reg, a, b):
     return [(max(iv.lo.x, a), min(iv.hi.x, b)) for iv in reg.on(a - 1, b + 1).intervals if iv.lo.x <= b and iv.hi.x >= a]
 
 
-def _bar(c, x1, y1, x2, y2, fill) -> None:
+def _bar(c, x1, y1, x2, y2, fill, edge) -> None:
     if x2 - x1 < 2:  # a point, or almost
-        x1, x2 = max(x1 - 1, LEFT), max(x1 + 1, LEFT + 2)
+        x1, x2 = max(x1 - 1, edge), max(x1 + 1, edge + 2)
     c.create_rectangle(x1, y1, x2, y2, fill=fill, outline="")
 
 
@@ -490,5 +515,8 @@ def run(session) -> None:
     # from the simulation's thread: a few hundred per drawing took ~1 s at the 5 ms default.
     sys.setswitchinterval(0.0005)
     root = tk.Tk()
-    App(root, session)
+    file = SessionLog()
+    threading.excepthook = lambda a: file.event("".join(traceback.format_exception(a.exc_type, a.exc_value, a.exc_traceback)))
+    root.report_callback_exception = lambda *e: file.event("".join(traceback.format_exception(*e)))
+    App(root, session, file)
     root.mainloop()

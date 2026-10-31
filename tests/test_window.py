@@ -4,6 +4,7 @@ on the clock, sleep, and the slow edit, in the real window."""
 import gc
 import os
 import sys
+import tempfile
 import time
 import unittest
 from fractions import Fraction as F
@@ -20,6 +21,7 @@ from line import LineState, Op  # noqa: E402
 from modes import ModeTimeline  # noqa: E402
 from resolve import apply_edit  # noqa: E402
 from rules import parse_rules  # noqa: E402
+from session_log import SessionLog  # noqa: E402
 from script import ChipIn, EditAction, RerunAction  # noqa: E402
 from simulation import EDIT_LIMIT, Chip, Simulation  # noqa: E402
 from solver import checkpoint  # noqa: E402
@@ -27,7 +29,9 @@ from solver import checkpoint  # noqa: E402
 try:
     import gui
     import tkinter
-    tkinter.Tk().destroy()
+    probe = tkinter.Tk()
+    probe.withdraw()
+    probe.destroy()
 except Exception:  # no display
     gui = None
 
@@ -156,48 +160,107 @@ class CalculatorTest(unittest.TestCase):
         self.assertEqual(s.mode(), "2")
 
 
+def hidden_root():
+    """The tests do not take the screen: nothing they open is shown."""
+    root = gui.tk.Tk()
+    root.withdraw()
+    return root
+
+
 DEVICES = ["Break15 → NoScreen",
            "NoScreen → (NoComputerUnlocked or NotOnComputer) & (NoPhoneUnlocked or NotOnPhone)",
            "NotOnComputer → no NoComputerUnlocked", "NotOnPhone → no NoPhoneUnlocked",
-           "mode UU → no NoScreen", "mode UF → no NoScreen & NotOnPhone", "mode UL → no NoScreen & NoPhoneUnlocked",
-           "mode FU → no NoScreen & NotOnComputer", "mode LU → no NoScreen & NoComputerUnlocked",
-           "mode LL → NoScreen & NoComputerUnlocked & NoPhoneUnlocked", "mode FF → NoScreen & NotOnComputer & NotOnPhone",
-           "mode FL → NoScreen & NotOnComputer & NoPhoneUnlocked", "mode LF → NoScreen & NoComputerUnlocked & NotOnPhone"]
-STATES = {"U": "unlocked", "F": "fake locked", "L": "locked"}
+           "mode 1 → no NoScreen", "mode 2 → NoScreen & NoComputerUnlocked & NoPhoneUnlocked",
+           "mode 3 → NoScreen & (NotOnComputer or NotOnPhone)"]
+UN, FAKE, LOCK = "unlocked", "fake locked", "locked"
+SELECTORS = {"computer": (UN, FAKE, LOCK), "phone": (UN, FAKE, LOCK)}
+SELECTOR_MODES = {(UN, UN): "1", (UN, FAKE): "1", (UN, LOCK): "1", (FAKE, UN): "1", (LOCK, UN): "1", (LOCK, LOCK): "2",
+                  (FAKE, LOCK): "3", (LOCK, FAKE): "3", (FAKE, FAKE): "3"}
 
 
-def devices(modes=((0, "UU"),)):
+def devices(modes=((0, "1"),)):
     s = Session(DEVICES, modes, 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2),
-                [FifteenMinuteBreaks()], {"computer": STATES, "phone": STATES})
+                [FifteenMinuteBreaks()], SELECTORS, SELECTOR_MODES)
     s.sim.background = False
     s.sim.start()
     return s
 
 
 class SelectorTest(unittest.TestCase):
-    def test_each_keeps_the_other(self):
-        s = devices()
-        self.assertEqual(s.select(0, "L")[:7], "mode LU")
-        self.assertEqual(s.select(1, "F")[:7], "mode LF")
-        self.assertEqual(s.mode(), "LF")
+    def test_each_choice_gives_its_mode(self):
+        for choice, mode in SELECTOR_MODES.items():
+            s = devices()
+            s.select(0, choice[0])
+            s.select(1, choice[1])
+            self.assertEqual(s.mode(), mode, choice)
+            self.assertEqual(s.selection(), choice)
 
-    def test_the_periods_at_the_chip(self):
-        kinds = ["NoScreen", "NoComputerUnlocked", "NotOnComputer", "NoPhoneUnlocked", "NotOnPhone"]
-        want = {"UU": [], "UF": ["NotOnPhone"], "UL": ["NoPhoneUnlocked"], "FU": ["NotOnComputer"], "LU": ["NoComputerUnlocked"],
-                "LL": ["NoScreen", "NoComputerUnlocked", "NoPhoneUnlocked"], "FF": ["NoScreen", "NotOnComputer", "NotOnPhone"],
-                "FL": ["NoScreen", "NotOnComputer", "NoPhoneUnlocked"], "LF": ["NoScreen", "NoComputerUnlocked", "NotOnPhone"]}
-        for mode, kept in want.items():
-            s = devices([(0, "UU"), (1, mode)] if mode != "UU" else [(0, "UU")])
-            s.tick(F(2))
-            self.assertEqual([k for k in kinds if s.sim.state.line.presence(k).contains(F(3, 2))], kept, mode)
+    def test_a_choice_that_keeps_the_mode(self):
+        s = devices()
+        self.assertEqual(s.select(0, LOCK), "computer locked: mode 1 stays")
+        self.assertEqual(s.selection(), (LOCK, UN))
+        self.assertEqual(s.select(1, LOCK)[:12], "phone locked")
+        self.assertEqual(s.mode(), "2")
+
+    def test_a_mode_they_did_not_choose(self):
+        s = devices()
+        s.select(0, LOCK)
+        s.set_mode("3")
+        self.assertEqual(s.selection(), (FAKE, LOCK))
+        s.set_mode("2")
+        self.assertEqual(s.selection(), (LOCK, LOCK))
+        s = devices([(0, "1"), (1, "3")])
+        s.tick(F(2))
+        self.assertEqual(s.selection(), (FAKE, LOCK))
 
     def test_a_mode_they_cannot_give(self):
         s = devices()
-        for m in ("1", "UUU", "UX"):
-            self.assertIn("usage", s.set_mode(m))
-        self.assertEqual(s.mode(), "UU")
+        self.assertIn("usage", s.set_mode("4"))
+        self.assertEqual(s.mode(), "1")
         with self.assertRaises(ValueError):
-            Session(DEVICES, [(0, "1")], selectors={"computer": STATES, "phone": STATES})
+            Session(DEVICES, [(0, "4")], selectors=SELECTORS, selector_modes=SELECTOR_MODES)
+        with self.assertRaises(ValueError):
+            Session(DEVICES, [(0, "1")], selectors=SELECTORS, selector_modes={(UN, UN): "1"})
+
+
+class SessionLogTest(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+
+    def read(self, name):
+        with open(os.path.join(self.folder.name, name), encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_events_are_kept_over_the_sessions(self):
+        for i in range(2):
+            SessionLog("x", self.folder.name).event(f"event {i}")
+        out = self.read("x.log")
+        self.assertEqual(out.count("session started"), 2)
+        self.assertIn("event 0", out)
+        self.assertIn("event 1", out)
+
+    def test_the_state_is_replaced_and_says_it_all(self):
+        file = SessionLog("x", self.folder.name)
+        s = devices()
+        s.command("add NoScreen on [300, 310]")
+        s.select(0, FAKE)
+        file.state("old")
+        self.assertFalse(file.state_due())
+        file.state(s.state_text())
+        out = self.read("x.state.txt")
+        self.assertNotIn("old", out)
+        self.assertIn(f"process {os.getpid()}", out)
+        self.assertIn("selectors: computer fake locked, phone unlocked", out)
+        self.assertIn("add NoScreen on [300, 310]", out)
+        self.assertIn("--- line", out)
+        self.assertIn("Generated script", out)
+
+    def test_nothing_stops_the_window(self):
+        SessionLog("x", self.folder.name)
+        file = SessionLog("x", os.path.join(self.folder.name, "x.log", "no"))  # a folder that cannot be
+        file.event("lost")
+        file.state("lost")
 
 
 class ReRunTest(unittest.TestCase):
@@ -278,20 +341,47 @@ class SleepTest(unittest.TestCase):
 
 
 @unittest.skipIf(gui is None, "no display")
+class CaptionTest(unittest.TestCase):
+    def test_a_long_caption_is_shown_whole(self):
+        """In a window that stays hidden."""
+        s = Session(["Break15 → NoComputerUnlockedForAVeryLongTime", "mode 1 → A"])
+        root = hidden_root()
+        app = gui.App(root, s)
+
+        def close():
+            worker = app.worker
+            app.close()
+            worker.join(10)
+
+        self.addCleanup(close)
+        end = time.time() + 10
+        while app.snap is None and time.time() < end:
+            root.update()
+            time.sleep(0.005)
+        app.draw(app.snap)
+        c = app.canvas
+        caption = next(i for i in c.find_all() if c.type(i) == "text" and c.itemcget(i, "text").startswith("NoComputer"))
+        self.assertGreaterEqual(c.bbox(caption)[0], 0)
+        self.assertEqual(app._edge(["A"]), gui.MIN_LEFT)
+
+
+@unittest.skipIf(gui is None, "no display")
 class WindowTest(unittest.TestCase):
     def setUp(self):
         self.s = Session(BREAKS, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2), [FifteenMinuteBreaks()])
-        self.root = gui.tk.Tk()
+        self.root = hidden_root()
         self.app = gui.App(self.root, self.s)
         self.addCleanup(self.close)
 
     def close(self):
         """With the window's objects freed in this thread: Tk does not stand it in another."""
         worker = self.app.worker
+        shown = self.root.state()
         self.app.close()
         worker.join(10)
         self.app = self.root = None
         gc.collect()
+        self.assertEqual(shown, "withdrawn")
 
     def pump(self, seconds, until=None):
         end = time.time() + seconds
@@ -301,28 +391,35 @@ class WindowTest(unittest.TestCase):
 
     def test_selectors_replace_the_mode_buttons(self):
         self.close()
-        self.s = Session(DEVICES, [(0, "UU")], 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2),
-                         [FifteenMinuteBreaks()], {"computer": STATES, "phone": STATES})
-        self.root = gui.tk.Tk()
-        self.app = app = gui.App(self.root, self.s)
-        s = self.s
-        self.pump(10, lambda: app.selector_buttons[0, "U"].cget("relief") == "sunken")
+        self.s = s = Session(DEVICES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2),
+                             [FifteenMinuteBreaks()], SELECTORS, SELECTOR_MODES)
+        self.root = hidden_root()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        file = SessionLog("x", folder.name)
+        self.app = app = gui.App(self.root, s, file)
+        self.pump(10, lambda: app.selector_buttons[0, UN].cget("relief") == "sunken")
         self.assertEqual(len(app.selector_buttons), 6)
         self.assertFalse(app.mode_buttons)
-        self.assertEqual(app.selector_buttons[0, "L"].cget("text"), "locked")
-        self.assertEqual(app.selector_buttons[0, "L"].cget("state"), "disabled")  # paused
+        self.assertEqual(app.selector_buttons[0, LOCK].cget("state"), "disabled")  # paused
         self.pump(10, lambda: s.sim.started)
         app.toggle()
         self.pump(1)
-        app.selector_buttons[0, "L"].invoke()
-        self.pump(5, lambda: s.mode() == "LU")
-        app.selector_buttons[1, "F"].invoke()
-        self.pump(5, lambda: s.mode() == "LF")
-        self.pump(1)
-        self.assertEqual(s.mode(), "LF")
-        self.assertEqual(app.selector_buttons[0, "L"].cget("relief"), "sunken")
-        self.assertEqual(app.selector_buttons[0, "U"].cget("relief"), "raised")
-        self.assertEqual(app.selector_buttons[1, "F"].cget("relief"), "sunken")
+        app.selector_buttons[0, LOCK].invoke()
+        self.pump(5, lambda: s.selection() == (LOCK, UN))
+        self.assertEqual(s.mode(), "1")
+        app.selector_buttons[1, FAKE].invoke()
+        self.pump(5, lambda: s.mode() == "3")
+        self.pump(2)
+        self.assertEqual(app.selector_buttons[0, LOCK].cget("relief"), "sunken")
+        self.assertEqual(app.selector_buttons[0, UN].cget("relief"), "raised")
+        self.assertEqual(app.selector_buttons[1, FAKE].cget("relief"), "sunken")
+        with open(file.journal, encoding="utf-8") as f:
+            journal = f.read()
+        self.assertIn("play", journal)
+        self.assertIn("phone fake locked: mode 3 from", journal)
+        with open(file.state_file, encoding="utf-8") as f:
+            self.assertIn("selectors: computer locked, phone fake locked", f.read())
 
     def test_a_slow_edit(self):
         """The display does not stop, the chip keeps pushing the break, and when the

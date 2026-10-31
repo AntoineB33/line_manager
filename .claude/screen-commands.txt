@@ -1,0 +1,7 @@
+# Commands that open a window on the user's screen: ~/.claude/hooks/screen_guard.py asks
+# the user to step away before they run, and tells them when they can come back.
+# One regex per line. The tests are not here: their windows stay hidden.
+UI[/\\]examples[/\\]
+UI[/\\]app\.py
+gui\.run\(
+ImageGrab

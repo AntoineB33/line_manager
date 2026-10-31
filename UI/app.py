@@ -8,9 +8,8 @@ initial state of the line and the generator's problems, then calls start(...), w
 opens the window (gui.py).
 
 Everything is exact (fractions). The user's edits are kept, in order: the line is
-computed from all of them (resolve.py), so changing the rules recomputes it, and
-"undo" gives the line as if the last edit had never been made. The initial state of
-the line is the user's first edit. The generated script is at first only an
+computed from all of them (resolve.py), so changing the rules recomputes it. The
+initial state of the line is the user's first edit. The generated script is at first only an
 instruction to run the generator once, as soon as possible: the window's first step
 asks for it (`Session.begin`), paused or not. Each run of the generator goes on in a
 process of its own (scripts/generator_worker.py) while the chip moves with the script
@@ -69,7 +68,6 @@ Edits of the user (several in one edit: separate them with ";")
   <where> is "at x", "on <interval>", "on <interval> U <interval> ...", or
   "everywhere"; an interval is [a, b], (a, b), [a, b) or (a, b], with fractions,
   decimals, -inf and inf, e.g.  on [0, 1/2) U (3, inf)
-  undo                     cancel the last edit, as if it had never been made
   clear                    cancel every edit (the rules stay)
 The modes (given externally: by MODES in the script, or by you)
   mode <name>              the mode is <name> from the chip on (the mode buttons do it too),
@@ -83,7 +81,7 @@ Information
 
 KIND = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
 # the commands that change the line, the mode or the rules: refused while the chip is paused
-EDITS = {"add", "no", "remove", "undo", "clear", "mode", "rule", "unrule"}
+EDITS = {"add", "no", "remove", "clear", "mode", "rule", "unrule"}
 PAUSED = "the chip is paused: press Play to edit"
 RESERVED = {"no", "at", "on", "everywhere", "mode"}
 
@@ -363,7 +361,7 @@ class Session:
         if word in ("add", "no", "remove"):
             return self.edit(cmd)
         handler = {"help": lambda: HELP, "rule": lambda: self.add_rule(rest), "rules": self.show_rules,
-                   "unrule": lambda: self.remove_rule(rest), "undo": self.undo, "clear": self.clear,
+                   "unrule": lambda: self.remove_rule(rest), "clear": self.clear,
                    "mode": lambda: self.set_mode(rest),
                    "line": lambda: str(self.sim.state.line), "claims": lambda: str(self.sim.state.claims),
                    "history": self.show_history, "status": self.status}.get(word)
@@ -423,12 +421,6 @@ class Session:
             return f"refused: {why}"
         self.edits.append(text)
         return f"done: {text}"
-
-    def undo(self) -> str:
-        if not self.edits:
-            return "no edit to undo"
-        self.sim.undo_now()
-        return f"undone: {self.edits.pop()}"
 
     def clear(self) -> str:
         self.sim.clear_now()

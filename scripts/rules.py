@@ -397,10 +397,13 @@ class RuleSet:
         self.or_rank = {a: n for n, a in enumerate(self.or_items)}
         ends = [abs(e.x) for r in self.rules for o in r.lits() for e in (o.where.lo, o.where.hi) if e not in (math.inf, -math.inf)]
         self.reach = max(ends, default=Fraction(0))
+        # a position only acts on itself: no distance, no interval, no left edge
+        self.local = self.monotone = None
         self.ruled = set(self.order) | {k for r in self.rules for k in r.lhs.kinds()} | {o.kind for r in self.rules for o in r.lits()}
         # more elements can only add contradictions: left sides read presence, and no
         # position depends on where an interval starts
         self.monotone = all(_reads_presence(r.lhs) and all(o.anchor == "p" for o in r.lits()) for r in self.element)
+        self.local = self.monotone and all(o.is_point and not o.rel for r in self.element for o in r.lits())
         # how far from the ε part of what it starts from a chain of rules can place: an open
         # end adds ±1, and a chain goes through each kind once (a cycle: `moving`, `drifts`)
         opened = [1 for r in self.rules for o in r.lits() for e in (o.where.lo, o.where.hi) if e not in (math.inf, -math.inf) and e.k]

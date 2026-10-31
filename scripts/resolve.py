@@ -118,6 +118,11 @@ def apply_edit(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> Line
     if not kinds & rs.ruled:
         return _apart(state, rec, kinds)
     _alone(rs, rec.claims.problem())
+    if rs.local and state.claims.clean:
+        claims = _claims_of(state, rec, kinds)
+        line = _local_line(rs, state.line, claims, rec.footprint)
+        if line is not None:
+            return LineState(claims, line, state.history + (rec,))
     return rebuild(rs, state.history + (rec,), owned_by_others(state.claims), state.line)
 
 
@@ -153,25 +158,55 @@ class Record:
 def _apart(state: LineState, rec: Record, kinds: set) -> LineState:
     """An edit of kinds no rule reads or places: nothing else can change and nothing can
     be solved, so only their intervals are computed, from the edits that have them."""
-    history = state.history + (rec,)
+    claims, vals = _claims_of(state, rec, kinds), dict(state.line.vals)
+    for k in kinds:
+        vals.pop(k, None)
+        for (v, _), r in claims.pos.get(k, {}).items():
+            d = vals.setdefault(k, {})
+            d[v] = d[v] | r if v in d else r
+    return LineState(claims, Line(vals), state.history + (rec,))
+
+
+def _local_line(rs: RuleSet, line: Line, claims: Claims, where: Region, temp: dict | None = None) -> Line | None:
+    """The line when only the claims on `where` changed and a position only acts on itself
+    (`RuleSet.local`): the same elsewhere, solved on `where`. None if something has to give
+    way there."""
+    try:
+        part = solve(rs, claims.on(where).problem({k: r & where for k, r in (temp or {}).items()}))
+    except (Conflict, Undetermined, IncompatiblePeriods):
+        return None
+    vals = {}
+    for k in set(line.vals) | set(part.vals):
+        d = {}
+        for v, r in line.vals.get(k, {}).items():
+            r = r - where
+            if r:
+                d[v] = r
+        for v, r in part.vals.get(k, {}).items():
+            r = r & where
+            if r:
+                d[v] = d[v] | r if v in d else r
+        if d:
+            vals[k] = d
+    return Line(vals)
+
+
+def _claims_of(state: LineState, rec: Record, kinds: set) -> Claims:
+    """The claims with the edit `rec`, newest, of these kinds: the others stay as they are."""
     above, clear = Claims(), {}
-    for r in reversed(history):
+    for r in reversed(state.history + (rec,)):
         if any(k in r.claims.pos or k in r.claims.neg or k in r.claims.taken or k in r.clear for k in kinds):
             c, cl = _below(_only(r.claims, kinds), {k: v for k, v in r.clear.items() if k in kinds}, above, clear)
             _add(clear, cl)
             above = above.merged(c)
     above = above.merged(_below(_only(owned_by_others(state.claims), kinds), {}, above, clear)[0])
-    claims, vals = state.claims.copy(), dict(state.line.vals)
+    claims = state.claims.copy()
     for k in kinds:
         for mine, theirs in ((claims.pos, above.pos), (claims.neg, above.neg), (claims.taken, above.taken)):
             mine.pop(k, None)
             if k in theirs:
                 mine[k] = theirs[k]
-        vals.pop(k, None)
-        for (v, _), r in above.pos.get(k, {}).items():
-            d = vals.setdefault(k, {})
-            d[v] = d[v] | r if v in d else r
-    return LineState(claims, Line(vals), history)
+    return claims
 
 
 def _only(c: Claims, kinds: set) -> Claims:
@@ -217,9 +252,11 @@ def _no_contradiction(rs: RuleSet, history: tuple, layer: Claims) -> LineState |
         above = above.merged(c)
     above = above.merged(_below(layer, {}, above, clear)[0])
     try:
-        return LineState(above, solve(rs, above.problem()), history)
+        line = solve(rs, above.problem())
     except (Conflict, Undetermined, IncompatiblePeriods):
         return None
+    above.clean = True
+    return LineState(above, line, history)
 
 
 def _below(c: Claims, clear: dict, above: Claims, above_clear: dict) -> tuple[Claims, dict]:
@@ -326,6 +363,10 @@ def _apply(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> LineStat
             raise ValueError(op.action)
     own_neg = {k: mand_neg.get(k, EMPTY) | temp.get(k, EMPTY) for k in set(mand_neg) | set(temp)}
     _alone(rs, Problem(mand_pos, own_neg))
+    if rs.local:
+        line = _local_line(rs, state.line, c1, union(op.region for op in ops), temp)
+        if line is not None:
+            return LineState(c1, line, state.history)
     try:
         return LineState(c1, solve(rs, c1.problem(temp)), state.history)
     except (Conflict, Undetermined, IncompatiblePeriods):

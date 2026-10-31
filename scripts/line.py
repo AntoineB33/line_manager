@@ -78,9 +78,22 @@ class Claims:
         self.pos: dict[str, dict[tuple[Fraction, str], Region]] = {}
         self.neg: dict[str, dict[str, Region]] = {}
         self.taken: dict[str, dict[str, Region]] = {}  # "off K": removed by the user
+        self.clean = False  # all the user's edits apply: none gave way through the rules
+
+    def on(self, where: Region) -> Claims:
+        """These claims on `where` only."""
+        out = Claims()
+        for mine, theirs in ((out.pos, self.pos), (out.neg, self.neg), (out.taken, self.taken)):
+            for k, d in theirs.items():
+                kept = {key: r & where for key, r in d.items()}
+                kept = {key: r for key, r in kept.items() if r}
+                if kept:
+                    mine[k] = kept
+        return out
 
     def copy(self) -> Claims:
         c = Claims()
+        c.clean = self.clean
         c.pos = {k: dict(d) for k, d in self.pos.items()}
         c.neg = {k: dict(d) for k, d in self.neg.items()}
         c.taken = {k: dict(d) for k, d in self.taken.items()}

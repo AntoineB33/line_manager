@@ -21,7 +21,6 @@ first run completes, put there by its script. Type in the command box:
     mode 3                       in "no screen", and "not on a computer" (else "not
                                  on a phone")
     mode 1                       no "no screen" at the chip
-    undo
 Press Play to move the chip. MODES below switches to mode 2 at 200 and to mode 3 at
 300 for a while: after 15 minutes in mode 2, the next break waits until 2 hours after
 the chip leaves it.

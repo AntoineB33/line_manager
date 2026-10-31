@@ -645,6 +645,11 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     an edit or a mode change is computed in a process kept ready (`app.Calculator`,
     `edit_worker.py`), ended at 2 s whatever it is computing, and refused. Elsewhere in the
     background mode the limit holds at the checkpoints of the long loops (`solver.limited`).
+  - **Edits that stay where they are.** When a position only acts on itself, and
+    left sides only read presence (`RuleSet.local`), an edit changes nothing outside its own
+    positions: only those are solved, and the rest of the line is kept
+    (`resolve._local_line`), as for the constraints' edits. If something has to give way
+    there, or an older edit gave way before (`Claims.clean`), every edit is computed again.
   - **Elements nothing reads.** An edit of kinds no rule mentions solves nothing
     (`resolve._apart`): only their intervals are computed, from the edits that have them.
     If no constraint or problem reads them either, it needs no process, and the generator's

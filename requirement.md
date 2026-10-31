@@ -51,7 +51,7 @@ To satisfy this pace, the generator can look at the current generated script.
 
 The "probability finder" program is used to find probability rules in the mode transitions pattern. This helps the rules generator being more performant with a low allocated resources quantity hyperparameter.
 
-Edits from the user win over what is on the line. Nothing more than necessary is changed from the older elements, or more if it helps keeping a fast computation. If a result cannot be computed in reasonable time, the edit is refused. If the edit leads to a contradiction with the constraints the generated script must satisfy, the edit is refused. For example:
+Edits from the user (including mode switches) win over what is on the line. Nothing more than necessary is changed from the older elements, or more if it helps keeping a fast computation. If a result cannot be computed in reasonable time, the edit is refused. If the edit leads to a contradiction with the constraints the generated script must satisfy, the edit is refused. For example:
 "A → B 100% or C 100%"
 A and B at [1, 2]
 user edit: remove B at 1.5

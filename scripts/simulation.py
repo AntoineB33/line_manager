@@ -27,7 +27,7 @@ takes time: a call to run it only records it (`request`), the script in place go
 and each script of the run replaces it when it is found (`publish`, and `complete` for
 the last, at that time), unless a newer call was recorded meanwhile (the older run is
 then cancelled).
-`edit_now`, `undo_now`, `clear_now` and `set_generator` act at
+`edit_now`, `clear_now` and `set_generator` act at
 the current time, as a user edit at that instant would; `modes_changed` after the
 modes from the chip on were changed (ModeTimeline.replace).
 """
@@ -427,13 +427,6 @@ class Simulation:
             self._instant(self.t, edits=[ops])
         refused = [why for _, src, why in self.log.refused[n:] if src == "user"]
         return refused[0] if refused else None
-
-    def undo_now(self) -> bool:
-        """Cancel the user's last edit, as if it had never been made."""
-        if not self.state.history:
-            return False
-        self._replace(self.state.history[:-1])
-        return True
 
     def modes_changed(self) -> None:
         """The modes changed from the chip's position on (given externally): revealed

@@ -14,6 +14,7 @@ from helpers import Interval, IntervalSet, Region  # noqa: E402
 
 import resolve  # noqa: E402
 import solver  # noqa: E402
+from solver import Line  # noqa: E402
 from constraints import FifteenMinuteBreaks  # noqa: E402
 from line import GEN, USER, LineState, Op  # noqa: E402
 from problems import PresenceRatioProblem  # noqa: E402
@@ -117,6 +118,89 @@ class OneSolveTest(unittest.TestCase):
         self.assertLessEqual(count[0], 2)  # the edit alone, and the line: not one per edit
 
 
+class LocalTest(unittest.TestCase):
+    """A position only acts on itself: an edit solves its own positions only."""
+
+    def test_only_when_a_position_only_acts_on_itself(self):
+        for rule in ("A → B", "A → B or C", "A & B → no C"):
+            self.assertTrue(parse_rules([rule]).local, rule)
+        for rule in ("A → B 1 unit on the right of p", "A → B on [0, 1] of p", "A → B on [0, 1] of l", "not A → B"):
+            self.assertFalse(parse_rules([rule]).local, rule)
+
+    def test_the_same_as_the_whole_line(self):
+        rng = random.Random(53)
+        tail = Region(135, 135, IntervalSet(), right=IntervalSet.of(Interval.closed_open(0, 15)), pr=F(135))
+        checked = 0
+        for _ in range(150):
+            try:
+                rs = parse_rules(rng.sample(POOL, rng.randint(2, 6)))
+            except RuleError:
+                continue
+            self.assertTrue(rs.local)
+            history = edits(rng)
+            first = rng.choice([[], [Op.put("A", tail)], [Op.put("C", tail)]])
+            if first and rs.cyclic:
+                continue  # the long way is wrong there: test_a_cycle_over_what_repeats
+            def go():
+                state, out = LineState.empty(), []
+                if first:
+                    try:
+                        state = apply_edit(rs, state, first, GEN)
+                    except Refused:
+                        return "refused at first"
+                for ops in history:
+                    owner = rng2.choice([USER, USER, GEN])
+                    try:
+                        state = apply_edit(rs, state, ops, owner)
+                        out.append(state.line)
+                    except Refused:
+                        out.append("refused")
+                return out
+            rng2 = random.Random(1)
+            fast = go()
+            rng2 = random.Random(1)
+            with mock.patch.object(resolve, "_local_line", lambda *a: None):
+                slow = go()
+            self.assertEqual(fast, slow, ([str(r) for r in rs.rules], [[str(o) for o in ops] for ops in history]))
+            checked += 1
+        self.assertGreater(checked, 80)
+
+    @unittest.expectedFailure
+    def test_a_cycle_over_what_repeats(self):
+        """A known bug of the sweep (older than these shortcuts): A → D or E and E → A hold
+        each other up after the end of A's claim, with nothing placing them there."""
+        rs = parse_rules(["C → no E", "A → D or E", "B & D → E", "E → A", "C → D", "A → B or C"])
+        tail = Region(135, 135, IntervalSet(), right=IntervalSet.of(Interval.closed_open(0, 15)), pr=F(135))
+        self.assertFalse(solver.solve(rs, solver.Problem({"A": {F(100): tail}}, {})).presence("A").contains(160))
+
+    def test_an_edit_that_comes_back(self):
+        """Removing the newer "no K" lets the older K apply again."""
+        rs = parse_rules(["A → B"])
+        state = LineState.empty()
+        for op in (Op.put("A", Interval.closed(0, 5)), Op.put_no("A", Interval.closed(1, 2)), Op.take_no("A", Interval.closed(1, 2))):
+            state = apply_edit(rs, state, [op], USER)
+        self.assertEqual(state.line.presence("B"), Region.of(Interval.closed(0, 5)))
+
+    def test_it_does_not_depend_on_what_is_elsewhere(self):
+        """What is solved for the edit: its own positions, not the 40 intervals before."""
+        rs = parse_rules(EXAMPLE)
+        state = LineState.empty()
+        for k in range(40):
+            state = apply_edit(rs, state, [Op.put("NoScreen", Interval.closed(40 * k, 40 * k + 10))], USER)
+        self.assertTrue(state.claims.clean)
+        seen = []
+        real = resolve.solve
+
+        def counted(rs, prob):
+            seen.append(sum(len(r.core.intervals) for d in prob.pos.values() for r in d.values()))
+            return real(rs, prob)
+
+        with mock.patch.object(resolve, "solve", counted):
+            after = apply_edit(rs, state, [Op.put("NoScreen", Interval.closed(2000, 2010))], USER)
+        self.assertLessEqual(max(seen), 2)
+        self.assertEqual(after.line, resolve.rebuild(rs, after.history, resolve.owned_by_others(after.claims), Line({})).line)
+
+
 class NothingReadsItTest(unittest.TestCase):
     """"Other" is in no rule, no constraint and no problem."""
 
@@ -160,7 +244,7 @@ class NothingReadsItTest(unittest.TestCase):
         self.assertIsNotNone(s.sim.request)
 
     def test_the_same_as_the_long_way(self):
-        """Newer over older, percentages, "no K", removals, the script's elements, undone."""
+        """Newer over older, percentages, "no K", removals, the script's elements."""
         rng = random.Random(47)
         rs = parse_rules(["A → B"])
         for _ in range(60):

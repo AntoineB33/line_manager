@@ -660,7 +660,7 @@ class StepByStepTest(unittest.TestCase):
         sim.advance(3)
         self.assertEqual(len(sim.log.runs), 1)
 
-    def test_undo_and_rules(self):
+    def test_clear_and_rules(self):
         rs = parse_rules(["A → B"])
         chip = Chip([(0, 0)])
         sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 4), 0.5), chip, ModeTimeline(0, "1"))
@@ -668,7 +668,7 @@ class StepByStepTest(unittest.TestCase):
         self.assertEqual(sim.state.line.kinds(), ["A", "B"])
         sim.set_generator(RulesGenerator(parse_rules(["A → C"]), PresenceRatioProblem({}, 4), 0.5))
         self.assertEqual(sim.state.line.kinds(), ["A", "C"])
-        self.assertTrue(sim.undo_now())
+        sim.clear_now()
         self.assertEqual(sim.state.line.kinds(), [])
         self.assertIsNotNone(sim.edit_now([Op.put("A", Interval.point(1)), Op.put_no("C", Interval.point(1))]))
 

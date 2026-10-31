@@ -397,6 +397,7 @@ class RuleSet:
         self.or_rank = {a: n for n, a in enumerate(self.or_items)}
         ends = [abs(e.x) for r in self.rules for o in r.lits() for e in (o.where.lo, o.where.hi) if e not in (math.inf, -math.inf)]
         self.reach = max(ends, default=Fraction(0))
+        self.finite = all(e not in (math.inf, -math.inf) for r in self.element for o in r.lits() for e in (o.where.lo, o.where.hi))
         # a position only acts on itself: no distance, no interval, no left edge
         self.pointwise = self.local = self.monotone = None
         self.ruled = set(self.order) | {k for r in self.rules for k in r.lhs.kinds()} | {o.kind for r in self.rules for o in r.lits()}

@@ -5,7 +5,8 @@
 
 An example script defines the rules, the modes, the chip's start and speed, the
 initial state of the line and the generator's problems, then calls start(...), which
-opens the window (gui.py).
+opens the window (gui.py). With `selectors`, a mode is one letter per selector, and the
+window has a selector for each of them instead of one button per mode.
 
 Everything is exact (fractions). The user's edits are kept, in order: the line is
 computed from all of them (resolve.py), so changing the rules recomputes it. The
@@ -70,8 +71,8 @@ Edits of the user (several in one edit: separate them with ";")
   "everywhere"; an interval is [a, b], (a, b), [a, b) or (a, b], with fractions,
   decimals, -inf and inf, e.g.  on [0, 1/2) U (3, inf)
 The modes (given externally: by MODES in the script, or by you)
-  mode <name>              the mode is <name> from the chip on (the mode buttons do it too),
-                           until the next transition MODES plans
+  mode <name>              the mode is <name> from the chip on (the mode buttons or the
+                           selectors do it too), until the next transition MODES plans
 Information
   line                     the line, exactly
   claims                   what applies of the edits now, and who made it
@@ -143,7 +144,8 @@ class Calculator:
 
 class Session:
     def __init__(self, rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=0.5, constraints=(),
-                 ) -> None:
+                 selectors=()) -> None:
+        self.selectors = list(dict(selectors).items())  # [(name, {letter: option})]: none: the mode buttons
         self.texts = list(rules)
         # constraints.py's, or text: an edit written from the chip, kept ("Future on (0, inf)")
         self.constraints = [KeepOn(op) for k in constraints if isinstance(k, str) for op in parse_op(f"add {k}")] + \
@@ -165,6 +167,9 @@ class Session:
                 transitions.append((x, m))
                 prev = m
         self.mode_names = sorted({m for _, m in modes} | {r.mode for r in self.rs.mode_rules})
+        wrong = [m for m in self.mode_names if not self.selectable(m)]
+        if wrong:
+            raise ValueError(f"the selectors give no mode {', '.join(wrong)}: {self.letters()}")
         self.chip = Chip([(0, x0)])
         self.modes = ModeTimeline(x0, initial, transitions)
         self.planned = (initial, list(self.modes.transitions))  # by MODES
@@ -398,12 +403,27 @@ class Session:
         self.mode_names = sorted(set(self.mode_names) | {r.mode for r in rs.mode_rules})
         return self.show_rules()
 
+    def selectable(self, m: str) -> bool:
+        """With selectors, a mode is one of their letters each, in their order."""
+        return not self.selectors or (len(m) == len(self.selectors) and
+                                      all(c in options for c, (_, options) in zip(m, self.selectors)))
+
+    def letters(self) -> str:
+        return ", then ".join(f"{name}: {' or '.join(options)}" for name, options in self.selectors)
+
+    def select(self, i: int, letter: str) -> str:
+        """Selector i is on this letter from the chip's position on, the others as they are."""
+        m = self.mode()
+        return self.set_mode(m[:i] + letter + m[i + 1:])
+
     def set_mode(self, m: str) -> str:
         """The mode is m from the chip's position on (given externally, by the user),
         until the next transition MODES plans: those still apply when the chip gets
         there."""
         if not m or not re.fullmatch(r"\w+", m):
             return "usage: mode <name>"
+        if not self.selectable(m):
+            return f"usage: mode <letters> ({self.letters()})"
         x = self.position
         if self.modes.mode_at(x) == m:
             return f"the mode is already {m}"
@@ -512,7 +532,7 @@ def number(text: str, infinite: bool = False):
         raise ValueError(f"a number is expected, not {s!r}")
 
 
-def start(rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=0.5, constraints=()) -> None:
+def start(rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=0.5, constraints=(), selectors=()) -> None:
     """Open the window on these definitions.
     rules:    the rules, as text
     modes:    [(position, mode)]: the mode from each position on (the first one at or
@@ -524,11 +544,14 @@ def start(rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=
     q:        the allocated resources quantity, in (0, 1)
     constraints: what the generated script keeps true after the chip: constraints.py's
               (FifteenMinuteBreaks()), or edits written from the chip, as text
-              ("Future on (0, inf)": Future on (chip, inf))"""
+              ("Future on (0, inf)": Future on (chip, inf))
+    selectors: {name: {letter: option}}: a mode is one letter of each, in this order
+              ({"computer": {"U": "unlocked", "L": "locked"}, ...}: mode "UL" ...), and
+              the window shows them instead of the mode buttons"""
     import gui
     try:
         s = Session(rules, modes, chip, speed, [t if t.split()[0] in ("no", "remove") else f"add {t}" for t in line],
-                    problems, q, constraints)
+                    problems, q, constraints, selectors)
     except (RuleError, ValueError) as e:
         print(f"the definitions are refused: {e}")
         return

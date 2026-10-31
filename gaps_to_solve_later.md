@@ -25,3 +25,10 @@ resources quantity. It only exists and is used.
 With `A → D or E` and `E → A`, the sweep (second solver) lets A and E hold each other up
 with nothing placing them: A claimed on [135, 150) comes out on [135, 202].
 See `test_a_cycle_over_what_repeats`, marked as an expected failure.
+
+## The sweep cannot choose from 0 outwards
+requirement.md: the position closest to 0 chooses first. The lattices do it. The sweep
+(second solver) only goes from left to right, so with choices that act on each other left
+of 0, or on an element with no left end, it refuses the edit instead of giving a wrong line.
+Example refused: `A → B on [0, 1] of l or C on [0, 1] of l` with `B → no C on (0, 1] of l`,
+`A` on [-5, -1].

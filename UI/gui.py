@@ -4,7 +4,7 @@ The line around the chip, one row per kind, with the revealed modes above it. Th
 moves smoothly at its speed, and each frame shows the line at the chip's position of
 that frame, from the formula of the script (Simulation.ahead): the pixels are the only
 rounding; where the formula is not known yet, the chip waits for the step. Pause stops it, Slower and Faster halve and double its
-speed, and the mode buttons change the mode from the chip on. Dashed blue lines show where the generator runs again (its script's rerun
+speed, and the mode buttons (or the session's selectors, on a row of their own) change the mode from the chip on. Dashed blue lines show where the generator runs again (its script's rerun
 triggers), blue ticks where it ran. "Generated script" opens the current script in a
 text file (saved with changes, it replaces the script in place, or the window says why
 it is not correctly written): at first only "run the generator once, as soon as possible", which the
@@ -12,7 +12,7 @@ first step asks for, paused or not. A generator run goes on in a process of its 
 (Session.runs), paused or not, while the chip moves with the script in place; the
 status line says when one is going on. Rules and edits are typed in the command box
 (type help); while the chip is paused, nothing that changes the line, the mode or the
-rules is accepted (the mode buttons are disabled).
+rules is accepted (the mode buttons and the selectors are disabled).
 
 The simulation runs in a thread of its own, so the window never waits for it. Each
 step lets as much time run as has passed since the previous one, so whatever a
@@ -92,11 +92,22 @@ class App:
         tk.Button(bar, text="Zoom out", command=lambda: self.zoom(F(2))).pack(side="left", padx=(8, 0))
         tk.Button(bar, text="Zoom in", command=lambda: self.zoom(F(1, 2))).pack(side="left")
         tk.Button(bar, text="Generated script", command=self.open_script).pack(side="left", padx=(16, 0))
-        tk.Label(bar, text="Mode:").pack(side="left", padx=(16, 0))
-        self.mode_bar = tk.Frame(bar)
-        self.mode_bar.pack(side="left")
         self.mode_buttons: dict[str, tk.Button] = {}
+        self.selector_buttons: dict[tuple[int, str], tk.Button] = {}
         self.button_color = self.play.cget("background")
+        if self.s.selectors:
+            row = tk.Frame(r)
+            row.pack(fill="x", padx=6, pady=(0, 4))
+            for i, (name, options) in enumerate(self.s.selectors):
+                tk.Label(row, text=f"{name.capitalize()}:").pack(side="left", padx=(16 if i else 0, 2))
+                for letter, option in options.items():
+                    b = tk.Button(row, text=option, command=lambda i=i, letter=letter: self.select(i, letter))
+                    b.pack(side="left")
+                    self.selector_buttons[i, letter] = b
+        else:
+            tk.Label(bar, text="Mode:").pack(side="left", padx=(16, 0))
+            self.mode_bar = tk.Frame(bar)
+            self.mode_bar.pack(side="left")
         self.status = tk.Label(r, anchor="w", justify="left")
         self.status.pack(fill="x", padx=8)
         self.canvas = tk.Canvas(r, background="white", height=320, highlightthickness=0)
@@ -134,8 +145,23 @@ class App:
         at = time.time()
         self.post(lambda: PAUSED if self.paused else self._up_to(at) or self.s.set_mode(m))
 
+    def select(self, i: int, letter: str) -> None:
+        if self.paused:
+            self.log(PAUSED)
+            return
+        at = time.time()
+        self.post(lambda: PAUSED if self.paused else self._up_to(at) or self.s.select(i, letter))
+
+    def _show_choice(self, b: tk.Button, chosen: bool) -> None:
+        """A button of the mode, disabled while the chip is paused (no edit then)."""
+        b.configure(relief="sunken" if chosen else "raised", background="#ffeaa7" if chosen else self.button_color,
+                    state="disabled" if self.paused else "normal")
+
     def _mode_buttons(self, names: list[str], current: str) -> None:
-        """The mode buttons, disabled while the chip is paused (no edit then)."""
+        if self.selector_buttons:
+            for (i, letter), b in self.selector_buttons.items():
+                self._show_choice(b, current[i] == letter)
+            return
         if list(self.mode_buttons) != names:
             for b in self.mode_buttons.values():
                 b.destroy()
@@ -145,8 +171,7 @@ class App:
                 b.pack(side="left")
                 self.mode_buttons[m] = b
         for m, b in self.mode_buttons.items():
-            b.configure(relief="sunken" if m == current else "raised", background="#ffeaa7" if m == current else self.button_color,
-                        state="disabled" if self.paused else "normal")
+            self._show_choice(b, m == current)
 
     def zoom(self, factor: F) -> None:
         self.span = min(max(self.span * factor, F(3)), F(768))

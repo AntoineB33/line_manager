@@ -81,8 +81,8 @@ from dataclasses import dataclass
 
 from guards import same_dict, user_claims
 from intervals import INF, Interval, IntervalSet
-from line import USER, Claims, LineState, Op
-from region import IncompatiblePeriods, Region
+from line import FLAT, USER, Claims, Edits, LineState, Op
+from region import ZERO, IncompatiblePeriods, Region
 from rules import And, Atom, Not, Or, RuleSet, is_hidden
 from solver import EMPTY, Conflict, Line, Problem, Undetermined, close, kinds_of, lhs_region, solve, target, union
 
@@ -123,26 +123,36 @@ def apply_edit(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> Line
         claims = _claims_of(state, rec, kinds)
         line = _local_line(rs, state.line, claims, rec.footprint)
         if line is not None:
-            return LineState(claims, line, state.history + (rec,))
-    after = _pointwise(rs, state, rec) if rs.pointwise else _near(rs, state, rec, kinds)
+            return LineState(claims, line, _more(state, rec))
+    after = _pointwise(rs, state, rec) if rs.pointwise else (_near(rs, state, rec, kinds) or _near_edits(rs, state, rec, kinds))
     if after is not None:
         return after
-    return rebuild(rs, state.history + (rec,), owned_by_others(state.claims), state.line)
+    return rebuild(rs, _more(state, rec), owned_by_others(state.claims), state.line)
 
 
 def _pointwise(rs: RuleSet, state: LineState, rec: Record) -> LineState:
     """The state when no position acts on another one (`RuleSet.pointwise`): the edits are
     computed again on the positions of this one only, the rest stays."""
     where = rec.footprint
-    history = []
-    for r in state.history + (rec,):
-        if r.footprint & where:
-            clear = {k: v & where for k, v in r.clear.items() if v & where}
-            history.append(Record(r.claims.on(where), clear, r.footprint & where))
-    part = rebuild(rs, tuple(history), owned_by_others(state.claims).on(where), state.line)
+    part = rebuild(rs, _clipped(_more(state, rec), where), owned_by_others(state.claims).on(where), state.line)
     claims = _outside(state.claims, where).merged(part.claims)
     claims.clean = part.claims.clean and (state.claims.clean or not state.history)
-    return LineState(claims, _spliced(state.line, part.line, where), state.history + (rec,))
+    return LineState(claims, _spliced(state.line, part.line, where), _more(state, rec))
+
+
+def _more(state: LineState, rec: Record) -> Edits:
+    """The edits of the state, then `rec`."""
+    h = state.history
+    return (h if isinstance(h, Edits) else Edits(h)) + (rec,)
+
+
+def _clipped(history: Edits, where: Region) -> tuple:
+    """The edits that touch `where`, on `where` only."""
+    out = []
+    for r in history.touching(where):
+        clear = {k: v & where for k, v in r.clear.items() if v & where}
+        out.append(Record(r.claims.on(where), clear, r.footprint & where))
+    return tuple(out)
 
 
 def _near(rs: RuleSet, state: LineState, rec: Record, kinds: set) -> LineState | None:
@@ -151,41 +161,99 @@ def _near(rs: RuleSet, state: LineState, rec: Record, kinds: set) -> LineState |
     however much is on the line. None for the long way.
 
     An exact window needs (`RuleSet.monotone`, no cycle, a state where nothing gave way):
-    - that what stays possible on the left of the edit stays chosen. It does if the edit
-      only adds: the lines it allows were all allowed before. It does also, whatever the
-      edit, if no choice has to look ahead (`RuleSet.one_way`, `_never_stuck`): each one
-      depends only on what is on its left, near it. Otherwise an edit that takes
-      something away can change a choice anywhere on the left, through a chain that
-      looks the same from the window: it goes the long way;
+    - that what stays possible closer to 0 than the edit stays chosen. It does if the edit
+      only adds: the lines it allows were all allowed before. It does also, right of 0
+      only, whatever the edit, if no choice has to look ahead (`RuleSet.one_way`,
+      `_never_stuck`): each one depends only on what is on its left, near it. Otherwise an
+      edit that takes something away can change a choice anywhere closer to 0, through a
+      chain that looks the same from the window: it goes the long way;
     - two zones as long as a chain of rules, one on each side, where the window gives the
       old line. What is outside the zones then cannot see the difference, and each choice
       inside is the first one possible.
     The window starts a chain's length further out, for what is missing beyond it."""
-    where = rec.footprint
-    if rs.cyclic or not rs.monotone or not state.claims.clean or where.left or where.right or not where.core:
+    if not rs.monotone or not (state.claims.clean or not state.history):
         return None
     claims = _claims_of(state, rec, kinds)
-    if not _only_adds(state.claims.on(where), claims.on(where)) and not (rs.one_way and _never_stuck(rs, state.claims, claims)):
+    line = _near_line(rs, state.claims, claims, state.line, rec.footprint)
+    if line is None:
         return None
+    claims.clean = True
+    return LineState(claims, line, _more(state, rec))
+
+
+def _near_line(rs: RuleSet, before: Claims, claims: Claims, line: Line, where: Region, temp: dict | None = None) -> Line | None:
+    """The line from the claims, which changed on `where` only, on a window (`_near`)."""
+    if rs.cyclic or where.left or where.right or not where.core:
+        return None
+    adds = _only_adds(before.on(where), claims.on(where))
+    if not adds and not (rs.one_way and _never_stuck(rs, before, claims)):
+        return None
+
+    def solved(w: Region):
+        try:
+            return solve(rs, claims.on(w).problem({k: r & w for k, r in (temp or {}).items()})), None
+        except (Conflict, Undetermined, IncompatiblePeriods):
+            return None
+
+    found = _grown(rs, line, where, solved, None, None if adds else ZERO)
+    return None if found is None else _spliced(line, found[0][0], found[1])
+
+
+def _near_edits(rs: RuleSet, state: LineState, rec: Record, kinds: set) -> LineState | None:
+    """As `_near`, for what cannot be read from the claims alone: rules that read "not" or
+    left edges (an edit can save an older one), or a state where an older edit gave way.
+    The edits are computed again on the window, as the long way would, and its claims must
+    be the old ones on the zones too. A left edge the window cuts is only seen a chain's
+    length away, before the zones. What takes something away goes the long way."""
+    where = rec.footprint
+    if rs.cyclic or not rs.finite or where.left or where.right or not where.core:
+        return None
+    if not _only_adds(state.claims.on(where), _claims_of(state, rec, kinds).on(where)):
+        return None
+    history = _more(state, rec)
+    others = owned_by_others(state.claims)
+
+    def computed(w: Region):
+        part = rebuild(rs, _clipped(history, w), others.on(w), state.line)
+        return part.line, part.claims
+
+    found = _grown(rs, state.line, where, computed, state.claims)
+    if found is None:
+        return None
+    (line, part), inner = found
+    claims = _outside(state.claims, inner).merged(part.on(inner))
+    claims.clean = (state.claims.clean or not state.history) and part.clean
+    return LineState(claims, _spliced(state.line, line, inner), history)
+
+
+def _grown(rs: RuleSet, line: Line, where: Region, compute, claims: Claims | None = None, floor=None):
+    """What `compute` gives on a window around `where` that grows until it gives the old
+    line (and the old claims) on a zone on each side, with the stretch it can be kept on.
+    None if it has the whole line first, or goes left of `floor`."""
     step = (len(rs.order) + 2) * max(rs.reach, 1)
-    ends = [r for d in state.line.vals.values() for r in d.values()]
-    first, last = min((r.inf() for r in ends), default=0), max((r.sup() for r in ends), default=0)
+    ends = [r for d in line.vals.values() for r in d.values()]
+    first = min((r.lo.x for r in ends), default=0)  # what repeats forever starts within these bounds
+    last = max((r.hi.x for r in ends), default=0)
     a = where.core.intervals[0].lo.x - 4 * step
     b = where.core.intervals[-1].hi.x + 4 * step
     grow_a, grow_b = 8 * step, 8 * step
     for _ in range(MAX_WINDOWS):
-        try:
-            part = solve(rs, claims.on(Region.of(Interval.closed(a, b))).problem())
-        except (Conflict, Undetermined, IncompatiblePeriods):
+        if floor is not None and a < floor and first < floor:
+            return None
+        out = compute(Region.of(Interval.closed(a, b)))
+        if out is None:
             return None
         left = Region.of(Interval.closed(a + step, a + 2 * step))
         right = Region.of(Interval.closed(b - 2 * step, b - step))
-        same_left, same_right = _on(state.line, left) == _on(part, left), _on(state.line, right) == _on(part, right)
+
+        def same(zone):
+            return _on(line, zone) == _on(out[0], zone) and (claims is None or claims.on(zone).same(out[1].on(zone)))
+
+        same_left, same_right = same(left), same(right)
         if same_left and same_right:
-            inner = Region.of(Interval.closed(a + step, b - step))
-            return LineState(claims, _spliced(state.line, part, inner), state.history + (rec,))
-        if (a < first or same_left) and (b > last or same_right) and a < first and b > last:
-            return None  # the window has the whole line
+            return out, Region.of(Interval.closed(a + step, b - step))
+        if (not same_left and a + 2 * step < first) or (not same_right and b - 2 * step > last):
+            return None  # it still differs past all there is: growing would find nothing
         if not same_left:
             a, grow_a = a - grow_a, 2 * grow_a
         if not same_right:
@@ -203,6 +271,39 @@ def _never_stuck(rs: RuleSet, before: Claims, after: Claims) -> bool:
         if any(k in rs.free for k in c.neg) or any(k in rs.free for k in c.taken):
             return False
     return True
+
+
+def flattened(rs: RuleSet, state: LineState, x, gone=None) -> LineState:
+    """The state with the line on the left of x as a simple line, and nothing on the left
+    of `gone`, when the memory is short (requirement.md). There, what is on the line is
+    all that is kept: no edit, so nothing comes back when a contradiction disappears, and
+    what gives way later is gone. The absent kinds are kept too: with "A → B or C" and C
+    there, a B that was not possible must not appear because its reason is gone."""
+    left = Region.of(Interval(-INF, x, False, False))
+    claims = _outside(state.claims, left)
+    claims.clean = state.claims.clean
+    history = []
+    for r in state.history:
+        if r.footprint - left:
+            kept = _outside(r.claims, left)
+            history.append(Record(kept, {k: v - left for k, v in r.clear.items() if v - left}, r.footprint - left))
+    first = min((reg.inf() for d in state.line.vals.values() for reg in d.values()), default=x)
+    known = left if first == -INF else Region.of(Interval.closed_open(first, x)) if first < x else EMPTY
+    for k in state.line.vals:
+        for v, reg in state.line.vals[k].items():
+            if reg & left:
+                claims.add_pos(k, reg & left, v, FLAT)
+    for k in rs.ruled:
+        absent = known - state.line.presence(k)
+        if absent:
+            claims.add_neg(k, absent, FLAT)
+    line = state.line
+    if gone is not None:
+        off = Region.of(Interval(-INF, gone, False, False))
+        claims = _outside(claims, off)
+        claims.clean = state.claims.clean
+        line = _spliced(line, Line({}), off)
+    return LineState(claims, line, Edits(history))
 
 
 def _only_adds(before: Claims, after: Claims) -> bool:
@@ -288,7 +389,7 @@ def _apart(state: LineState, rec: Record, kinds: set) -> LineState:
         for (v, _), r in claims.pos.get(k, {}).items():
             d = vals.setdefault(k, {})
             d[v] = d[v] | r if v in d else r
-    return LineState(claims, Line(vals), state.history + (rec,))
+    return LineState(claims, Line(vals), _more(state, rec))
 
 
 def _local_line(rs: RuleSet, line: Line, claims: Claims, where: Region, temp: dict | None = None) -> Line | None:
@@ -307,8 +408,8 @@ def _claims_of(state: LineState, rec: Record, kinds: set) -> Claims:
     and these ones too outside the positions of the edit, which decides nothing there."""
     where = rec.footprint
     above, clear = Claims(), {}
-    for r in reversed(state.history + (rec,)):
-        if any(k in r.claims.pos or k in r.claims.neg or k in r.claims.taken or k in r.clear for k in kinds) and r.footprint & where:
+    for r in reversed(_more(state, rec).touching(where)):
+        if any(k in r.claims.pos or k in r.claims.neg or k in r.claims.taken or k in r.clear for k in kinds):
             here = {k: v & where for k, v in r.clear.items() if k in kinds and v & where}
             c, cl = _below(_only(r.claims, kinds).on(where), here, above, clear)
             _add(clear, cl)
@@ -484,6 +585,10 @@ def _apply(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> LineStat
     _alone(rs, Problem(mand_pos, own_neg))
     if rs.local:
         line = _local_line(rs, state.line, c1, union(op.region for op in ops), temp)
+        if line is not None:
+            return LineState(c1, line, state.history)
+    elif rs.monotone:
+        line = _near_line(rs, state.claims, c1, state.line, union(op.region for op in ops), temp)
         if line is not None:
             return LineState(c1, line, state.history)
     try:

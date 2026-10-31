@@ -45,11 +45,13 @@ from mode_rules import ModeRules, Run
 from modes import ModeTimeline
 from region import Region
 from solver import Line, Undetermined, limited
-from resolve import Refused, owned_by_others, apply_edit, rebuild
+from resolve import Refused, apply_edit, flattened, owned_by_others, rebuild
 from script import ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Start, TransitionCount, Uncovered, Edited, score
 
 
 EDIT_LIMIT = 2  # the seconds an edit of the user can take: beyond, it is refused
+LOG_KEPT = 512  # changes of the line kept in the log, at least
+MEMORY_LIMIT = 2 * 1024 ** 3  # bytes a state can take: beyond, its far left is flattened, then removed
 LAST_RESORT = PACE_TIME - EDIT_LIMIT  # (so that an edit going on never delays the pace)
 
 
@@ -152,6 +154,13 @@ class Log:
     refused: list[tuple[Fraction, str, str]] = field(default_factory=list)  # (time, source, reason)
     runs: list[tuple[Fraction, Fraction, str, Script, RunStats]] = field(default_factory=list)
 
+    def changed(self, change: Change) -> None:
+        """The last changes only: each one keeps two states, which the memory limit must
+        be able to free."""
+        self.changes.append(change)
+        if len(self.changes) > 2 * LOG_KEPT:
+            del self.changes[:LOG_KEPT]
+
 
 class Simulation:
     def __init__(self, state: LineState, generator: RulesGenerator, chip: Chip, modes: ModeTimeline, user_edits: list[UserEdit] = ()) -> None:
@@ -181,6 +190,8 @@ class Simulation:
         self.request: RunRequest | None = None  # the run asked for and not completed
         self.definitive = None  # how far the run's scripts are definitive
         self.calculate = None  # (job, *args) -> its answer, the user's edits computed elsewhere
+        self.memory_limit = MEMORY_LIMIT
+        self.flat_to = self.gone_to = None  # the line is simple on the left of the first, empty of the second
         self._edited = False  # the user edited at this instant
         self._read_edited = False  # something that the rules, the constraints or the problems read
         self._requests = 0
@@ -387,9 +398,28 @@ class Simulation:
         if why:
             self.log.refused.append((t, source, why))
             return False
-        self.log.changes.append(Change(t, self.chip.position(t), source, before, after))
+        self.log.changed(Change(t, self.chip.position(t), source, before, after))
         self.state = after
+        self._within_memory(c)
         return True
+
+    def _within_memory(self, c: Fraction) -> None:
+        """Past the limit, half of what is left of the chip and not flat yet is flattened,
+        the furthest first, then half of what is flat is removed, and so on."""
+        while self.state.memory() > self.memory_limit:
+            del self.log.changes[:]  # they keep older states
+            busiest = max((r for d in self.state.line.vals.values() for r in d.values()), key=lambda r: len(r.core.intervals), default=None)
+            starts = [iv.lo for iv in busiest.core.intervals if iv.hi < c] if busiest else []
+            layered = [x for x in starts if self.flat_to is None or x >= self.flat_to]
+            flat = [x for x in starts if self.flat_to is not None and x < self.flat_to and (self.gone_to is None or x >= self.gone_to)]
+            if len(layered) >= 2:
+                self.flat_to = layered[len(layered) // 2]
+                self.state = flattened(self.rules, self.state, self.flat_to, self.gone_to)
+            elif len(flat) >= 2:
+                self.gone_to = flat[len(flat) // 2]
+                self.state = flattened(self.rules, self.state, self.flat_to, self.gone_to)
+            else:
+                break  # all there is is on the right of the chip, or being used
 
     def _alone(self, ops) -> bool:
         kinds = getattr(self.gen, "kinds_read", lambda: None)()
@@ -444,7 +474,7 @@ class Simulation:
     def _replace(self, history: tuple, why: str = "user edit", run: bool = False) -> None:
         before = self.state
         after = rebuild(self.rules, history, owned_by_others(before.claims), before.line)
-        self.log.changes.append(Change(self.t, self.chip.position(self.t), "user", before, after))
+        self.log.changed(Change(self.t, self.chip.position(self.t), "user", before, after))
         self.state = after
         self._read_edited = True
         if not self.started:
@@ -544,7 +574,7 @@ class Simulation:
             after = _moved(st.state_at(end - d), d, self.state.history)
             if after is not self.state:
                 t = max(t0, self.chip.first_time(x.x))
-                self.log.changes.append(Change(t, x, "mode", self.state, after, Region.of(Interval._mk(x, end))))
+                self.log.changed(Change(t, x, "mode", self.state, after, Region.of(Interval._mk(x, end))))
                 self.state = after
             x = end + EPS
             self._stretch = (st, after, x)
@@ -568,7 +598,7 @@ class Simulation:
         for ev in mr.act(self.state, x, hi):
             if isinstance(ev, Run):
                 t = max(t0, self.chip.first_time(ev.start.x))
-                self.log.changes.append(Change(t, ev.start, "mode", ev.before, ev.after, ev.at))
+                self.log.changed(Change(t, ev.start, "mode", ev.before, ev.after, ev.at))
                 self.state = ev.after
             else:
                 self.log.refused.append((t0, "mode", ev[1]))

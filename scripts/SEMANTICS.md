@@ -194,14 +194,16 @@ The line of a set of claims is defined as follows:
    exactly where B is absent, and `X & not C → B` with `X & not B → C` has two
    results.
 3. Each anchor of an "or" takes an operand ("the leftmost operand that can be
-   chosen"). The anchors are decided one after the other, from left to right
-   (the line goes from −∞ on the left to ∞ on the right). At one position, an
+   chosen"). The anchors are decided one after the other, the closest to 0 first,
+   and the one on the right if two are as close (requirement.md). So where 0 is
+   changes the line, not the time it takes, when choices act on each other around
+   or on the left of 0. At one position, an
    "or" whose left side reads what another "or" places comes after it; otherwise
    the rules are in written order.
 
    Each anchor takes the first operand that still lets all the other anchors be
-   placed, given the choices on its left. This is exactly the lexicographically
-   smallest feasible choice, from left to right.
+   placed, given the choices made before. This is exactly the lexicographically
+   smallest feasible choice, in that order.
 4. If no choice works, the claims are in conflict.
 
 Choices are made for every anchor that some choice could meet. The order is
@@ -215,11 +217,15 @@ there is: 1+ε. So the result is B and E at 0 and 1+ε, C on (0, 1] and on
 [1+2ε, 2] (`test_requirement_question`). On [0, ∞), B goes at n + nε for every n,
 repeating every 1+ε (`test_drift`).
 
-**No first position.** On an element unbounded on the left, there is no first
-position. If the choices there act on each other (as in `ALTERNATE` below), any
-shift of a valid pattern is valid, and nothing decides between them: the edit is
-refused (`Undetermined`). Where they do not act on each other, each position
-simply takes its first valid operand (`test_unbounded_on_the_left`).
+**Always a first position.** An element with no end still has a position closest
+to 0, on the lattices (`test_unbounded_on_the_left`): the window then has 0 in it,
+and goes as far on both sides if the data is on both sides of 0, what is beyond it
+being further from 0 than all of it.
+
+**The sweep only goes from left to right.** Its choices are right where they are at
+or right of 0. On the left of 0, if they act on each other (not `RuleSet.pointwise`),
+or on an element with no left end, the edit is refused (`Undetermined`) rather than
+computed in the wrong order (gaps_to_solve_later.md).
 
 ### How it is computed exactly
 
@@ -665,14 +671,28 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     that takes something away needs more: that no choice has to look ahead
     (`RuleSet.one_way`, `resolve._never_stuck`), each "or" having an operand that nothing can
     stop, and every position acting towards the right or on itself. Otherwise it goes the
-    long way, as it can change a choice anywhere on its left, through a chain that looks the
-    same from the window. So do rules with `not` or left edges and distances, cycles, and
-    states where an older edit gave way.
+    long way, as it can change a choice anywhere closer to 0, through a chain that looks the
+    same from the window. On the left of 0 the same holds, but `one_way` does not, as the
+    choices are made towards the left there.
+  - **Edits computed again on a window.** Rules that read `not` or left edges with
+    distances, and states where an older edit gave way, cannot be read from the claims: the
+    edits that touch the window are computed again on it, as the long way would, and its
+    claims must be the old ones on the zones too (`resolve._near_edits`). What takes
+    something away goes the long way, and so do cycles.
+  - **The generator's edits** use the same window (`resolve._near_line`).
   - **Nothing is copied one interval at a time.** Interval sets are sorted, so a few
     intervals against many find their place by bisection and the rest is copied as one
     slice (`intervals._few`). The claims of an edit are computed on its own positions
-    (`resolve._claims_of`). The process of the edits keeps its own state, and only what
-    changed goes there and back (`state_delta.py`).
+    (`resolve._claims_of`). The history finds the edits that touch a stretch from an index
+    (`line.Edits`). The process of the edits keeps its own state, and only what changed goes
+    there and back (`state_delta.py`).
+  - **The memory limit.** Past `MEMORY_LIMIT`, half of what is left of the chip and not flat
+    yet becomes a simple line (`resolve.flattened`): the claims there become those of the
+    owner FLAT, one per element and one "no K" per stretch where a kind that rules mention
+    is absent, so that no rule chooses again, and the edits lose those positions. There
+    nothing comes back when a contradiction disappears, and what gives way is gone. Past the
+    limit again, half of what is flat is removed, the furthest first. Nothing at or right of
+    the chip goes. The log only keeps its last changes, which keep older states.
   - **Elements nothing reads.** An edit of kinds no rule mentions solves nothing
     (`resolve._apart`): only their intervals are computed, from the edits that have them.
     If no constraint or problem reads them either, it needs no process, and the generator's

@@ -987,10 +987,7 @@ class Lattice:
         mid_r, mid_l = self.kmax + R2, self.kmin - R2
         self.ray_vars = (tuple(oi for oi, (lhs, _) in enumerate(spec.ors) if spec.met(present[mid_l - lo], lhs)),
                          tuple(oi for oi, (lhs, _) in enumerate(spec.ors) if spec.met(present[mid_r - lo], lhs)))
-        self.vars.sort(key=lambda v: (v[0], spec.or_ranks[v[1]]))
-        if self.ray_vars[0] and not spec.independent:
-            raise Undetermined("an 'or' acts on an element unbounded on the left, where its choices act on each other: "
-                               "with no first position, nothing decides them")
+        self.vars.sort(key=self._turn)  # the closest to 0 first, the one on the right if two are as close
         _, _, _, bad = spec.evaluate(self.pat, lambda k, oi: None, lo, hi, lo, hi)
         if bad:
             return False
@@ -1007,6 +1004,10 @@ class Lattice:
         W = self.lp.W
         ks = range(self.kmax - W + 1, self.kmax + 1) if side else range(self.kmin + W - 1, self.kmin - 1, -1)
         return tuple(tuple(self.assign.get((k, oi), 0) for oi in self.ray_vars[side]) for k in ks)
+
+    def _turn(self, v: tuple) -> tuple:
+        x = self.x(v[0])
+        return (-x if x < 0 else x), x < 0, self.lp.spec.or_ranks[v[1]]
 
     def _dfs(self) -> bool:
         """The first choices that work, in the order of `vars`. With its own stack: a line
@@ -1098,11 +1099,28 @@ class LatticeProblem:
             self.residues |= {reg.lo % self.g, reg.hi % self.g}
         # the window is around the data: where 0 is means nothing
         margin = (2 * self.W + 2 * self.spec.rho + 4) * self.g
-        self.lo, self.hi = min(bounds, default=Fraction(0)) - margin, max(bounds, default=Fraction(0)) + margin
+        if self._without_end(regions, lrules):
+            bounds.append(Fraction(0))  # the first to choose is there
+        first, last = min(bounds, default=Fraction(0)), max(bounds, default=Fraction(0))
+        if first < 0 < last:  # beyond the window is further from 0 than all of it
+            first, last = -max(-first, last), max(-first, last)
+        self.lo, self.hi = first - margin, last + margin
         # the intervals of each region on the window that matters
         a, b = self.lo - 4 * self.g, self.hi + 4 * self.g
         self._ivs = {id(reg): reg.on(a, b).intervals for reg in all_regions}
         self._los = {i: [iv.lo for iv in ivs] for i, ivs in self._ivs.items()}
+
+    @staticmethod
+    def _without_end(regions: dict, lrules) -> bool:
+        """Whether choices may go on forever: the first to choose is then the closest to 0,
+        whatever is elsewhere. What forbids is not where a choice is made."""
+        for d in regions.values():
+            for key, v in d.items():
+                if key != "forbidden":
+                    for reg in (v.values() if isinstance(v, dict) else [v]):
+                        if (reg.left or reg.right) and not reg.is_everything():
+                            return True
+        return any(it.is_or and len(lhs) == 1 and regions[lhs[0]]["fixed"].is_everything() for lhs, it, _ in lrules)
 
     @staticmethod
     def _free_step(regions: dict) -> Fraction:
@@ -1144,7 +1162,9 @@ class LatticeProblem:
             ivs = self._ivs[id(reg)]
             if len(ivs) > n:  # few positions, many intervals: each position finds its own
                 los = self._los[id(reg)]
-                for i in range(n):
+                start = max(_first_k(ivs[0].lo, r, g, k0), k0) - k0
+                end = min(_last_k(ivs[-1].hi, r, g, k1), k1) - k0
+                for i in range(start, end + 1):
                     x = r + (k0 + i) * g
                     j = bisect.bisect_right(los, x) - 1
                     if j >= 0 and ivs[j].contains(x):
@@ -1178,11 +1198,15 @@ class LatticeProblem:
         """Regions of the kinds of kinds_in; raises Conflict."""
         g = self.g
         results = []
+        same: dict[tuple, tuple] = {}  # most lattices pose one of a few problems
         for piece, r in self.pieces():
             lat = Lattice(self, r)
-            if not lat.solve():
-                raise Conflict(f"no choice of 'or' operands satisfies the rules on the lattice {r} + {g}Z")
-            results.append((piece, lat.atoms()))
+            key = (lat.kmin, lat.kmax, tuple(lat._pats))
+            if key not in same:
+                if not lat.solve():
+                    raise Conflict(f"no choice of 'or' operands satisfies the rules on the lattice {r} + {g}Z")
+                same[key] = lat.atoms()
+            results.append((piece, same[key]))
         if not results:
             return {}
         # one region per (kind, value), on common bounds and periods

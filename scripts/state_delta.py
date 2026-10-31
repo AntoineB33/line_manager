@@ -80,7 +80,7 @@ def patched(old: LineState, change: tuple) -> LineState:
     if change[0] == WHOLE:
         return change[1]
     where, (kept, more), clean = change[:3]
-    history = old.history[:kept] + more
+    history = old.history + more if kept == len(old.history) else old.history[:kept] + more
     if where is None:
         claims, line = old.claims.copy(), old.line
     else:

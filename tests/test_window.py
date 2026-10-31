@@ -156,6 +156,50 @@ class CalculatorTest(unittest.TestCase):
         self.assertEqual(s.mode(), "2")
 
 
+DEVICES = ["Break15 → NoScreen",
+           "NoScreen → (NoComputerUnlocked or NotOnComputer) & (NoPhoneUnlocked or NotOnPhone)",
+           "NotOnComputer → no NoComputerUnlocked", "NotOnPhone → no NoPhoneUnlocked",
+           "mode UU → no NoScreen", "mode UF → no NoScreen & NotOnPhone", "mode UL → no NoScreen & NoPhoneUnlocked",
+           "mode FU → no NoScreen & NotOnComputer", "mode LU → no NoScreen & NoComputerUnlocked",
+           "mode LL → NoScreen & NoComputerUnlocked & NoPhoneUnlocked", "mode FF → NoScreen & NotOnComputer & NotOnPhone",
+           "mode FL → NoScreen & NotOnComputer & NoPhoneUnlocked", "mode LF → NoScreen & NoComputerUnlocked & NotOnPhone"]
+STATES = {"U": "unlocked", "F": "fake locked", "L": "locked"}
+
+
+def devices(modes=((0, "UU"),)):
+    s = Session(DEVICES, modes, 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2),
+                [FifteenMinuteBreaks()], {"computer": STATES, "phone": STATES})
+    s.sim.background = False
+    s.sim.start()
+    return s
+
+
+class SelectorTest(unittest.TestCase):
+    def test_each_keeps_the_other(self):
+        s = devices()
+        self.assertEqual(s.select(0, "L")[:7], "mode LU")
+        self.assertEqual(s.select(1, "F")[:7], "mode LF")
+        self.assertEqual(s.mode(), "LF")
+
+    def test_the_periods_at_the_chip(self):
+        kinds = ["NoScreen", "NoComputerUnlocked", "NotOnComputer", "NoPhoneUnlocked", "NotOnPhone"]
+        want = {"UU": [], "UF": ["NotOnPhone"], "UL": ["NoPhoneUnlocked"], "FU": ["NotOnComputer"], "LU": ["NoComputerUnlocked"],
+                "LL": ["NoScreen", "NoComputerUnlocked", "NoPhoneUnlocked"], "FF": ["NoScreen", "NotOnComputer", "NotOnPhone"],
+                "FL": ["NoScreen", "NotOnComputer", "NoPhoneUnlocked"], "LF": ["NoScreen", "NoComputerUnlocked", "NotOnPhone"]}
+        for mode, kept in want.items():
+            s = devices([(0, "UU"), (1, mode)] if mode != "UU" else [(0, "UU")])
+            s.tick(F(2))
+            self.assertEqual([k for k in kinds if s.sim.state.line.presence(k).contains(F(3, 2))], kept, mode)
+
+    def test_a_mode_they_cannot_give(self):
+        s = devices()
+        for m in ("1", "UUU", "UX"):
+            self.assertIn("usage", s.set_mode(m))
+        self.assertEqual(s.mode(), "UU")
+        with self.assertRaises(ValueError):
+            Session(DEVICES, [(0, "1")], selectors={"computer": STATES, "phone": STATES})
+
+
 class ReRunTest(unittest.TestCase):
     def test_a_run_is_not_cancelled_by_its_own_script(self):
         sim, chip = background(["mode 1 → D"], PresenceRatioProblem({}, 90))
@@ -254,6 +298,31 @@ class WindowTest(unittest.TestCase):
         while time.time() < end and not (until and until()):
             self.root.update()
             time.sleep(0.005)
+
+    def test_selectors_replace_the_mode_buttons(self):
+        self.close()
+        self.s = Session(DEVICES, [(0, "UU")], 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2),
+                         [FifteenMinuteBreaks()], {"computer": STATES, "phone": STATES})
+        self.root = gui.tk.Tk()
+        self.app = app = gui.App(self.root, self.s)
+        s = self.s
+        self.pump(10, lambda: app.selector_buttons[0, "U"].cget("relief") == "sunken")
+        self.assertEqual(len(app.selector_buttons), 6)
+        self.assertFalse(app.mode_buttons)
+        self.assertEqual(app.selector_buttons[0, "L"].cget("text"), "locked")
+        self.assertEqual(app.selector_buttons[0, "L"].cget("state"), "disabled")  # paused
+        self.pump(10, lambda: s.sim.started)
+        app.toggle()
+        self.pump(1)
+        app.selector_buttons[0, "L"].invoke()
+        self.pump(5, lambda: s.mode() == "LU")
+        app.selector_buttons[1, "F"].invoke()
+        self.pump(5, lambda: s.mode() == "LF")
+        self.pump(1)
+        self.assertEqual(s.mode(), "LF")
+        self.assertEqual(app.selector_buttons[0, "L"].cget("relief"), "sunken")
+        self.assertEqual(app.selector_buttons[0, "U"].cget("relief"), "raised")
+        self.assertEqual(app.selector_buttons[1, "F"].cget("relief"), "sunken")
 
     def test_a_slow_edit(self):
         """The display does not stop, the chip keeps pushing the break, and when the

@@ -128,7 +128,8 @@ def long_way(rs, history):
 
 
 class OriginTest(unittest.TestCase):
-    """Where 0 is means nothing."""
+    """Right of 0, how far from 0 changes nothing: not the line, not the time. Around 0 the
+    line can change (the closest to 0 chooses first), the time cannot."""
     POOL = ["A → B or C", "A → C or B", "B → no C", "C → D", "D → no B", "C → no B 1 unit on the right",
             "B → no B 1 unit on the right", "A & not B → D", "X & not A → B", "A → D 2 units on the right",
             "A → B on [0, 1] of l", "C → no D 1 unit on the left", "A → C or D 1 unit on the right"]
@@ -216,6 +217,81 @@ class NearTest(unittest.TestCase):
         state = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, 1000))], USER)
         after = apply_edit(rs, state, [Op.put_no("B", Interval.point(3))], USER)
         self.assertTrue(after.line.presence("C").contains(1000))
+
+    def test_what_cannot_be_read_from_the_claims(self):
+        """ "not", left edges, older edits that gave way: on a window too, the same line."""
+        pool = ["A → B or C", "C → no B 1 unit on the right", "A & not X → D 2 units on the right", "B → no D",
+                "X & not A → C 1 unit on the right", "A → D on [0, 1] of l", "D → no C 2 units on the right",
+                "C → B 3 units on the left of l", "X → no A", "A → X 4 units on the right"]
+        rng = random.Random(83)
+        checked = windowed = 0
+        real = resolve._near_edits
+
+        def counted(*a):
+            nonlocal windowed
+            out = real(*a)
+            windowed += out is not None
+            return out
+
+        for _ in range(160):
+            try:
+                rs = parse_rules(rng.sample(pool, rng.randint(2, 5)))
+            except RuleError:
+                continue
+            if rs.pointwise:
+                continue
+            history = []
+            for _ in range(rng.randint(3, 7)):
+                a = rng.randint(-20, 90)
+                iv = Interval.closed(a, a + rng.randint(0, 25))
+                history.append([rng.choice([Op.put, Op.put, Op.put, Op.put_no, Op.take])(rng.choice("ABCDX"), iv)])
+            with mock.patch.object(resolve, "_near_edits", counted):
+                fast = result(rs, history)
+            self.assertEqual(fast, long_way(rs, history), ([str(r) for r in rs.rules], [str(o) for o in map(lambda h: h[0], history)]))
+            checked += 1
+        self.assertGreater(checked, 80)
+        self.assertGreater(windowed, 20)
+
+    def test_the_generators_edits(self):
+        rs = parse_rules(["A → B or C", "C → no B 1 unit on the right"])
+        state = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(4 * k, 4 * k + 1)) for k in range(100)], USER)
+        seen, real = [], resolve.solve
+
+        def counted(rs, prob):
+            seen.append(sum(len(r.core.intervals) for d in prob.pos.values() for r in d.values()))
+            return real(rs, prob)
+
+        with mock.patch.object(resolve, "solve", counted):
+            after = apply_edit(rs, state, [Op.put("A", Interval.closed(2, 3))], GEN)
+        self.assertLess(max(seen), 30)
+        self.assertEqual(after.line, solver.solve(rs, after.claims.problem()))
+
+    def test_a_long_history(self):
+        """An edit only looks at the edits it touches."""
+        rs = parse_rules(EXAMPLE)
+        state = LineState.empty()
+        for k in range(3000):
+            state = apply_edit(rs, state, [Op.put("NoScreen", Interval.closed(4 * k, 4 * k + 1))], USER)
+        self.assertEqual(len(state.history.touching(Region.of(Interval.closed(400, 402)))), 1)
+        self.assertEqual(len(state.history), 3000)
+
+    def test_a_window_stops_past_what_repeats(self):
+        """It differs forever on what repeats: the window gives up, it does not double on."""
+        rs = parse_rules(["A → B or C", "C → no B 1 unit on the right"])
+        tail = Region(0, 135, IntervalSet(), right=IntervalSet.of(Interval.closed_open(0, 15)), pr=F(135))
+        state = apply_edit(rs, LineState.empty(), [Op.put("A", tail)], GEN)
+        real, widest = resolve._grown, []
+
+        def noted(rs, line, where, compute, *a):
+            def seen(w):
+                widest.append(w.sup())
+                return compute(w)
+            return real(rs, line, where, seen, *a)
+
+        with mock.patch.object(resolve, "_grown", noted):
+            for x in (140, 275):
+                state = apply_edit(rs, state, [Op.put_no("B", Interval.point(x))], GEN)
+        self.assertLess(max(widest), 2000)
 
     def test_more_choices_than_nested_calls(self):
         rs = parse_rules(["A → B or C", "C → no B 1 unit on the right"])

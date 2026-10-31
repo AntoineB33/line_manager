@@ -1,10 +1,18 @@
-"""The 15min break of OmniApp (docs/scheduler_requirements.md of OmniApp) with the now
-line's 3 modes. One unit is one minute, and the chip is the now line.
+"""The 15min break of OmniApp (docs/scheduler_requirements.md of OmniApp), with the now
+line's 3 modes given by the state of each device. One unit is one minute, and the chip
+is the now line.
 
 The line has OmniApp's periods only: Break15, NoScreen, NoComputerUnlocked,
 NoPhoneUnlocked, NotOnComputer, NotOnPhone. Its element rules are the relations
 between them (a break comes with "no screen"; "no screen" is each device locked or not
 used), and its mode rules what each mode needs at the chip.
+
+The window has a selector for each device: unlocked (U), fake locked (F: unlocked, but
+not used, "not on a computer"/"not on a phone") or locked (L: "no computer unlocked"/
+"no phone unlocked"). A mode is their two letters, the computer's first:
+    UU UF UL FU LU   a device is unlocked: OmniApp's mode 1, no "no screen" at the chip
+    LL               OmniApp's mode 2
+    FF FL LF         OmniApp's mode 3
 
 The breaks are a constraint of the rules generator (constraints.FifteenMinuteBreaks):
 a break lasts 15 minutes, starts as early as possible, and after 15 minutes or more of
@@ -16,14 +24,10 @@ first run completes, put there by its script. Type in the command box:
                                  after its end, the next one at 450
     add NoScreen on [300, 310]   10 minutes only: nothing changes
     add NoScreen on [400, 410]   a break would start inside it: it starts at 400
-    mode 2                       the chip is in "no screen", "no computer unlocked"
-                                 and "no phone unlocked"
-    mode 3                       in "no screen", and "not on a computer" (else "not
-                                 on a phone")
-    mode 1                       no "no screen" at the chip
-Press Play to move the chip. MODES below switches to mode 2 at 200 and to mode 3 at
-300 for a while: after 15 minutes in mode 2, the next break waits until 2 hours after
-the chip leaves it.
+Press Play to move the chip, and use the selectors (or "mode FL" in the command box).
+MODES below locks both devices at 200 and has the computer fake locked and the phone
+locked at 300 for a while: after 15 minutes with both locked, the next break waits
+until 2 hours after the chip leaves it.
 
 Not expressed:
 - A break removed from the past to satisfy its rules (the exception to the frozen
@@ -49,12 +53,20 @@ RULES = [
     "NotOnComputer → no NoComputerUnlocked",
     "NotOnPhone → no NoPhoneUnlocked",
 
-    # The now line's modes.
-    "mode 1 → no NoScreen",
-    "mode 2 → NoScreen & NoComputerUnlocked & NoPhoneUnlocked",
-    "mode 3 → NoScreen & (NotOnComputer or NotOnPhone)",
+    # The now line's modes: the computer's state, then the phone's.
+    "mode UU → no NoScreen",
+    "mode UF → no NoScreen & NotOnPhone",
+    "mode UL → no NoScreen & NoPhoneUnlocked",
+    "mode FU → no NoScreen & NotOnComputer",
+    "mode LU → no NoScreen & NoComputerUnlocked",
+    "mode LL → NoScreen & NoComputerUnlocked & NoPhoneUnlocked",
+    "mode FF → NoScreen & NotOnComputer & NotOnPhone",
+    "mode FL → NoScreen & NotOnComputer & NoPhoneUnlocked",
+    "mode LF → NoScreen & NoComputerUnlocked & NotOnPhone",
 ]
-MODES = [(0, "1"), (200, "2"), (240, "1"), (300, "3"), (310, "1")]
+STATES = {"U": "unlocked", "F": "fake locked", "L": "locked"}
+SELECTORS = {"computer": STATES, "phone": STATES}
+MODES = [(0, "UU"), (200, "LL"), (240, "UU"), (300, "FL"), (310, "UU")]
 CHIP = 0
 SPEED = 1  # minutes per second
 LINE = []  # the line starts empty
@@ -67,4 +79,5 @@ PROBLEMS = [
 ]
 Q = 0.5
 
-start(rules=RULES, modes=MODES, chip=CHIP, speed=SPEED, line=LINE, problems=PROBLEMS, q=Q, constraints=CONSTRAINTS)
+start(rules=RULES, modes=MODES, chip=CHIP, speed=SPEED, line=LINE, problems=PROBLEMS, q=Q, constraints=CONSTRAINTS,
+      selectors=SELECTORS)

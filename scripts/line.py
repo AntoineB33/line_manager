@@ -25,6 +25,7 @@ from solver import EMPTY, Line, Problem, union
 USER = "user"
 GEN = "generated"
 MODE = "mode"
+FLAT = "flat"  # what the line had where the memory ran short: no edit behind it
 
 
 def as_region(x) -> Region:
@@ -71,6 +72,65 @@ class Op:
     def __str__(self) -> str:
         return {"put": f"put {self.kind} {self.value}% on {self.region}", "put_no": f"put no {self.kind} on {self.region}",
                 "take": f"take {self.kind} off {self.region}", "take_no": f"take no {self.kind} off {self.region}"}[self.action]
+
+
+BYTES_PER_INTERVAL = 320  # measured, with the rationals of its two ends
+BYTES_PER_EDIT = 1500  # with its claims
+
+
+class Edits(tuple):
+    """The user's edits, oldest first, that know which ones touch a stretch of the line, so
+    that an edit does not go through all the others. The index only grows, and is shared
+    by the histories that come from one another: an entry counts if its edit is at its
+    rank in this one."""
+    BUCKET = 64  # units of the line
+    MAX_BUCKETS = 64  # an edit over more goes through every search (`wide`)
+
+    def __new__(cls, edits=(), index=None):
+        self = super().__new__(cls, edits)
+        self.index = index if index is not None else ({}, [])
+        if index is None:
+            self._note(0)
+        return self
+
+    def __reduce__(self):
+        return Edits, (tuple(self),)
+
+    def __add__(self, more):
+        out = Edits(tuple.__add__(self, tuple(more)), self.index)
+        out._note(len(self))
+        return out
+
+    def _note(self, start: int) -> None:
+        buckets, wide = self.index
+        for i in range(start, len(self)):
+            found = self._buckets(self[i].footprint)
+            if found is None:
+                wide.append((i, self[i]))
+            else:
+                for b in found:
+                    buckets.setdefault(b, []).append((i, self[i]))
+
+    def _buckets(self, where: Region) -> set | None:
+        if where.left or where.right:
+            return None
+        out = set()
+        for iv in where.core.intervals:
+            first, last = int(iv.lo.x // self.BUCKET), int(iv.hi.x // self.BUCKET)
+            if len(out) + last - first >= self.MAX_BUCKETS:
+                return None
+            out.update(range(first, last + 1))
+        return out
+
+    def touching(self, where: Region) -> list:
+        """The edits that touch `where`, oldest first."""
+        found = self._buckets(where)
+        if found is None:
+            return [r for r in self if r.footprint & where]
+        buckets, wide = self.index
+        near = {i for b in found for i, r in buckets.get(b, ()) if i < len(self) and self[i] is r}
+        near.update(i for i, r in wide if i < len(self) and self[i] is r)
+        return [self[i] for i in sorted(near) if self[i].footprint & where]
 
 
 class Claims:
@@ -212,3 +272,11 @@ class LineState:
 
     def copy(self) -> LineState:
         return LineState(self.claims.copy(), self.line, self.history)
+
+    def memory(self) -> int:
+        """About what it takes, in bytes: each interval is kept in the line, the claims and
+        the edits it comes from."""
+        regions = [r for d in self.line.vals.values() for r in d.values()]
+        for c in (self.claims.pos, self.claims.neg, self.claims.taken):
+            regions += [r for d in c.values() for r in d.values()]
+        return BYTES_PER_INTERVAL * sum(len(r.core.intervals) for r in regions) + BYTES_PER_EDIT * len(self.history)

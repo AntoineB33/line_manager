@@ -78,7 +78,7 @@ def bf_line(rs, claims: set, neg: set):
         return False
 
     opt = closure("all")
-    vars_ = sorted({(x, oi) for oi, (lhs, _) in enumerate(ors) for x in met(lhs, opt)})
+    vars_ = sorted({(x, oi) for oi, (lhs, _) in enumerate(ors) for x in met(lhs, opt)}, key=lambda v: (abs(v[0]), v[0] < 0, v[1]))
     for combo in itertools.product(*[range(len(ors[oi][1])) for _, oi in vars_]):
         atoms = closure(dict(zip(vars_, combo)))
         if not broken(atoms):
@@ -127,29 +127,52 @@ class OrTest(unittest.TestCase):
         self.assertEqual(s.line.presence("B"), Region.of(Interval.closed(1, 2)) - Region.point(F(3, 2)))
         self.assertEqual(s.line.presence("C"), Region.point(F(3, 2)))
 
-    def test_left_to_right(self):
+    def test_closest_to_0_first(self):
         rs = parse_rules(ALTERNATE)
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(1, 2))], USER)
+        self.assertEqual(s.line.presence("B"), Region.of(Interval.closed_open(1, 2)))
+        self.assertEqual(s.line.presence("C"), Region.point(2))
+        # on the left of 0, the closest to 0 is the one on the right: -1 takes B
         s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(-2, -1))], USER)
-        self.assertEqual(s.line.presence("B"), Region.of(Interval.closed_open(-2, -1)))
-        self.assertEqual(s.line.presence("C"), Region.point(-1))
-        # -1 first takes B; then 0: the B at -1 forbids B there, so C; then 1 takes B
+        self.assertEqual(s.line.presence("B"), Region.of(Interval.open_closed(-2, -1)))
+        self.assertEqual(s.line.presence("C"), Region.point(-2))
+        # 0 first takes B; then 1, as close as -1 and on the right: the B at 0 forbids B
+        # there, so C; then -1, whose B would forbid the B at 0, so C
         s = apply_edit(rs, LineState.empty(), [Op.put("A", IntervalSet.of(Interval.point(-1), Interval.point(0), Interval.point(1)))], USER)
-        self.assertEqual(s.line.presence("B"), Region.of(IntervalSet.of(Interval.point(-1), Interval.point(1))))
-        self.assertEqual(s.line.presence("C"), Region.point(0))
-        # looking ahead: B at -1 would leave nothing for 1, where C cannot be
+        self.assertEqual(s.line.presence("B"), Region.point(0))
+        self.assertEqual(s.line.presence("C"), Region.of(IntervalSet.of(Interval.point(-1), Interval.point(1))))
+        # as close: 1 is first, and C cannot be there
         rs = parse_rules(["A → B or C", "B → D", "B → no D 2 units on the right", "X → no C"])
         s = apply_edit(rs, LineState.empty(), [Op.put("A", IntervalSet.of(Interval.point(-1), Interval.point(1))), Op.put("X", Interval.point(1))], USER)
         self.assertEqual((s.line.presence("B"), s.line.presence("C")), (Region.point(1), Region.point(-1)))
 
-    def test_unbounded_on_the_left(self):
-        """No first position: choices that act on each other are not decided; others are."""
+    def test_where_the_order_matters(self):
+        """The same element around 0 and far from it: only the first is decided from 0."""
         rs = parse_rules(ALTERNATE)
-        with self.assertRaises(Refused):
-            apply_edit(rs, LineState.empty(), [Op.put("A", Interval(-INF, F(0), False, True))], USER)
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", IntervalSet.of(Interval.point(-2), Interval.point(-1), Interval.point(0)))], USER)
+        self.assertEqual(s.line.presence("B"), Region.of(IntervalSet.of(Interval.point(-2), Interval.point(0))))
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", IntervalSet.of(Interval.point(-3), Interval.point(-2), Interval.point(-1)))], USER)
+        self.assertEqual(s.line.presence("B"), Region.of(IntervalSet.of(Interval.point(-3), Interval.point(-1))))
+
+    def test_unbounded_on_the_left(self):
+        """The closest to 0 has the first choice, so there is always one."""
+        rs = parse_rules(ALTERNATE)
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval(-INF, F(0), False, True))], USER)
+        for x in range(0, -12, -1):
+            self.assertEqual(s.line.presence("B").contains(F(x)), x % 2 == 0, x)
+            self.assertEqual(s.line.presence("C").contains(F(x)), x % 2 == 1, x)
+        far = apply_edit(rs, LineState.empty(), [Op.put("A", Interval(-INF, F(0), False, True)), Op.put("X", Interval.point(10 ** 6))], USER)
+        self.assertEqual(far.line.presence("B").contains(F(-2)), True)
         rs = parse_rules(["A → B or C", "X → no B"])
         s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval(-INF, F(0), False, True)), Op.put("X", Interval.closed(-5, -3))], USER)
         self.assertEqual(s.line.presence("C"), Region.of(Interval.closed(-5, -3)))
         self.assertEqual(s.line.presence("B"), Region.of(Interval(-INF, F(0), False, True)) - Region.of(Interval.closed(-5, -3)))
+
+    def test_both_ways_without_an_end(self):
+        rs = parse_rules(ALTERNATE)
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval(-INF, INF, False, False))], USER)
+        for x in range(-9, 10):
+            self.assertEqual(s.line.presence("B").contains(F(x)), x % 2 == 0, x)
 
     def test_infinite_element_repeats(self):
         rs = parse_rules(ALTERNATE)
@@ -197,7 +220,7 @@ class OrTest(unittest.TestCase):
                 pos[k] = {F(100): Region.of(rand_interval(rng))}
             try:
                 line = solve(rs, Problem(pos))
-            except Conflict:
+            except (Conflict, Undetermined):  # choices that act on each other left of 0, with the sweep
                 continue
             self.assertFalse(rules_hold(rs, line), [str(r) for r in rs.rules])
 
@@ -264,7 +287,7 @@ class AnchorTest(unittest.TestCase):
             pos = {k: {F(rng.choice([30, 100])): Region.of(rand_interval(rng))} for k in rng.sample("AB", rng.randint(1, 2))}
             try:
                 line = solve(rs, Problem(pos))
-            except Conflict:
+            except (Conflict, Undetermined):  # choices that act on each other left of 0, with the sweep
                 continue
             self.assertFalse(rules_hold(rs, line), [str(r) for r in rs.rules])
 
@@ -334,8 +357,8 @@ class EpsilonTest(unittest.TestCase):
         self.assertIn("contradicts", str(e.exception))
 
     def test_sweep_matches_the_lattices(self):
-        """Where both apply, the sweep gives the lattices' result, looking ahead included
-        (X forbids an operand at a few points)."""
+        """Where both apply (right of 0: the sweep goes from left to right), the sweep gives
+        the lattices' result, looking ahead included (X forbids an operand at a few points)."""
         rng = random.Random(21)
         compared = 0
         pool = POOL + ["X → no C", "X → no B"]
@@ -349,7 +372,8 @@ class EpsilonTest(unittest.TestCase):
             pos = {k: {F(100): Region.of(rand_interval(rng))} for k in rng.sample("ABCD", 2)}
             if rng.random() < 0.6:
                 pos["X"] = {F(100): Region.of(IntervalSet(Interval.point(F(rng.randint(-8, 8), 2)) for _ in range(rng.randint(1, 3))))}
-            prob = Problem(pos, {rng.choice("BCDE"): Region.of(rand_interval(rng))} if rng.random() < 0.4 else {})
+            neg = {rng.choice("BCDE"): Region.of(rand_interval(rng))} if rng.random() < 0.4 else {}
+            prob = Problem({k: {v: r.shift(40) for v, r in d.items()} for k, d in pos.items()}, {k: r.shift(40) for k, r in neg.items()})
             try:
                 want = solve(rs, prob)
             except Conflict:
@@ -360,6 +384,8 @@ class EpsilonTest(unittest.TestCase):
                 got = run_sweep(rs, prob)
             except Conflict:
                 self.assertIsNone(want, [str(r) for r in rs.rules])
+                continue
+            except Undetermined:
                 continue
             self.assertIsNotNone(want, [str(r) for r in rs.rules])
             for k in rs.choice_dependent:
@@ -492,13 +518,13 @@ ABSENT_POOL = ["A & not B → D", "A & not C → E 1 unit on the right", "B → 
 
 def bf_absent(rs, claims: set):
     """Points only, integer offsets, every "or" met where A is (as in ABSENT_POOL). The
-    line, or None: the first assignment of operands, in the order (x, "or"), whose line
+    line, or None: the first assignment of operands, the closest to 0 first, whose line
     breaks no rule. Each line is computed kind after kind (no cycle), so a kind read as
     absent is read once it is known: no assumption that choices only add consequences."""
     ors = [rs.element[i].rhs[j] for i, j in rs.or_items]
     xs = sorted({x for k, x in claims if k == "A"})
     lo, hi = int(min(x for _, x in claims)) - 3, int(max(x for _, x in claims)) + 3
-    anchors = sorted(((x, n) for x in xs for n in range(len(ors))))
+    anchors = sorted(((x, n) for x in xs for n in range(len(ors))), key=lambda v: (abs(v[0]), v[0] < 0, v[1]))
     for combo in itertools.product(*[range(len(ors[n].options)) for _, n in anchors]):
         took = dict(zip(anchors, combo))
         have: set = set(claims)
@@ -955,17 +981,15 @@ class ResolutionTest(unittest.TestCase):
         self.assertEqual(sorted(s.line.kinds()), ["B"])  # two edits: A, the older, gives way
         self.assertFalse(rules_hold(rs, s.line, s.claims))
 
-    def test_undecided_with_the_line_gives_way(self):
-        """Y alone is decided, A alone too, but with both the "or" acts on an element with
-        no left end, where nothing decides its choices: the edit is not refused because of
-        the line, the older A gives way. The same in one edit is the edit's own problem."""
+    def test_no_left_end_is_decided_from_0(self):
+        """With both, the "or" acts on an element with no left end: 0 chooses first."""
         rs = parse_rules(["A & Y → B or C", "B → D", "B → no D 1 unit on the right"])
         left = Interval(-INF, 0, False, True)
         s = apply_edit(rs, LineState.empty(), [Op.put("A", left)], USER)
         s = apply_edit(rs, s, [Op.put("Y", left)], USER)
-        self.assertEqual(s.line.kinds(), ["Y"])
-        with self.assertRaises(Refused):
-            apply_edit(rs, LineState.empty(), [Op.put("A", left), Op.put("Y", left)], USER)
+        self.assertEqual(s.line.kinds(), ["A", "B", "C", "D", "Y"])
+        self.assertTrue(s.line.presence("B").contains(F(0)))
+        self.assertTrue(s.line.presence("C").contains(F(-1)))
 
     def test_small_edit_on_a_long_element(self):
         rs = parse_rules(ALTERNATE + ["X → no C", "X → no B"])

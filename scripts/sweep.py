@@ -262,6 +262,9 @@ class Sweep:
         if P == -INF:
             raise Undetermined("an 'or' acts on an element unbounded on the left: with no first position, nothing decides "
                                "its choices")
+        if P is not None and P < 0 and not self.rs.pointwise:
+            raise Undetermined("choices that act on each other on the left of 0: this solver only goes from left to "
+                               "right, and the closest to 0 must choose first")
         self.memo, self.failed, self.dead, self.stuck, self.first = {}, {}, [], -INF, P
         self._grid()
         if P is None:  # no "or" is met anywhere

@@ -118,6 +118,164 @@ class OneSolveTest(unittest.TestCase):
         self.assertLessEqual(count[0], 2)  # the edit alone, and the line: not one per edit
 
 
+def long_way(rs, history):
+    with mock.patch.object(rs, "pointwise", False), mock.patch.object(resolve, "_near", lambda *a: None), \
+            mock.patch.object(resolve, "_local_line", lambda *a: None):
+        return result(rs, history)
+
+
+class OriginTest(unittest.TestCase):
+    """Where 0 is means nothing."""
+    POOL = ["A → B or C", "A → C or B", "B → no C", "C → D", "D → no B", "C → no B 1 unit on the right",
+            "B → no B 1 unit on the right", "A & not B → D", "X & not A → B", "A → D 2 units on the right",
+            "A → B on [0, 1] of l", "C → no D 1 unit on the left", "A → C or D 1 unit on the right"]
+
+    def test_the_same_line_elsewhere(self):
+        rng = random.Random(61)
+        points = [F(k, 4) for k in range(-40, 120)]
+        checked = 0
+        for _ in range(120):
+            try:
+                rs = parse_rules(rng.sample(self.POOL, rng.randint(2, 5)))
+            except RuleError:
+                continue
+            spans = [(rng.choice([Op.put, Op.put, Op.put_no, Op.take]), rng.choice("ABCDX"), rng.randint(0, 10), rng.randint(0, 4))
+                     for _ in range(rng.randint(1, 4))]
+
+            def at(shift):
+                state, refused = LineState.empty(), []
+                for op, k, a, n in spans:
+                    try:
+                        state = apply_edit(rs, state, [op(k, Interval.closed(a + shift, a + n + shift))], USER)
+                    except Refused:
+                        refused.append((k, a))
+                return refused, sorted((k, [x for x in points if state.line.presence(k).contains(x + shift)]) for k in state.line.vals)
+
+            self.assertEqual(at(0), at(10 ** 9), [str(r) for r in rs.rules])
+            checked += 1
+        self.assertGreater(checked, 60)
+
+    def test_the_time_does_not_depend_on_the_position(self):
+        rs = parse_rules(["A → B or C", "C → no B 1 unit on the right"])
+        real, sizes = solver.Lattice.__init__, []
+
+        def counted(self, lp, r):
+            real(self, lp, r)
+            sizes.append(self.kmax - self.kmin)
+
+        with mock.patch.object(solver.Lattice, "__init__", counted):
+            apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(10 ** 9, 10 ** 9 + 10))], USER)
+        self.assertLess(max(sizes), 100)
+
+
+class NearTest(unittest.TestCase):
+    """With distances, an edit that only adds is solved on a window around it."""
+    POOL = ["A → B or C", "A → C or B", "C → no B 1 unit on the right", "B → no B 1 unit on the right", "B → no C", "C → D",
+            "A → D 2 units on the right", "C → no D 1 unit on the left", "A → C or D 1 unit on the right", "D → no B",
+            "B → D 3 units on the left", "A → B on [0, 1] of p"]
+
+    def test_the_same_as_the_whole_line(self):
+        rng = random.Random(67)
+        checked = 0
+        for _ in range(200):
+            try:
+                rs = parse_rules(rng.sample(self.POOL, rng.randint(2, 6)))
+            except RuleError:
+                continue
+            if rs.pointwise:
+                continue  # PointwiseTest
+            history = []
+            for _ in range(rng.randint(3, 7)):
+                a = rng.randint(-20, 90)
+                iv = Interval.closed(a, a + rng.randint(0, 25))
+                history.append([rng.choice([Op.put, Op.put, Op.put, Op.put_no, Op.put_no, Op.take])(rng.choice("ABCD"), iv)])
+            self.assertEqual(result(rs, history), long_way(rs, history), ([str(r) for r in rs.rules], [str(o) for o in map(lambda h: h[0], history)]))
+            checked += 1
+        self.assertGreater(checked, 100)
+
+    def test_it_does_not_depend_on_what_is_elsewhere(self):
+        rs = parse_rules(["A → B or C", "C → no B 1 unit on the right"])
+        state = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(4 * k, 4 * k + 1)) for k in range(100)], USER)
+        seen, real = [], resolve.solve
+
+        def counted(rs, prob):
+            seen.append(sum(len(r.core.intervals) for d in prob.pos.values() for r in d.values()))
+            return real(rs, prob)
+
+        with mock.patch.object(resolve, "solve", counted):
+            after = apply_edit(rs, state, [Op.put("A", Interval.closed(2, 3))], USER)
+        self.assertLess(max(seen), 30)
+        self.assertEqual(after.line, solver.solve(rs, after.claims.problem()))
+
+    def test_a_chain_that_goes_far(self):
+        """The edit changes every position of A after it: the window has to give up."""
+        rs = parse_rules(["A → B or C", "C → no B 1 unit on the right"])
+        state = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(0, 1000))], USER)
+        after = apply_edit(rs, state, [Op.put_no("B", Interval.point(3))], USER)
+        self.assertTrue(after.line.presence("C").contains(1000))
+
+    def test_taking_away_goes_the_long_way(self):
+        """A "no B" gone can change a choice far on the left, through a chain the same
+        near the edit."""
+        rs = parse_rules(["A → B or C", "C → no B 1 unit on the right"])
+        state = LineState.empty()
+        for ops in ([Op.put("A", Interval.closed(0, 200))], [Op.put_no("B", Interval.point(3))], [Op.take_no("B", Interval.point(3))]):
+            state = apply_edit(rs, state, ops, USER)
+        self.assertEqual(state.line.presence("B"), Region.of(Interval.closed(0, 200)))
+
+
+class PointwiseTest(unittest.TestCase):
+    """No position acts on another one, even with "not": an edit computes its positions."""
+    POOL = ["X & not A → B", "not C & D → no E", "A & not B → C", "A → B or C", "B → no C", "A 0% & X → D", "C → D",
+            "X & not D → no A", "A → B", "E → no X"]
+
+    def test_each_position_as_if_it_were_alone(self):
+        """No more than necessary is lost: the long way on one position is exact, and
+        with the others it can remove whole elements, which is allowed but not needed."""
+        rng = random.Random(71)
+        checked = 0
+        for _ in range(70):
+            try:
+                rs = parse_rules(rng.sample(self.POOL, rng.randint(2, 5)))
+            except RuleError:
+                continue
+            self.assertTrue(rs.pointwise)
+            state, kept = LineState.empty(), []
+            for _ in range(rng.randint(3, 7)):
+                a = rng.randint(0, 14)
+                span = (rng.choice([Op.put, Op.put, Op.put, Op.put_no, Op.take, Op.take_no]), rng.choice("ABCDEX"), a, a + rng.randint(0, 6))
+                try:
+                    state = apply_edit(rs, state, [span[0](span[1], Interval.closed(a, span[3]))], USER)
+                    kept.append(span)
+                except Refused:
+                    pass
+            for x in (F(k, 2) for k in range(0, 42)):
+                alone = LineState.empty()
+                for op, k, lo, hi in kept:
+                    if lo <= x <= hi:
+                        with mock.patch.object(rs, "pointwise", False), mock.patch.object(resolve, "_local_line", lambda *a: None):
+                            alone = apply_edit(rs, alone, [op(k, Interval.point(x))], USER)
+                self.assertEqual({k for k in state.line.vals if state.line.presence(k).contains(x)},
+                                 {k for k in alone.line.vals if alone.line.presence(k).contains(x)}, ([str(r) for r in rs.rules], kept, x))
+            checked += 1
+        self.assertGreater(checked, 40)
+
+    def test_one_solve_per_edit_there_only(self):
+        rs = parse_rules(["X & not A → B"])
+        state = LineState.empty()
+        for k in range(30):
+            state = apply_edit(rs, state, [Op.put("A", Interval.closed(40 * k, 40 * k + 10))], USER)
+        real, count = resolve.solve, [0]
+
+        def counted(*a, **k):
+            count[0] += 1
+            return real(*a, **k)
+
+        with mock.patch.object(resolve, "solve", counted):
+            apply_edit(rs, state, [Op.put("A", Interval.closed(5000, 5010))], USER)
+        self.assertLessEqual(count[0], 3)
+
+
 class LocalTest(unittest.TestCase):
     """A position only acts on itself: an edit solves its own positions only."""
 
@@ -159,7 +317,7 @@ class LocalTest(unittest.TestCase):
             rng2 = random.Random(1)
             fast = go()
             rng2 = random.Random(1)
-            with mock.patch.object(resolve, "_local_line", lambda *a: None):
+            with mock.patch.object(resolve, "_local_line", lambda *a: None):  # PointwiseTest checks the rest
                 slow = go()
             self.assertEqual(fast, slow, ([str(r) for r in rs.rules], [[str(o) for o in ops] for ops in history]))
             checked += 1

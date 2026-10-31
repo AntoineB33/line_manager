@@ -68,7 +68,6 @@ Edits of the user (several in one edit: separate them with ";")
   <where> is "at x", "on <interval>", "on <interval> U <interval> ...", or
   "everywhere"; an interval is [a, b], (a, b), [a, b) or (a, b], with fractions,
   decimals, -inf and inf, e.g.  on [0, 1/2) U (3, inf)
-  clear                    cancel every edit (the rules stay)
 The modes (given externally: by MODES in the script, or by you)
   mode <name>              the mode is <name> from the chip on (the mode buttons do it too),
                            until the next transition MODES plans
@@ -81,7 +80,7 @@ Information
 
 KIND = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
 # the commands that change the line, the mode or the rules: refused while the chip is paused
-EDITS = {"add", "no", "remove", "clear", "mode", "rule", "unrule"}
+EDITS = {"add", "no", "remove", "mode", "rule", "unrule"}
 PAUSED = "the chip is paused: press Play to edit"
 RESERVED = {"no", "at", "on", "everywhere", "mode"}
 
@@ -361,7 +360,7 @@ class Session:
         if word in ("add", "no", "remove"):
             return self.edit(cmd)
         handler = {"help": lambda: HELP, "rule": lambda: self.add_rule(rest), "rules": self.show_rules,
-                   "unrule": lambda: self.remove_rule(rest), "clear": self.clear,
+                   "unrule": lambda: self.remove_rule(rest),
                    "mode": lambda: self.set_mode(rest),
                    "line": lambda: str(self.sim.state.line), "claims": lambda: str(self.sim.state.claims),
                    "history": self.show_history, "status": self.status}.get(word)
@@ -421,11 +420,6 @@ class Session:
             return f"refused: {why}"
         self.edits.append(text)
         return f"done: {text}"
-
-    def clear(self) -> str:
-        self.sim.clear_now()
-        self.edits = []
-        return "no edit left"
 
     def show_rules(self) -> str:
         return "\n".join(f"{i}. {r}" for i, r in enumerate(self.rs.rules, 1)) or "no rule"

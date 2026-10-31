@@ -43,6 +43,7 @@ exactly. For the others, two solvers:
 
 from __future__ import annotations
 
+import bisect
 import itertools
 import math
 import sys
@@ -958,9 +959,9 @@ class Lattice:
 
     def __init__(self, lp: LatticeProblem, r: Fraction):
         self.lp, self.r = lp, r
-        g, T = lp.g, lp.T
-        self.kmin = -int((T + r) // g)
-        self.kmax = int((T - r) // g)
+        g = lp.g
+        self.kmin = -int((r - lp.lo) // g)
+        self.kmax = int((lp.hi - r) // g)
         self.R2 = 3 * lp.spec.rho + 1
         self._pats = lp.patterns(r, self.kmin - 1, self.kmax + 1)
 
@@ -1061,11 +1062,11 @@ class LatticeProblem:
         self.mirror_spec = Spec(kinds, kinds_in, self.g, lrules, mirror=True, cyclic=cyclic)
         self.W = self.spec.rho + 1  # history a ray state keeps
         all_regions = [r for d in regions.values() for v in d.values() for r in (v.values() if isinstance(v, dict) else [v])]
-        bounds = [Fraction(0)]
+        bounds = []
         self.residues = {ZERO, Pos(self.g / 2)}
         for reg in all_regions:
-            if not reg:
-                continue
+            if not reg or reg.is_everything():
+                continue  # the same at every position: it has no bounds
             bounds += [reg.lo.x, reg.hi.x]
             for iv in reg.core.intervals:
                 for e in (iv.lo, iv.hi):
@@ -1081,10 +1082,13 @@ class LatticeProblem:
                         for e in (iv.lo, iv.hi):
                             self.residues.add((e + base) % self.g)
             self.residues |= {reg.lo % self.g, reg.hi % self.g}
-        self.T = max(abs(b) for b in bounds) + (2 * self.W + 2 * self.spec.rho + 4) * self.g
+        # the window is around the data: where 0 is means nothing
+        margin = (2 * self.W + 2 * self.spec.rho + 4) * self.g
+        self.lo, self.hi = min(bounds, default=Fraction(0)) - margin, max(bounds, default=Fraction(0)) + margin
         # the intervals of each region on the window that matters
-        a, b = -self.T - 4 * self.g, self.T + 4 * self.g
+        a, b = self.lo - 4 * self.g, self.hi + 4 * self.g
         self._ivs = {id(reg): reg.on(a, b).intervals for reg in all_regions}
+        self._los = {i: [iv.lo for iv in ivs] for i, ivs in self._ivs.items()}
 
     @staticmethod
     def _free_step(regions: dict) -> Fraction:
@@ -1123,7 +1127,16 @@ class LatticeProblem:
         g, n = self.g, k1 - k0 + 1
 
         def where(reg):
-            for iv in self._ivs[id(reg)]:
+            ivs = self._ivs[id(reg)]
+            if len(ivs) > n:  # few positions, many intervals: each position finds its own
+                los = self._los[id(reg)]
+                for i in range(n):
+                    x = r + (k0 + i) * g
+                    j = bisect.bisect_right(los, x) - 1
+                    if j >= 0 and ivs[j].contains(x):
+                        yield i
+                return
+            for iv in ivs:
                 a = max(_first_k(iv.lo, r, g, k0), k0)
                 b = min(_last_k(iv.hi, r, g, k1), k1)
                 yield from range(a - k0, b - k0 + 1)

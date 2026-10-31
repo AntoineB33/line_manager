@@ -268,8 +268,10 @@ simply takes its first valid operand (`test_unbounded_on_the_left`).
   problem. Each piece is solved once.
   - This is how A on [1, 2] is decided "one position after the other" on a
     continuum.
-- **The core.** On a lattice, the points with |x| ≤ T are decided by an exact
-  depth-first search from left to right. Pruning is sound because violations are
+- **The core.** On a lattice, the points of a window around the data (from its first
+  bound to its last one, plus a margin: where 0 is means nothing, and what is the same
+  at every position has no bounds) are decided by an exact depth-first search from
+  left to right. Pruning is sound because violations are
   monotone in the elements present.
   - When a left side reads a chosen kind as absent, a choice can also remove a
     consequence. Atoms are then true, false or unknown. A missing choice, or an
@@ -277,7 +279,7 @@ simply takes its first valid operand (`test_unbounded_on_the_left`).
     So pruning stays sound without monotonicity. The left ray is then not shown
     independent: an "or" acting on an element unbounded on the left is
     `Undetermined` there.
-- **The rays.** Beyond T the problem is translation-invariant.
+- **The rays.** Beyond the window the problem is translation-invariant.
   - A violation involves at most ρ + 1 consecutive points, so the choices form a
     finite automaton whose states are the last ρ + 1 choices.
   - A state is *good* if an infinite valid path leaves it.
@@ -649,7 +651,19 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     left sides only read presence (`RuleSet.local`), an edit changes nothing outside its own
     positions: only those are solved, and the rest of the line is kept
     (`resolve._local_line`), as for the constraints' edits. If something has to give way
-    there, or an older edit gave way before (`Claims.clean`), every edit is computed again.
+    there, or an older edit gave way before (`Claims.clean`), the next case applies.
+  - **Edits computed again on their positions.** When a position only acts on itself,
+    whatever the left sides read, `not` included (`RuleSet.pointwise`), only the older edits
+    that touch the positions of the edit are computed again, on those positions
+    (`resolve._pointwise`). What gives way there loses only those positions.
+  - **Edits solved on a window.** With distances, an edit that only adds is solved on a
+    window around it, and kept if the window gives the old line on a zone on each side, as
+    long as a chain of rules (`resolve._near`; the window grows three times at most). The
+    lines the edit allows were all allowed before, so what stays possible on its left stays
+    chosen, and beyond the zones nothing can see the difference. An edit that takes
+    something away goes the long way: it can change a choice anywhere on its left, through a
+    chain that looks the same from the window. So do rules with `not` or left edges and
+    distances, cycles, and states where an older edit gave way.
   - **Elements nothing reads.** An edit of kinds no rule mentions solves nothing
     (`resolve._apart`): only their intervals are computed, from the edits that have them.
     If no constraint or problem reads them either, it needs no process, and the generator's

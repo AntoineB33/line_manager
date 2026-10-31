@@ -302,6 +302,10 @@ class Region:
     def __hash__(self) -> int:
         return 0
 
+    def is_everything(self) -> bool:
+        """Every position of the line."""
+        return self.left == _window(ZERO, self.pl) and self.right == _window(ZERO, self.pr) and self.core == _window(self.lo, self.hi)
+
     def _compact(self) -> Region:
         """Shrink the core where it is empty next to an empty tail, and where its ends
         repeat the tails (keeps sizes small)."""
@@ -310,11 +314,16 @@ class Region:
             h = _last(self.core, self.lo)
             hi = h if h > lo else lo
         else:
+            if self.core and self.right == _window(ZERO, self.pr) and self.core.intervals[-1].hi + EPS >= hi:
+                # a full tail after a full end of the core: at once, however long it is
+                hi = hi - ((hi - max(self.core.intervals[-1].lo, lo)) // self.pr) * self.pr
             while hi - self.pr >= lo and (self.core & _window(hi - self.pr, hi)).shift(self.pr - hi) == self.right:
                 hi = hi - self.pr
         if not self.left:
             lo = (self.core.inf() if self.core.inf() < hi else hi) if self.core else hi
         else:
+            if self.core and self.left == _window(ZERO, self.pl) and self.core.intervals[0].lo <= lo:
+                lo = lo + ((min(self.core.intervals[0].hi + EPS, hi) - lo) // self.pl) * self.pl
             while lo + self.pl <= hi and (self.core & _window(lo, lo + self.pl)).shift(-lo) == self.left:
                 lo = lo + self.pl
         if lo == self.lo and hi == self.hi:

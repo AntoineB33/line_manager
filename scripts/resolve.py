@@ -123,7 +123,103 @@ def apply_edit(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> Line
         line = _local_line(rs, state.line, claims, rec.footprint)
         if line is not None:
             return LineState(claims, line, state.history + (rec,))
+    after = _pointwise(rs, state, rec) if rs.pointwise else _near(rs, state, rec, kinds)
+    if after is not None:
+        return after
     return rebuild(rs, state.history + (rec,), owned_by_others(state.claims), state.line)
+
+
+def _pointwise(rs: RuleSet, state: LineState, rec: Record) -> LineState:
+    """The state when no position acts on another one (`RuleSet.pointwise`): the edits are
+    computed again on the positions of this one only, the rest stays."""
+    where = rec.footprint
+    history = []
+    for r in state.history + (rec,):
+        if r.footprint & where:
+            clear = {k: v & where for k, v in r.clear.items() if v & where}
+            history.append(Record(r.claims.on(where), clear, r.footprint & where))
+    part = rebuild(rs, tuple(history), owned_by_others(state.claims).on(where), state.line)
+    claims = _outside(state.claims, where).merged(part.claims)
+    claims.clean = part.claims.clean and (state.claims.clean or not state.history)
+    return LineState(claims, _spliced(state.line, part.line, where), state.history + (rec,))
+
+
+def _near(rs: RuleSet, state: LineState, rec: Record, kinds: set) -> LineState | None:
+    """The state when the rules have distances, solved on a window around the edit, or
+    None for the long way. An exact window needs (`RuleSet.monotone`, no cycle, one state
+    where nothing gave way):
+    - an edit that only adds: the lines it allows were all allowed before, so whatever
+      stays possible on the left of it stays chosen. An edit that takes something away
+      can change a choice anywhere on the left through a chain that looks the same from
+      the window: it goes the long way;
+    - two zones as long as a chain of rules, one on each side, where the window gives the
+      old line. What is outside the zones then cannot see the difference, and each choice
+      inside is the first one possible.
+    The window starts a chain's length further out, for what is missing beyond it."""
+    where = rec.footprint
+    if rs.cyclic or not rs.monotone or not state.claims.clean or where.left or where.right or not where.core:
+        return None
+    claims = _claims_of(state, rec, kinds)
+    if not _only_adds(state.claims.on(where), claims.on(where)):
+        return None
+    step = (len(rs.order) + 2) * max(rs.reach, 1)
+    lo, hi = where.core.intervals[0].lo.x, where.core.intervals[-1].hi.x
+    for margin in (4 * step, 16 * step, 64 * step):
+        a, b = lo - margin, hi + margin
+        try:
+            part = solve(rs, claims.on(Region.of(Interval.closed(a, b))).problem())
+        except (Conflict, Undetermined, IncompatiblePeriods):
+            return None
+        zones = Region.of(Interval.closed(a + step, a + 2 * step)) | Region.of(Interval.closed(b - 2 * step, b - step))
+        if _on(state.line, zones) == _on(part, zones):
+            inner = Region.of(Interval.closed(a + step, b - step))
+            return LineState(claims, _spliced(state.line, part, inner), state.history + (rec,))
+    return None
+
+
+def _only_adds(before: Claims, after: Claims) -> bool:
+    """All that was claimed is still claimed, the same."""
+    for mine, theirs in ((before.pos, after.pos), (before.neg, after.neg), (before.taken, after.taken)):
+        for k, d in mine.items():
+            if any(r - theirs.get(k, {}).get(key, EMPTY) for key, r in d.items()):
+                return False
+    return True
+
+
+def _on(line: Line, where: Region) -> dict:
+    """The line on `where`, to compare."""
+    out = {}
+    for k, d in line.vals.items():
+        kept = {v: r & where for v, r in d.items() if r & where}
+        if kept:
+            out[k] = kept
+    return out
+
+
+def _outside(c: Claims, where: Region) -> Claims:
+    out = Claims()
+    for mine, theirs in ((out.pos, c.pos), (out.neg, c.neg), (out.taken, c.taken)):
+        for k, d in theirs.items():
+            _keep(mine, k, d, where)
+    return out
+
+
+def _spliced(line: Line, part: Line, where: Region) -> Line:
+    """The line with `part` on `where`."""
+    vals = {}
+    for k in set(line.vals) | set(part.vals):
+        d = {}
+        for v, r in line.vals.get(k, {}).items():
+            r = r - where
+            if r:
+                d[v] = r
+        for v, r in part.vals.get(k, {}).items():
+            r = r & where
+            if r:
+                d[v] = d[v] | r if v in d else r
+        if d:
+            vals[k] = d
+    return Line(vals)
 
 
 @dataclass
@@ -175,20 +271,7 @@ def _local_line(rs: RuleSet, line: Line, claims: Claims, where: Region, temp: di
         part = solve(rs, claims.on(where).problem({k: r & where for k, r in (temp or {}).items()}))
     except (Conflict, Undetermined, IncompatiblePeriods):
         return None
-    vals = {}
-    for k in set(line.vals) | set(part.vals):
-        d = {}
-        for v, r in line.vals.get(k, {}).items():
-            r = r - where
-            if r:
-                d[v] = r
-        for v, r in part.vals.get(k, {}).items():
-            r = r & where
-            if r:
-                d[v] = d[v] | r if v in d else r
-        if d:
-            vals[k] = d
-    return Line(vals)
+    return _spliced(line, part, where)
 
 
 def _claims_of(state: LineState, rec: Record, kinds: set) -> Claims:

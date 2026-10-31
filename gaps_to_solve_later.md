@@ -20,3 +20,8 @@ result is the best of those tried, not a proven optimum of the problem.
 ## The probability finder's benefit is not measured
 Nothing measures whether it makes the generator more performant at a low allocated
 resources quantity. It only exists and is used.
+
+## A wrong line: a rule cycle through an "or" over a repeating element
+With `A → D or E` and `E → A`, the sweep (second solver) lets A and E hold each other up
+with nothing placing them: A claimed on [135, 150) comes out on [135, 202].
+See `test_a_cycle_over_what_repeats`, marked as an expected failure.

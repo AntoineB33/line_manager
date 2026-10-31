@@ -27,7 +27,7 @@ takes time: a call to run it only records it (`request`), the script in place go
 and each script of the run replaces it when it is found (`publish`, and `complete` for
 the last, at that time), unless a newer call was recorded meanwhile (the older run is
 then cancelled).
-`edit_now`, `clear_now` and `set_generator` act at
+`edit_now` and `set_generator` act at
 the current time, as a user edit at that instant would; `modes_changed` after the
 modes from the chip on were changed (ModeTimeline.replace).
 """
@@ -432,10 +432,6 @@ class Simulation:
         """The modes changed from the chip's position on (given externally): revealed
         now, and the script's triggers see them."""
         self._after_edits(self.t, False, False, "user edit")
-
-    def clear_now(self) -> None:
-        """Cancel all the user's edits."""
-        self._replace(())
 
     def set_generator(self, generator: RulesGenerator) -> None:
         """New rules or problems: the line is computed again from the user's edits, and the

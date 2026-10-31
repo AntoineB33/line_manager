@@ -58,7 +58,16 @@ user edit: remove B at 1.5
 Now A at [1, 2], B at [1, 1.5)U(1.5, 2] and C at 1.5.
 
 
-The line is computed from all the user's edits, kept in the order they were made. Each edit adds or removes elements on intervals. Where edits contradict each other, directly or through the rules, the newer one wins. An older edit gives way only where, and as long as, it contradicts newer ones: when that contradiction disappears, it applies again.
+The line is computed from all the user's edits, kept in the order they were made.
+Where edits contradict each other, directly or through the rules, the newer one wins.
+An older edit gives way only where, and as long as, it contradicts newer ones: when that contradiction disappears, it applies again.
+When a change on the line is due to element rules triggered by a user edit and has no other reasons to be there, then when this reason disappears, the change is removed. For example:
+"A → B"
+line empty
+user edit 1: add A at 1
+user edit 2: remove A at 1
+Now the line is empty again.
+
 
 Every calculation, except for the run of the rules generator, must be considered instantaneous for the state of the line. If the user does an edit that takes time to compute, then when done the state of the line is shown as if the edit was instantaneous. During the calculation, the display of the line doesn't stop and continues to update smoothly, then when it is complete it instantly updates as if the calculation happened instantly. For example, the user changes a mode that must cut the element the chip was pushing forward, but it takes time. So the chip continues to push the element forward, and when the calculation is done, the element has a hole behind the chip as if it started to cut the element at the chip's position when the mode was changed.
 For the rules generator however, when a new generated script is published, it is applied and doesn't revert the display. When the rules generator starts, it takes a snapshot of the current state of the line and the chip's position, and uses it to compute the generated script. That means that if it returns a new script, it could be that the current state already disrupts the new plans so much, that the new script instantly triggers a new run.

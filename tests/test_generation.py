@@ -8,7 +8,7 @@ from fractions import Fraction as F
 from helpers import check_log, rand_interval, rules_hold
 from constraints import FifteenMinuteBreaks, KeepOn
 from generator import PresenceRatioProblem, RulesGenerator, _Context, budget, rerun_distance
-from intervals import INF, Interval, IntervalSet, Pos
+from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import GEN, MODE, USER, LineState, Op
 from modes import ModeTimeline
 from probability import ProbabilityFinder
@@ -117,7 +117,7 @@ class ModeRulesTest(unittest.TestCase):
         rs = parse_rules(self.RULES)
         state = apply_edit(rs, LineState.empty(), [Op.put("D", Interval.open_closed(0, 20))], GEN)
         sim, log = self.simulate(rs, state)
-        self.assertEqual(sim.state.line.presence("D"), Region.of(IntervalSet.of(Interval.closed_open(0, 5), Interval.closed_open(7, 12), Interval.closed(15, 20))))
+        self.assertEqual(sim.state.line.presence("D"), Region.of(IntervalSet.of(Interval.closed_open(0, 5), Interval.closed_open(7, 12), Interval.open_closed(15, 20))))  # (mode 2 at the chip, 15)
         self.assertTrue(any(ch.source == "mode" for ch in log.changes))
 
     def test_users_elements_win(self):
@@ -183,10 +183,10 @@ class ModeRulesTest(unittest.TestCase):
             sim.advance(F(i, 2))
             st = sim._stretch[0]
             plan = st.plan
-            solved = plan.mr.with_run(plan.state0, plan.decision, Region.of(_iv(plan.a0, Pos(F(i, 2)) - EPS)))
+            solved = plan.mr.with_run(plan.state0, plan.decision, Region.of(_iv(plan.a0, Pos(F(i, 2)))))
             self.assertTrue(_same_line(sim.state.line, solved.line), i)
             self.assertEqual(sim.state.line.presence("S") & Region.of(Interval.closed(0, F(i, 2) + 5)),
-                             Region.of(Interval.point(F(i, 2))))
+                             Region.point(Pos(F(i, 2)) + EPS))  # (B, that S brings, is ruled out at the chip)
             moving |= any(line is not None for _, _, line, _ in plan.pieces)
         self.assertEqual(plan.m, 0)  # one run, decided at the start
         self.assertEqual(len(sim.log.runs), 1)  # compiled by the generator's first run
@@ -234,7 +234,7 @@ class ModeRulesTest(unittest.TestCase):
         self.assertIs(sim.state, before)
         self.assertEqual((sim.t, len(sim.log.changes), len(sim.log.runs), sim.started), (0, changes, 0, False))
         sim.advance(F(3))
-        self.assertEqual(sim.state.line.presence("S") & Region.of(Interval.closed(0, 8)), Region.of(Interval.point(3)))
+        self.assertEqual(sim.state.line.presence("S") & Region.of(Interval.closed(0, 8)), Region.point(Pos(3) + EPS))
 
     def test_only_at_the_chip_point(self):
         """The generated X on [2, 3] is in D's way: as the chip goes through it, X goes at
@@ -345,7 +345,7 @@ class FifteenMinuteBreaksTest(unittest.TestCase):
         """It holds whatever the runs had time for: the script cuts the break at the chip
         and drags a new one."""
         b = self._back_to_mode_1(["Break15 → NoScreen", "mode 1 → no NoScreen", "mode 2 → NoScreen"])
-        self.assertEqual(b, Region.of(IntervalSet.of(Interval.closed_open(130, 140), Interval.closed(160, 175))))
+        self.assertEqual(b, Region.of(IntervalSet.of(Interval.closed_open(130, 140), Interval._mk(Pos(160) + EPS, Pos(175) + EPS))))
 
     def test_back_to_mode_1_inside_a_break_all_the_rules(self):
         """The same with the rules of UI/examples/fifteen_minute_break_modes.py."""
@@ -354,7 +354,7 @@ class FifteenMinuteBreaksTest(unittest.TestCase):
                                   "NotOnComputer → no NoComputerUnlocked", "NotOnPhone → no NoPhoneUnlocked",
                                   "mode 1 → no NoScreen", "mode 2 → NoScreen & NoComputerUnlocked & NoPhoneUnlocked",
                                   "mode 3 → NoScreen & (NotOnComputer or NotOnPhone)"])
-        self.assertEqual(b, Region.of(IntervalSet.of(Interval.closed_open(130, 140), Interval.closed(160, 175))))
+        self.assertEqual(b, Region.of(IntervalSet.of(Interval.closed_open(130, 140), Interval._mk(Pos(160) + EPS, Pos(175) + EPS))))
 
 
 class ResourcesTest(unittest.TestCase):

@@ -205,6 +205,7 @@ class Simulation:
     def __init__(self, state: LineState, generator: RulesGenerator, chip: Chip, modes: ModeTimeline, user_edits: list[UserEdit] = ()) -> None:
         if modes.start != chip.position(Fraction(0)):
             raise ValueError("modes start where the chip starts")
+        self._settled = None  # (position, mode, script, the state before, after): see `_settle`
         self.state = state
         self.gen = generator
         self.rules = generator.rules
@@ -240,12 +241,12 @@ class Simulation:
         return (self.state, len(self.log.changes), self.log.refused_count, self.log.run_count, self.script,
                 self.revealed, self._since_install, list(self._was_true), list(self._fired), self.t, self.started,
                 len(self.chip.points), self.chip.points[-1], self._stretch, self.request, self._shift, self.definitive,
-                self.flat_to, self.gone_to)
+                self.flat_to, self.gone_to, self._settled)
 
     def restore(self, snap: tuple) -> None:
         (self.state, nc, nr, nu, self.script, self.revealed, self._since_install, self._was_true, self._fired,
          self.t, self.started, npts, last, self._stretch, self.request, self._shift, self.definitive,
-         self.flat_to, self.gone_to) = snap
+         self.flat_to, self.gone_to, self._settled) = snap
         del self.log.changes[nc:], self.log.refused[max(0, nr - self.log.refused_gone):], self.log.runs[max(0, nu - self.log.runs_gone):]
         self.chip.points[npts - 1:] = [last]  # (a step of the same speed moves the last point)
 
@@ -591,18 +592,46 @@ class Simulation:
                 if rerun:
                     break
             if not rerun:
+                self._settle(t)
                 return
             self._install(t, rerun)
         raise AssertionError("reruns did not settle")
 
+    def _settle(self, t: Fraction) -> None:
+        """The mode rules at the chip's position, now: they hold there at every instant, not
+        only once the chip has moved on. Then `_sweep` goes on right after it. If the mode
+        changed at this very position, what the old mode did there is undone first."""
+        if not (self.script.covered or self.script.live):
+            return
+        c = self.chip.position(t)
+        x, mode = Pos(c), self.modes.mode_at(c)
+        was = self._settled
+        if was is not None and was[0] == x:
+            if was[1] == mode and was[2] is self.script and was[4] is self.state:
+                return
+            if was[1] != mode and was[4] is self.state and was[3] is not self.state:
+                self.log.changed(Change(t, x, "mode", self.state, was[3], Region.point(x)))
+                self.state = was[3]
+        before = self.state
+        self._through(t, mode, x, x)
+        self._settled = (x, mode, self.script, before, self.state)
+
     def _sweep(self, t0: Fraction, t1: Fraction) -> None:
-        """The script's stretches act on the chip positions of [t0, t1)."""
+        """The script's stretches act on the chip positions of [t0, t1), the first one
+        unless `_settle` went through it."""
         if t1 <= t0 or not (self.script.covered or self.script.live):
             return
         c0, c1 = self.chip.position(t0), self.chip.position(t1)
         mode = self.modes.mode_at(c0)
         x = Pos(c0)
         hi = x if c1 == c0 else (Pos(c1) if self.chip.first_time(c1) < t1 else Pos(c1) - EPS)
+        was = self._settled
+        if was is not None and was[0] == x and was[1] == mode and was[2] is self.script and was[4] is self.state:
+            x += EPS
+        self._through(t0, mode, x, hi)
+
+    def _through(self, t0: Fraction, mode: str, x: Pos, hi: Pos) -> None:
+        """The chip goes through [x, hi] in this mode."""
         while x <= hi:
             st = self._stretch_at(mode, x, hi)
             if st is None:  # no stretch acts on the rest
@@ -653,6 +682,9 @@ class Simulation:
         s = self.script
         if not (s.live or any(lo <= x <= hi and m in (mode, None) for lo, hi, m in s.covered)):
             return None
+        was = self._settled
+        if was is not None and was[0] == x and was[1] == mode and was[4] is self.state:
+            x += EPS  # (`_settle` went through the chip's position)
         state, history = self.state, self.state.history
         cur = self._stretch
         if cur is not None and cur[1] is state and cur[2] == x and cur[0].mode == mode and cur[0].plan is not None:

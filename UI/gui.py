@@ -43,7 +43,7 @@ from fractions import Fraction as F
 from tkinter import font as tkfont, messagebox
 
 from app import EDITS, PAUSED, ScriptError
-from intervals import EPS, Pos
+from intervals import Pos
 from session_log import SessionLog
 from single_window import listen, take_over
 from solver import STOP, Interrupted
@@ -414,7 +414,7 @@ class App:
                 p = shown[0]
             if p > x and sn["ahead"] is not None:
                 try:
-                    state = sn["ahead"](Pos(p) - EPS)  # (the chip has gone through what is before it)
+                    state = sn["ahead"](Pos(p))  # (the chip has gone through its position too)
                 except Exception:  # (a step going on can stop what it reads)
                     state = None
                 if state is not None:

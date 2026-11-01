@@ -43,7 +43,7 @@ class ShownLineTest(unittest.TestCase):
             if ahead is not None:
                 for f in (F(1, 3), F(2, 3)):
                     p = t + step * f
-                    state = ahead(Pos(p) - EPS)
+                    state = ahead(Pos(p))
                     if state is not None:
                         known += 1
                         there = simulation(modes)
@@ -68,7 +68,7 @@ class ShownLineTest(unittest.TestCase):
             sim.advance(t)
             ahead = sim.ahead()
             p = t + F(1, 7)
-            state = ahead(Pos(p) - EPS)
+            state = ahead(Pos(p))
             if state is not None:
                 b = state.line.presence("Break15") & Region.of(Interval.closed(0, 100))
                 self.assertEqual(b.inf().x, p)

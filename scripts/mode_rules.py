@@ -312,6 +312,9 @@ class ModeRules:
         return d == decision, after
 
 
+LOOK_AHEAD = 256  # how many reaches a stretch looks ahead for where a decision can change
+
+
 class _Plan:
     """A run compiled ahead: decided at m on `state0`, the same decision on [m + ε,
     checked], `checked` growing one stretch at a time (between two positions where the
@@ -345,7 +348,9 @@ class _Plan:
         if self.mr.rs.drifts:  # the positions where the decision can change have no bound
             raise _Changes(cur)
         if not self.queue and (self.top is None or self.top < cur):
-            g = self.mr.g or self.mr.rs.reach or Fraction(1)
+            # (with no lattice, finding them costs the same however far: the longer the stretch,
+            # the fewer are checked, and a run that goes on is what mode rules mostly do)
+            g = self.mr.g or LOOK_AHEAD * (self.mr.rs.reach or Fraction(1))
             self.top = Pos(max(hi.x, cur.x) + g)
             self.queue = self.mr.candidates(self.state0, self.m, cur, self.top)
         self.queue = [c for c in self.queue if c >= cur]

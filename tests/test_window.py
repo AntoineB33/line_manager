@@ -8,6 +8,8 @@ import tempfile
 import time
 import unittest
 from fractions import Fraction as F
+from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "UI"))
@@ -387,6 +389,55 @@ class WindowTest(unittest.TestCase):
         while time.time() < end and not (until and until()):
             self.root.update()
             time.sleep(0.005)
+
+    def test_the_wheel_scrolls_over_the_line_and_zooms_with_ctrl(self):
+        app = self.app
+        for wheel in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.assertTrue(self.root.bind(wheel))
+        with mock.patch.object(self.root, "winfo_containing", return_value=app.canvas):
+            app.on_wheel(SimpleNamespace(delta=-120, num="??", state=0))
+            self.assertEqual((app.span, app.scrolled), (24, 3))
+            app.on_wheel(SimpleNamespace(delta=120, num="??", state=0))
+            app.on_wheel(SimpleNamespace(delta=0, num=4, state=0))
+            self.assertEqual((app.span, app.scrolled), (24, -3))
+            app.on_wheel(SimpleNamespace(delta=0, num=5, state=0))
+            self.assertEqual((app.span, app.scrolled), (24, 0))
+            app.on_wheel(SimpleNamespace(delta=-120, num="??", state=gui.CONTROL))
+            self.assertEqual((app.span, app.scrolled), (48, 0))
+            app.on_wheel(SimpleNamespace(delta=120, num="??", state=gui.CONTROL))
+            app.on_wheel(SimpleNamespace(delta=0, num=4, state=gui.CONTROL))
+            self.assertEqual((app.span, app.scrolled), (12, 0))
+            app.on_wheel(SimpleNamespace(delta=0, num=5, state=gui.CONTROL))
+            self.assertEqual((app.span, app.scrolled), (24, 0))
+        with mock.patch.object(self.root, "winfo_containing", return_value=app.text):
+            app.on_wheel(SimpleNamespace(delta=-120, num="??", state=gui.CONTROL))  # the log keeps its own scroll
+            app.on_wheel(SimpleNamespace(delta=-120, num="??", state=0))
+            self.assertEqual((app.span, app.scrolled), (24, 0))
+        for _ in range(30):
+            app.zoom(F(2))
+        self.assertEqual(app.span, gui.MAX_SPAN)
+        for _ in range(30):
+            app.zoom(F(1, 2))
+        self.assertEqual(app.span, gui.MIN_SPAN)
+
+    def test_a_chip_scrolled_out_of_view_is_not_drawn(self):
+        app, c = self.app, self.app.canvas
+        self.pump(10, lambda: app.snap is not None)
+
+        def chips():
+            return [i for i in c.find_all() if c.type(i) == "polygon" and c.itemcget(i, "fill") == "#d63031"]
+
+        for scrolled, shown in ((F(0), 1), (F(1000), 0), (F(-1000), 0)):
+            app.scrolled = scrolled
+            app.draw(app.snap)
+            self.assertEqual(len(chips()), shown)
+            self.assertTrue(all(c.coords(i)[0] >= app.edge[1] for i in c.find_all() if c.type(i) == "rectangle" and c.itemcget(i, "stipple")))
+
+    def test_the_axis_has_a_dozen_labels_at_every_zoom(self):
+        span = gui.MIN_SPAN
+        while span <= gui.MAX_SPAN:
+            self.assertTrue(5 <= span / gui._tick(span) <= 14, span)
+            span *= 2
 
     def test_selectors_replace_the_mode_buttons(self):
         self.close()

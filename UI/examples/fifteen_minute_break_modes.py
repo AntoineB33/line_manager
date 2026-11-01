@@ -1,5 +1,5 @@
 """The 15min break of OmniApp (docs/scheduler_requirements.md of OmniApp), with the now
-line's 3 modes given by the state of each device. One unit is one minute, and the chip
+line's 3 modes given by the state of each device. One unit is one second, and the chip
 is the now line.
 
 The line has OmniApp's periods only: Break15, NoScreen, NoComputerUnlocked,
@@ -21,12 +21,12 @@ a break lasts 15 minutes, starts as early as possible, and after 15 minutes or m
 minutes; a break that would start inside a "no screen" period starts at its start (or
 right after the chip). The line starts empty: the breaks appear when the generator's
 first run completes, put there by its script. Type in the command box:
-    add NoScreen on [300, 330]   30 minutes without screen: no break until 2 hours
-                                 after its end, the next one at 450
-    add NoScreen on [300, 310]   10 minutes only: nothing changes
-    add NoScreen on [400, 410]   a break would start inside it: it starts at 400
+    add NoScreen on [18000, 19800]   30 minutes without screen: no break until 2 hours
+                                     after its end, the next one at 27000
+    add NoScreen on [18000, 18600]   10 minutes only: nothing changes
+    add NoScreen on [24000, 24600]   a break would start inside it: it starts at 24000
 Press Play to move the chip, and use the selectors (or "mode 3" in the command box).
-MODES below switches to mode 2 at 200 and to mode 3 at 300 for a while: after 15
+MODES below switches to mode 2 at 12000 and to mode 3 at 18000 for a while: after 15
 minutes in mode 2, the next break waits until 2 hours after the chip leaves it.
 
 Not expressed:
@@ -61,7 +61,8 @@ RULES = [
     "mode 2 → NoScreen & NoComputerUnlocked & NoPhoneUnlocked",
     "mode 3 → NoScreen & (NotOnComputer or NotOnPhone)",
 ]
-MODES = [(0, "1"), (200, "2"), (240, "1"), (300, "3"), (310, "1")]
+MINUTE = 60  # units
+MODES = [(0, "1"), (200 * MINUTE, "2"), (240 * MINUTE, "1"), (300 * MINUTE, "3"), (310 * MINUTE, "1")]
 U, F, L = "unlocked", "fake locked", "locked"
 SELECTORS = {"computer": (U, F, L), "phone": (U, F, L)}
 SELECTOR_MODES = {  # the first choice of a mode is what the selectors show when MODES gives it
@@ -70,14 +71,14 @@ SELECTOR_MODES = {  # the first choice of a mode is what the selectors show when
     (F, L): "3", (L, F): "3", (F, F): "3",
 }
 CHIP = 0
-SPEED = 1  # minutes per second
+SPEED = 1  # seconds per second: real time
 LINE = []  # the line starts empty
 CONSTRAINTS = [
-    FifteenMinuteBreaks("Break15", "NoScreen", length=15, pause=120),
+    FifteenMinuteBreaks("Break15", "NoScreen", length=15 * MINUTE, pause=120 * MINUTE),
 ]
 PROBLEMS = [
-    (PresenceRatioProblem({}, horizon=240), 1),
-    (MinimumLengthProblem({}, horizon=240), 1),
+    (PresenceRatioProblem({}, horizon=240 * MINUTE), 1),
+    (MinimumLengthProblem({}, horizon=240 * MINUTE), 1),
 ]
 Q = 0.5
 

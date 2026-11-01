@@ -1,4 +1,5 @@
 There is an infinite line from −∞ on the left to ∞ on the right.
+
 There is a 0-dimensional chip on the line that moves to the right, with a mathematically continuous movement. If the program was put to sleep, when it wakes up, the chip is at the position it would have been if it had moved continuously while the program was asleep.
 There are different kinds of elements. A state of the line is a set of intervals each associated to an element type and a percentage. The same element type can't be present several times at the same position on the line.
 
@@ -20,6 +21,9 @@ Examples:
 - A & B → C 45% 3 units on the left of p
 
 If there is a "or" in the right side of the element rule, the leftmost operand (leftmost in the expression) that can be chosen is chosen. The position that choses first is the closest to 0, and the one to the right if two positions are equally close to 0.
+
+A position is a real number x or x + kε, with k a non-zero integer and ε an infinitely small positive distance: x + ε is after x and before every real number greater than x. When a rule needs the first position after x, it uses x + ε.
+Example: "A → B or C", "B → E", "B → no E on (0, 1] of l", A on [0, 2]: B is at 0 and at 1 + ε.
 
 A "mode rule" is the same as an element rule, but can add or remove elements only at the position of the chip.
 

@@ -1,7 +1,7 @@
 """The window of the line manager (tkinter, in the standard library).
 
 The line around the chip, one row per kind, with the revealed modes above it. The chip
-moves smoothly at its speed, and each frame shows the line at the chip's position of
+moves smoothly at its speed (over the line, the mouse wheel scrolls and Ctrl + wheel zooms), and each frame shows the line at the chip's position of
 that frame, from the formula of the script (Simulation.ahead): the pixels are the only
 rounding; where the formula is not known yet, the chip waits for the step. Pause stops it, Slower and Faster halve and double its
 speed, and the mode buttons (or the session's selectors, on a row of their own) change the mode from the chip on. Dashed blue lines show where the generator runs again (its script's rerun
@@ -51,6 +51,8 @@ STEP = F(1, 20)  # the time of a step, in seconds
 COLORS = ["#2e86de", "#10ac84", "#ee5253", "#ff9f43", "#5f27cd", "#01a3a4", "#c44569", "#8395a7", "#576574", "#b33939"]
 MODE_COLORS = ["#dfe6e9", "#ffeaa7", "#c7ecee", "#fab1a0", "#d6a2e8", "#badc58"]
 OWNERS = {"user": ("#2d3436", "you"), "generated": ("#e17055", "the generated script"), "mode": ("#8e44ad", "the mode rules")}
+CONTROL = 0x4  # in the state of an event
+MIN_SPAN, MAX_SPAN = F(3), F(3 * 2 ** 17)  # the positions the window can show
 MIN_LEFT, RIGHT, TOP = 70, 20, 34  # (the captions on the left may need more: `App._edge`)
 CAPTION = ("TkDefaultFont", 10, "bold")
 MODE_H, ROW_H, BAR_H = 20, 30, 16
@@ -62,6 +64,7 @@ class App:
         session.calculate_apart()
         self.paused = True
         self.span = F(24)  # the positions the window shows
+        self.scrolled = F(0)  # how far right of its place around the chip
         self.jobs: queue.Queue = queue.Queue()
         self.out: queue.Queue = queue.Queue()
         self.snap = None
@@ -94,8 +97,6 @@ class App:
         tk.Button(bar, text="Faster", command=lambda: self.speed(F(2))).pack(side="left")
         self.speed_label = tk.Label(bar, width=20, anchor="w")
         self.speed_label.pack(side="left", padx=6)
-        tk.Button(bar, text="Zoom out", command=lambda: self.zoom(F(2))).pack(side="left", padx=(8, 0))
-        tk.Button(bar, text="Zoom in", command=lambda: self.zoom(F(1, 2))).pack(side="left")
         tk.Button(bar, text="Generated script", command=self.open_script).pack(side="left", padx=(16, 0))
         self.mode_buttons: dict[str, tk.Button] = {}
         self.selector_buttons: dict[tuple[int, str], tk.Button] = {}  # (selector, option)
@@ -117,6 +118,8 @@ class App:
         self.status.pack(fill="x", padx=8)
         self.canvas = tk.Canvas(r, background="white", height=320, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, padx=6)
+        for wheel in ("<MouseWheel>", "<Button-4>", "<Button-5>"):  # (Button: the wheel on Linux)
+            r.bind(wheel, self.on_wheel)  # on the window: Tk may send it to the command box, which has the focus
         bottom = tk.Frame(r)
         bottom.pack(fill="both", padx=6, pady=4)
         self.text = tk.Text(bottom, height=9, wrap="word", font=tkfont.nametofont("TkFixedFont"))
@@ -180,7 +183,17 @@ class App:
             self._show_choice(b, m == current)
 
     def zoom(self, factor: F) -> None:
-        self.span = min(max(self.span * factor, F(3)), F(768))
+        self.span = min(max(self.span * factor, MIN_SPAN), MAX_SPAN)
+
+    def on_wheel(self, event) -> None:
+        """Over the line, the wheel scrolls (up: left, down: right), and with Ctrl it zooms
+        (up: in, down: out). The view goes on following the chip."""
+        if self.root.winfo_containing(*self.root.winfo_pointerxy()) == self.canvas:
+            up = event.delta > 0 or event.num == 4
+            if event.state & CONTROL:
+                self.zoom(F(1, 2) if up else F(2))
+            else:
+                self.scrolled += -self.span / 8 if up else self.span / 8
 
     def on_command(self, _event=None) -> None:
         cmd = self.entry.get().strip()
@@ -401,7 +414,7 @@ class App:
             x = p
         kinds = sn["kinds"]
         edge = self._edge(kinds)
-        left = x - span / 4
+        left = x + self.scrolled - span / 4
         right = left + span
         X = lambda p: edge + float((p - left) / span) * (w - edge - RIGHT)
         bottom = TOP + MODE_H + 8 + ROW_H * len(kinds)
@@ -424,8 +437,9 @@ class App:
                 if X(b) - X(a) > 14:
                     c.create_text((X(a) + X(b)) / 2, TOP + MODE_H / 2, text=m)
         if x < right:
-            c.create_rectangle(X(x), TOP, X(right), TOP + MODE_H, fill="#f5f6fa", outline="#dcdde1", stipple="gray25")
-            c.create_text((X(x) + X(right)) / 2, TOP + MODE_H / 2, text="not revealed yet", fill="#7f8fa6")
+            hidden = X(max(x, left))
+            c.create_rectangle(hidden, TOP, X(right), TOP + MODE_H, fill="#f5f6fa", outline="#dcdde1", stipple="gray25")
+            c.create_text((hidden + X(right)) / 2, TOP + MODE_H / 2, text="not revealed yet", fill="#7f8fa6")
         # one row per kind: its percentages, and under them who placed it
         for i, k in enumerate(kinds):
             y = TOP + MODE_H + 8 + i * ROW_H
@@ -462,8 +476,9 @@ class App:
             elif p > right:
                 c.create_text(w - RIGHT, TOP - 12, text=f"generator runs again at {_num(p)} →", anchor="e", fill="#0984e3")
         # the chip
-        c.create_line(X(x), TOP - 2, X(x), bottom, fill="#d63031", width=2)
-        c.create_polygon(X(x) - 7, TOP - 16, X(x) + 7, TOP - 16, X(x), TOP - 4, fill="#d63031")
+        if left <= x <= right:
+            c.create_line(X(x), TOP - 2, X(x), bottom, fill="#d63031", width=2)
+            c.create_polygon(X(x) - 7, TOP - 16, X(x) + 7, TOP - 16, X(x), TOP - 4, fill="#d63031")
         # the legend
         y = bottom + 40
         c.create_text(edge, y, anchor="w", fill="#2d3436",
@@ -499,10 +514,15 @@ def _blend(color: str, amount: float) -> str:
 
 def _tick(span: F) -> F:
     """A round distance between the axis labels: about 12 of them."""
-    for t in (F(1, 4), F(1, 2), F(1), F(2), F(5), F(10), F(20), F(50), F(100)):
+    for t in (F(1, 4), F(1, 2)):
         if span / t <= 14:
             return t
-    return F(200)
+    power = F(1)
+    while True:
+        for m in (1, 2, 5):
+            if span / (m * power) <= 14:
+                return m * power
+        power *= 10
 
 
 def _num(x) -> str:

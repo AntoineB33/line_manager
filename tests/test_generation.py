@@ -7,7 +7,7 @@ from fractions import Fraction as F
 
 from helpers import check_log, rand_interval, rules_hold
 from constraints import FifteenMinuteBreaks, KeepOn
-from generator import PresenceRatioProblem, RulesGenerator, _Context, budget, rerun_distance, rerun_transitions
+from generator import PresenceRatioProblem, RulesGenerator, _Context, budget, rerun_distance
 from intervals import INF, Interval, IntervalSet, Pos
 from line import GEN, MODE, USER, LineState, Op
 from modes import ModeTimeline
@@ -16,7 +16,7 @@ from problems import MinimumLengthProblem, shortfalls
 from region import Region
 from resolve import apply_edit
 from rules import parse_rules
-from script import ChipIn, EditAction, Event, RerunAction, Script, TransitionCount
+from script import ChipIn, Edited, EditAction, Event, RerunAction, ScoreBelow, Script, TransitionCount
 from simulation import Chip, Simulation, UserEdit
 
 POOL = ["A → B or C", "B → D", "B → no D 1 unit on the right", "A → no C 1 unit on the left", "C → D",
@@ -419,7 +419,6 @@ class HyperparameterTest(unittest.TestCase):
         for q1, q2 in zip(qs, qs[1:]):
             self.assertLessEqual(budget(q1), budget(q2))
             self.assertGreater(rerun_distance(q1, H), rerun_distance(q2, H))
-            self.assertGreaterEqual(rerun_transitions(q1), rerun_transitions(q2))
         for bad in (-0.1, 1.5):
             with self.assertRaises(ValueError):
                 RulesGenerator(parse_rules([]), PresenceRatioProblem({}, 1), bad)
@@ -468,6 +467,51 @@ class HyperparameterTest(unittest.TestCase):
                 log = sim.run(chip.points[-1][0] + 2)
                 counts.append(sum(1 for r in log.runs if r[2] == "script"))
             self.assertEqual(counts, sorted(counts), counts)
+
+
+class RerunRulesTest(unittest.TestCase):
+    """The rerun rules of a script depend on the context, not on a formula alone."""
+
+    @staticmethod
+    def reruns(rules, targets, q=0.5, constraints=()):
+        gen = RulesGenerator(parse_rules(rules), PresenceRatioProblem(targets, 100), q, constraints=constraints)
+        script, _ = gen.run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
+        return script.rerun_triggers()
+
+    @staticmethod
+    def of(triggers, kind):
+        return [t for t in triggers if isinstance(t, kind)]
+
+    def test_nothing_to_optimise_only_the_user_edits(self):
+        self.assertEqual(self.reruns(["Break15 → NoScreen"], {}, constraints=[FifteenMinuteBreaks()]), [Edited(True)])
+
+    def test_mode_rules_are_compiled_ahead_by_a_run(self):
+        t = self.reruns(["Break15 → NoScreen", "mode 1 → no NoScreen"], {}, constraints=[FifteenMinuteBreaks()])
+        self.assertEqual(t, [ChipIn(F(25, 6), INF), Edited(True)])
+
+    def test_a_constraint_that_goes_with_the_chip_needs_runs(self):
+        keep = KeepOn(Op.put("F", Region.of(Interval.closed(1, 5))))
+        self.assertEqual(self.of(self.reruns([], {}, constraints=[keep]), ChipIn), [ChipIn(F(75), INF)])
+
+    def test_targets_without_modes_watch_the_score(self):
+        t = self.reruns([], {"A": F(1, 2)})
+        self.assertTrue(self.of(t, ScoreBelow))
+        self.assertFalse(self.of(t, ChipIn))
+
+    def test_only_the_modes_that_reach_the_target(self):
+        rules = ["mode 1 → C", "mode 2 → no A", "mode 3 → B"]
+        self.assertEqual([c.mode for c in self.of(self.reruns(rules, {"A": F(1, 2)}), ChipIn) if c.mode], ["2"])
+        self.assertEqual([c.mode for c in self.of(self.reruns(rules, {"B": F(1, 2)}), ChipIn) if c.mode], ["3"])
+
+    def test_a_mode_can_reach_the_target_through_the_element_rules(self):
+        rules = ["mode 2 → X", "X → Y", "Y → no A", "mode 3 → B"]
+        self.assertEqual([c.mode for c in self.of(self.reruns(rules, {"A": F(1, 2)}), ChipIn) if c.mode], ["2"])
+
+    def test_a_lower_q_waits_longer_for_the_same_mode(self):
+        rules = ["mode 2 → no A"]
+        at = [next(c.lo for c in self.of(self.reruns(rules, {"A": F(1, 2)}, q), ChipIn) if c.mode) for q in (0.1, 0.5, 0.9)]
+        self.assertEqual(at, sorted(at, reverse=True))
+        self.assertGreater(at[0], at[2])
 
 
 class ProbabilityFinderTest(unittest.TestCase):

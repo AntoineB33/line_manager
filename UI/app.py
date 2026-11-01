@@ -322,7 +322,9 @@ class Session:
         other conditions, as text."""
         at, other = [], []
         for trig in self.sim.script.rerun_triggers():
-            if isinstance(trig, ChipIn):
+            if isinstance(trig, ChipIn) and trig.mode is not None:
+                other.append(f"in mode {trig.mode} from chip {F(trig.lo)}")
+            elif isinstance(trig, ChipIn):
                 at.append(F(trig.lo))
             elif isinstance(trig, TransitionCount):
                 left = trig.k - self.sim._since_install

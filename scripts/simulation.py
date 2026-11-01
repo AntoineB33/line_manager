@@ -554,8 +554,9 @@ class Simulation:
         self.keep_pace(t)
         c = self.chip.position(t)
         if self.background and self.definitive is not None and c > self.definitive and \
-                any(isinstance(k, ChipIn) for k in self.script.rerun_triggers()):
-            self._install(t, "catch up")  # (the program was put to sleep)
+                any(not isinstance(k, Edited) for k in self.script.rerun_triggers()):
+            self._install(t, "catch up")  # (the program was put to sleep; a script that asks only
+            # for the user's edits holds by itself: nothing to catch up)
         c = self.chip.position(t)
         revealed = sum(1 for p, _ in self.modes.transitions if p <= c)
         self._since_install += revealed - self.revealed

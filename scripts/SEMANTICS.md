@@ -749,7 +749,8 @@ returns a script made of events.
 
 - `ChipIn(lo, hi, mode)`: fires at each instant the chip enters [lo, hi) with
   that mode.
-- `TransitionCount(k)`: fires after k revealed transitions.
+- `TransitionCount(k)`: fires after k revealed transitions (a generator does not write
+  it any more: which modes matter says more than how many; the user can).
 - `Start`: the initial script's only trigger: the program starts.
 - `Edited`: fires at each edit of the user. A user edit runs the generator only
   through it; a change of rules or problems runs the new generator.
@@ -818,12 +819,17 @@ call ends it (`test_background_runs`).
   expected over the probability finder's scenarios where a problem predicts the
   mode rules. The earliest wins ties, so the no-op wins when nothing is better
   (`test_weights`: the heavier problem decides).
-- **Futility.** A run concludes that later runs would do nothing until the user
-  edits in two cases:
-  - there is nothing to optimize; or
-  - the line is empty, there is no mode rule, and the run does nothing.
-
-  In both cases the script has no events at all.
+- **Rerun rules.** A script asks for a new run only where one can help (`_reruns`), so its
+  rules depend on the context:
+  - at each edit of the user that the run reads: always;
+  - mode rules: at a position, so that a run compiles what comes next in its own process
+    (past what is compiled the chip computes them itself, and waits for it), and where
+    the script does not apply them (`Uncovered`);
+  - a constraint that does not hold by itself as the chip goes: at a position;
+  - targets: the score falling, too much of a kind, and the chip in a mode whose rules
+    reach what the problems read, directly or through the element rules. Not when the
+    line is empty, there is no mode rule, and the run does nothing: later runs would
+    see the same problem.
 
 ## 9. The allocated resources quantity q ∈ [0, 1]
 
@@ -831,7 +837,7 @@ call ends it (`test_background_runs`).
 |---|---|---|
 | work of a run | min(B(q), number of candidates), with B(q) = 2 + ⌊36q⌋ | non-decreasing in q |
 | rerun distance | D(q) = H(1 − q/2) | strictly decreasing in q |
-| rerun transitions | K(q) = 1 + ⌊4(1 − q)⌋ | non-increasing in q |
+| a mode that matters reruns from | c + D(q)(1 − q)/2 | strictly decreasing in q |
 | compiled ahead | q D(q) / 6 | strictly increasing in q |
 | margin of the watches | (1 − q) / 2 | strictly decreasing in q |
 
@@ -853,8 +859,8 @@ Futility cannot flip the wrong way between two values of q.
 **Over a whole run** (`test_whole_runs`). Runs happen at
 r_{k+1} = min(e(r_k), the next user edit), where:
 
-- e(t) is the earlier of the first time the chip reaches chip(t) + D and the
-  time of the K-th transition after t;
+- e(t) is the earliest of the rerun rules the context asks for (`_reruns`): which rules
+  there are does not depend on q, and the position of each one is non-increasing in q;
 - e is non-decreasing in t and non-increasing in q.
 
 By induction, a lower q never has more script-triggered runs.

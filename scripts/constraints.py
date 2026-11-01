@@ -43,6 +43,10 @@ class KeepOn:
     def kinds(self) -> set:
         return {self.op.kind}
 
+    def holds_by_itself(self) -> bool:
+        """Once made, it holds as the chip goes: no new run is needed for it."""
+        return not self.op.region.is_bounded()
+
     def targets(self, state: LineState, c) -> dict:
         return {self.op.kind: self.op.region.shift(c) & _after(c)} if self.op.action == "put" else {}
 
@@ -84,6 +88,10 @@ class FifteenMinuteBreaks:
 
     def kinds(self) -> set:
         return {self.brk, self.ns}
+
+    def holds_by_itself(self) -> bool:
+        """Its breaks repeat without end, and an edit runs the generator again."""
+        return True
 
     def breaks(self, state: LineState, c: Fraction) -> Region:
         """The breaks there must be after the chip at c (those going on included)."""

@@ -25,10 +25,18 @@ and plans the window W = (c, c + H], H the longest horizon of its problems.
    expected over the probability finder's scenarios (or uniform modes) where a
    problem predicts the mode rules; the earliest wins ties, so the no-op wins when
    nothing is better.
-3. The script applies the best edit at once and schedules the next run.
-   It also runs again at each edit of the user (script.Edited) and, with mode
-   rules, when the chip is where none of its compiled stretches applies
-   (script.Uncovered).
+3. The script applies the best edit at once, and asks for a new run only where one can
+   help (`_reruns`), so its rerun rules depend on the context:
+   - always at each edit of the user that the run reads (script.Edited);
+   - mode rules: at a position, so that a run compiles what comes next in its own process
+     (past what is compiled the chip computes them itself, and waits for it), and when the
+     chip is where the script does not apply them (script.Uncovered);
+   - a constraint that does not hold by itself as the chip goes: at a position;
+   - targets: the score falling below what the run left, too much of a kind, and the
+     chip in a mode whose rules reach what the problems read (the other modes do not
+     matter).
+   With no mode rule, nothing to optimise and everything holding by itself, only the
+   user's edits do.
 4. With mode rules, it compiles them (mode_rules.compile_runs) from the line after
    the best edit, as the chip goes from c to the next run's position D(q) through
    the predicted modes: the mode at the chip, then the most probable scenario of the
@@ -37,12 +45,14 @@ and plans the window W = (c, c + H], H the longest horizon of its problems.
 
 The hyperparameter q in [0, 1]:
     budget      B(q) = 2 + floor(36 q)           candidates evaluated (non-decreasing)
-    distance    D(q) = H (1 - q / 2)             rerun when the chip has moved D (decreasing); with mode
-                                                 rules, they are compiled up to c + D / 6 (a run compiles
-                                                 about a minute of the chip in a second) and the next run
-                                                 is asked for at c + D / 18, so that it can complete
-                                                 before the chip leaves what this one compiled
-    transitions K(q) = 1 + floor(4 (1 - q))      or after K revealed transitions (non-increasing)
+    distance    D(q) = H (1 - q / 2)             rerun when the chip has moved D, where a position is
+                                                 needed (decreasing); with mode rules, they are compiled
+                                                 up to c + D / 6 (a run compiles about a minute of the chip
+                                                 in a second) and the next run is asked for at c + D / 18,
+                                                 so that it can complete before the chip leaves what this
+                                                 one compiled
+    modes       c + D (1 - q) / 2                from there, a mode that matters runs the generator again
+    margin      (1 - q) / 2                      how far the score falls first
 """
 
 from __future__ import annotations
@@ -62,7 +72,7 @@ from problems import MinimumLengthProblem, PresenceRatioProblem  # noqa: F401 (t
 from region import Region
 from resolve import Refused, apply_edit
 from rules import RuleSet
-from script import ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, TransitionCount, Uncovered, Edited, score
+from script import ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Uncovered, Edited, score
 from solver import lhs_region
 
 PREDICTIONS = ("scenario", "uniform", "none")
@@ -94,10 +104,6 @@ def budget(q: float) -> int:
 def rerun_distance(q: float, horizon: Fraction) -> Fraction:
     # the shortest decimal of a float keeps the order of floats: 0.2 -> 1/5
     return horizon * (1 - Fraction(str(q)) / 2)
-
-
-def rerun_transitions(q: float) -> int:
-    return 1 + math.floor(4 * (1 - q))
 
 
 class RulesGenerator:
@@ -227,18 +233,14 @@ class RulesGenerator:
                 best_key, best_label, current = key, label, after
                 edits.append(Event(ChipIn(c, c + H), (EditAction(tuple(ops)),)))
             if after_edits is None:
-                after_edits = []
-                if len(frontiers) > 1 or not self._futile(state, ops):
-                    next_run = D / 18 if self.rules.mode_rules else D
-                    if self.paced:  # after this run, or it would cancel it: twice the time of the longest
-                        # run, whatever q is, so that a higher q never asks for its next run later
-                        took = Fraction(time.perf_counter() - began).limit_denominator(1000)
-                        next_run = max(next_run, 2 * took * self.most_stages() * self.speed)
-                    after_edits.append(Event(ChipIn(c + next_run, INF), (RerunAction(),)))
-                    after_edits.append(Event(TransitionCount(rerun_transitions(self.q)), (RerunAction(),)))
-                    after_edits += self._watches(current, c, D, known.current_mode())
+                next_run = D / 18 if self.rules.mode_rules else D
+                if self.paced:  # after this run, or it would cancel it: twice the time of the longest
+                    # run, whatever q is, so that a higher q never asks for its next run later
+                    took = Fraction(time.perf_counter() - began).limit_denominator(1000)
+                    next_run = max(next_run, 2 * took * self.most_stages() * self.speed)
+                after_edits = self._reruns(state, current, c, c + next_run, D, known.current_mode(), bool(ops) or len(frontiers) > 1)
                 after_edits.append(Event(Edited(True), (RerunAction(),)))
-                if covered:
+                if covered and not live:
                     after_edits.append(Event(Uncovered(), (RerunAction(),)))
             final = i == len(frontiers) - 1
             stretches = []
@@ -285,6 +287,37 @@ class RulesGenerator:
                 best = (ops, key, label, after)
         return best
 
+    def _reruns(self, state: LineState, after: LineState, c: Fraction, at: Fraction, D: Fraction, mode: str, edits: bool) -> list[Event]:
+        """The events that ask for a new run, only where one can help (see the top of this file)."""
+        rerun = (RerunAction(),)
+        out = []
+        if self.rules.mode_rules or not all(getattr(k, "holds_by_itself", lambda: False)() for k in self.constraints):
+            out.append(Event(ChipIn(at, INF), rerun))
+        if any(p.has_targets() for p, _ in self.problems) and not self._futile(state, edits):
+            lo = c + D * (1 - Fraction(str(self.q))) / 2
+            out += [Event(ChipIn(lo, INF, m), rerun) for m in self._modes_that_matter()]
+            out += self._watches(after, c, D, mode)
+        return out
+
+    def _modes_that_matter(self) -> list[str]:
+        """The modes whose rules reach what the problems read, directly or through the
+        element rules."""
+        read = {k for p, _ in self.problems for k in (*getattr(p, "targets", ()), *getattr(p, "lengths", ()))}
+        out = []
+        for m in sorted({r.mode for r in self.rules.mode_rules}):
+            reached = {o.kind for r in self.rules.mode_rules if r.mode == m for o in r.written_lits()}
+            grew = True
+            while grew:
+                grew = False
+                for r in self.rules.rules:
+                    written = {o.kind for o in r.written_lits()}
+                    if not r.is_mode_rule and reached & set(r.lhs.kinds()) and not written <= reached:
+                        reached |= written
+                        grew = True
+            if reached & read:
+                out.append(m)
+        return out
+
     def _watches(self, state: LineState, c: Fraction, D: Fraction, mode: str) -> list[Event]:
         """Run again if the line goes away from what this run left: the score gets lower than
         it is, or a presence ratio above its target and what it is, by a margin that a
@@ -306,15 +339,11 @@ class RulesGenerator:
         """The modes the mode rules are compiled for (`_Context.predicted`)."""
         return ctx.predicted(end)
 
-    def _futile(self, state: LineState, ops) -> bool:
-        """A run can tell that later runs would do nothing until the user edits the line:
-        - there is nothing to optimise (no target, no rule); or
-        - the line is empty, no mode rule exists and this run does nothing: every later
-          run, until a user edit, sees the same problem translated."""
-        if not any(p.has_targets() for p, _ in self.problems) and not self.rules.rules:
-            return True
+    def _futile(self, state: LineState, edits: bool) -> bool:
+        """The line is empty, no mode rule exists and this run does nothing: every later run,
+        until a user edit, sees the same problem translated."""
         empty = not state.claims.kinds() and not state.line.kinds()
-        return empty and not self.rules.mode_rules and not ops
+        return empty and not self.rules.mode_rules and not edits
 
 
 class _Context:

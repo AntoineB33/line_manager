@@ -326,6 +326,17 @@ class TimeLimitTest(unittest.TestCase):
 
 
 class SleepTest(unittest.TestCase):
+    def test_a_script_that_holds_by_itself_has_nothing_to_catch_up(self):
+        sim, chip = background(["Break15 → NoScreen"], PresenceRatioProblem({}, 240), [FifteenMinuteBreaks()])
+        req = sim.request
+        sim.complete(req.id, *list(req.gen.stages(req.state, req.chip, req.known, req.previous))[-1])
+        go(sim, chip, 3600)
+        self.assertEqual(chip.position(sim.t), 3600)
+        self.assertIsNone(sim.request)
+        b = sim.state.line.presence("Break15")
+        self.assertTrue(b.contains(3515) and b.contains(3650))  # one every 135, past the horizon too
+        self.assertFalse(b.contains(3605))
+
     def test_the_chip_and_the_catch_up(self):
         sim, chip = background(BREAKS, PresenceRatioProblem({}, 240), [FifteenMinuteBreaks()])
         req = sim.request

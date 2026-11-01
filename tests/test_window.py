@@ -26,7 +26,7 @@ from rules import parse_rules  # noqa: E402
 from session_log import SessionLog  # noqa: E402
 from script import ChipIn, EditAction, RerunAction  # noqa: E402
 from simulation import EDIT_LIMIT, Chip, Simulation  # noqa: E402
-from solver import checkpoint  # noqa: E402
+from solver import STOP, Interrupted, checkpoint  # noqa: E402
 
 try:
     import gui
@@ -341,6 +341,51 @@ class SleepTest(unittest.TestCase):
         self.assertFalse(b.contains(3599))  # and it was dragged, not left behind
 
 
+class StoppedInstallTest(unittest.TestCase):
+    def test_a_script_stopped_while_installed_is_installed_again(self):
+        """Pause while a script of a run is installed: undone, not lost, and no exception."""
+        s = Session(BREAKS, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2), [FifteenMinuteBreaks()])
+        calls = []
+
+        def publish(rid, script, stats):
+            calls.append(rid)
+            s.sim.definitive = 999
+            if len(calls) == 1:
+                raise Interrupted("stopped")
+            return True
+
+        was = s.sim.definitive
+        s._done.put((7, object(), SimpleNamespace(final=False)))
+        with mock.patch.object(s.sim, "publish", side_effect=publish):
+            self.assertEqual(s.runs(), [])
+            self.assertEqual(s.sim.definitive, was)
+            self.assertEqual(calls, [7])
+            s.runs()
+        self.assertEqual(calls, [7, 7])
+        self.assertEqual(s.sim.definitive, 999)
+        self.assertIsNone(s._stopped)
+
+
+@unittest.skipIf(gui is None, "no display")
+class ReplacedTest(unittest.TestCase):
+    def test_a_window_a_new_one_replaces_closes(self):
+        """In a window that stays hidden."""
+        s = Session(["mode 1 → A"])
+        root = hidden_root()
+        app = gui.App(root, s)
+        worker = app.worker
+        app.replaced = True
+        end = time.time() + 10
+        while time.time() < end and not app.stopping:
+            root.update()
+            time.sleep(0.005)
+        self.assertTrue(app.stopping)
+        worker.join(10)
+        self.assertFalse(worker.is_alive())
+        app = root = None
+        gc.collect()
+
+
 @unittest.skipIf(gui is None, "no display")
 class CaptionTest(unittest.TestCase):
     def test_a_long_caption_is_shown_whole(self):
@@ -432,6 +477,30 @@ class WindowTest(unittest.TestCase):
             app.draw(app.snap)
             self.assertEqual(len(chips()), shown)
             self.assertTrue(all(c.coords(i)[0] >= app.edge[1] for i in c.find_all() if c.type(i) == "rectangle" and c.itemcget(i, "stipple")))
+
+    def test_a_failure_of_a_step_does_not_end_the_thread(self):
+        """Pause does not stop what a run installs, and whatever fails, Play still works."""
+        app, stops = self.app, []
+        self.pump(10, lambda: app.snap is not None)
+        STOP.set()
+
+        def fails():
+            stops.append(STOP.is_set())
+            if len(stops) == 1:
+                raise ValueError("it failed")
+            return []
+
+        with mock.patch.object(self.s, "runs", side_effect=fails):
+            app.paused = False
+            self.pump(10, lambda: len(stops) > 2 and "it failed" in app.text.get("1.0", "end"))
+        self.assertEqual(stops[0], False)
+        self.assertTrue(app.worker.is_alive())
+        self.assertTrue(app.paused)
+        self.assertEqual(app.play.cget("text"), "▶ Play")
+        at = self.s.position
+        app.toggle()
+        self.pump(10, lambda: self.s.position > at)
+        self.assertGreater(self.s.position, at)
 
     def test_the_axis_has_a_dozen_labels_at_every_zoom(self):
         span = gui.MIN_SPAN

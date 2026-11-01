@@ -188,6 +188,7 @@ class Session:
         self.calculator = None
         atexit.register(self.close)
         self._done: queue.Queue = queue.Queue()  # (request id, script, stats or the error) of completed runs
+        self._stopped = None  # what `runs` could not install because of Pause, from `_done`
         self.edits: list[str] = []  # the user's edits, as typed, oldest first
         self.seen = (0, 0)  # refusals and generator runs already reported
         ops = [op for text in line for op in parse_op(text)]
@@ -236,18 +237,28 @@ class Session:
         out = []
         while True:
             try:
-                rid, script, stats = self._done.get_nowait()
+                got = self._stopped or self._done.get_nowait()
             except queue.Empty:
                 break
-            if stats is not None and not stats.final:
-                self.sim.publish(rid, script, stats)
+            self._stopped = None
+            rid, script, stats = got
+            if isinstance(script, Exception):
+                if self._running is not None and self._running[0] == rid:
+                    self._running = None
+                out.append(f"the generator run failed: {script}")
                 continue
+            snap = self.sim.snapshot()
+            try:
+                if stats is not None and not stats.final:
+                    self.sim.publish(rid, script, stats)
+                    continue
+                self.sim.complete(rid, script, stats)
+            except Interrupted:  # (Pause): undone, and installed again at the next call
+                self.sim.restore(snap)
+                self._stopped = got
+                return out
             if self._running is not None and self._running[0] == rid:
                 self._running = None
-            if isinstance(script, Exception):
-                out.append(f"the generator run failed: {script}")
-            else:
-                self.sim.complete(rid, script, stats)
         req = self.sim.request
         if req is None and self._running is not None and self._done.empty():
             self.close()  # overtaken by the script in place: it is over

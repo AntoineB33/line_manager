@@ -264,18 +264,17 @@ class SessionLogTest(unittest.TestCase):
 
 
 class ReRunTest(unittest.TestCase):
-    def test_a_run_is_not_cancelled_by_its_own_script(self):
+    def test_a_run_is_cancelled_by_a_new_call_of_its_script(self):
+        """requirement.md: called again while it is running, the previous run is cancelled."""
         sim, chip = background(["mode 1 → D"], PresenceRatioProblem({}, 90))
         req = sim.request
         out = list(req.gen.stages(req.state, req.chip, req.known, req.previous))
         sim.publish(req.id, *out[0])
         at = next(e.trigger.lo for e in sim.script.events if isinstance(e.trigger, ChipIn) and isinstance(e.actions[0], RerunAction))
         go(sim, chip, at + 1)
-        self.assertIs(sim.request, req)
-        sim.complete(req.id, *out[-1])
-        self.assertIsNot(sim.request, req)  # now it may
-        self.assertIsNotNone(sim.request)
+        self.assertIsNot(sim.request, req)
         self.assertEqual(sim.request.why, "script")
+        self.assertFalse(sim.complete(req.id, *out[-1]))
 
     def test_the_next_run_comes_after_this_one(self):
         """The first stage measures: at twice what the run takes, not D/18."""

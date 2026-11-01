@@ -415,12 +415,12 @@ class HyperparameterTest(unittest.TestCase):
 
     def test_schedules(self):
         H = F(10)
-        qs = [0.001, 0.05, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95, 0.999]
+        qs = [0, 0.001, 0.05, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95, 0.999, 1]
         for q1, q2 in zip(qs, qs[1:]):
             self.assertLessEqual(budget(q1), budget(q2))
             self.assertGreater(rerun_distance(q1, H), rerun_distance(q2, H))
             self.assertGreaterEqual(rerun_transitions(q1), rerun_transitions(q2))
-        for bad in (0, 1, -0.1, 1.5):
+        for bad in (-0.1, 1.5):
             with self.assertRaises(ValueError):
                 RulesGenerator(parse_rules([]), PresenceRatioProblem({}, 1), bad)
 

@@ -295,10 +295,10 @@ class App:
                     self.out.put(job())
                 except Exception as e:  # shown, and the simulation goes on
                     self.out.put(f"error: {e}")
-            n = len(self.s.sim.log.runs)
+            n = self.s.sim.log.run_count
             for msg in self.s.runs():  # start the run asked for, install the completed ones
                 self.out.put(msg)
-            busy |= len(self.s.sim.log.runs) != n
+            busy |= self.s.sim.log.run_count != n
             if not self.s.sim.started:  # the initial script: the generator runs as soon as possible
                 self.wall = None
                 self._publish()

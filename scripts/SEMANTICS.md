@@ -639,10 +639,11 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     there for its minimum length on the length before the chip. The pace does not depend on the run: at each 8 s without
     a new frontier, the simulation moves it 10 further with the script in place
     (`Simulation.keep_pace`; 8 so that an edit of 2 s going on never delays it), and what
-    the run sends later only counts after it (`Simulation._fit`). The script's position
-    triggers never cancel the run going on: they wait for its end, and the first stage
-    puts the next run at twice the time the run is going to take, if that is further
-    than D/18. If the program was put to sleep, the chip is where it would have gone,
+    the run sends later only counts after it (`Simulation._fit`). A call to run again
+    cancels the run going on, whatever asks for it, the script's position triggers too. So
+    that these do not cancel their own run, the first stage puts the next run at twice the
+    time a run takes at q = 1, if that is further than D/18: it does not depend on q, so a
+    higher q never asks for its next run later. If the program was put to sleep, the chip is where it would have gone,
     and a script for the 10 after it is published at once, in a new run ("catch up"). A published script does not undo what happened; if the line went
     away from it, its triggers ask for a new run. The run ends with its last script,
     or when the script in place has reached c + H, and the compiled shortcut comes with
@@ -687,12 +688,16 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     (`line.Edits`). The process of the edits keeps its own state, and only what changed goes
     there and back (`state_delta.py`).
   - **The memory limit.** Past `MEMORY_LIMIT`, half of what is left of the chip and not flat
-    yet becomes a simple line (`resolve.flattened`): the claims there become those of the
-    owner FLAT, one per element and one "no K" per stretch where a kind that rules mention
-    is absent, so that no rule chooses again, and the edits lose those positions. There
-    nothing comes back when a contradiction disappears, and what gives way is gone. Past the
-    limit again, half of what is flat is removed, the furthest first. Nothing at or right of
-    the chip goes. The log only keeps its last changes, which keep older states.
+    yet, over all the kinds and claims, becomes a simple line (`resolve.flattened`): the
+    claims there become those of the owner FLAT, one per element and one "no K" per stretch
+    where a kind that rules mention is absent, so that no rule chooses again, and the edits
+    lose those positions. There nothing comes back when a contradiction disappears, and what
+    gives way is gone. Past the limit again, half of what is flat is removed, the furthest
+    first. Nothing at or right of the chip goes, so the limit can stay exceeded by what is
+    there. The limit is looked at after each edit and each stretch of the chip, the mode
+    rules' changes included. The log only keeps its last changes, refusals and runs, and
+    only its newest run keeps what it compiled (older states). The chip's trajectory keeps
+    one point per change of speed.
   - **Elements nothing reads.** An edit of kinds no rule mentions solves nothing
     (`resolve._apart`): only their intervals are computed, from the edits that have them.
     If no constraint or problem reads them either, it needs no process, and the generator's
@@ -820,7 +825,7 @@ call ends it (`test_background_runs`).
 
   In both cases the script has no events at all.
 
-## 9. The allocated resources quantity q ∈ (0, 1)
+## 9. The allocated resources quantity q ∈ [0, 1]
 
 | quantity | definition | monotonicity |
 |---|---|---|

@@ -1,10 +1,12 @@
 """A run of the generator is progressive (requirement.md): scripts published one after the
 other, definitive up to a position that moves on at the pace."""
 
+import itertools
 import os
 import sys
 import unittest
 from fractions import Fraction as F
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -16,7 +18,7 @@ from line import LineState, Op  # noqa: E402
 from modes import ModeTimeline  # noqa: E402
 from problems import PresenceRatioProblem  # noqa: E402
 from rules import parse_rules  # noqa: E402
-from script import EditAction  # noqa: E402
+from script import ChipIn, EditAction, RerunAction  # noqa: E402
 from simulation import Chip, Simulation  # noqa: E402
 
 RULES = ["mode 1 → D"]
@@ -82,6 +84,34 @@ class StagesTest(unittest.TestCase):
         self.assertTrue(all(not s.stretches for s, _ in out[:-1]))
         self.assertTrue(out[-1][0].stretches)
 
+    def test_the_bounds_of_q(self):
+        """q is in [0, 1], and q = 0 is the lowest of them, not a run that stops early."""
+        for q in (0, 1, 0.0, 1.0, F(0), F(1)):
+            self.assertEqual(stages(gen(q=q, H=120))[-1][1].definitive, 120)
+        self.assertLess(len(stages(gen(q=0, H=120))), len(stages(gen(q=1, H=120))))
+        for q in (-0.1, 1.1):
+            with self.assertRaises(ValueError):
+                gen(q=q)
+
+    def test_the_bounds_of_q_in_a_process_of_its_own(self):
+        for q in (0, 1):
+            g = gen(q=q, H=120)
+            g.paced = True
+            self.assertEqual(stages(g)[-1][1].definitive, 120)
+
+    def test_a_lower_q_never_asks_for_its_next_run_sooner(self):
+        """Whatever a stage takes: the longer runs of a higher q do not put theirs further."""
+        def next_run(q, seconds):
+            ticks = itertools.count(0, seconds)
+            with mock.patch("generator.time.perf_counter", lambda: float(next(ticks))):
+                g = gen(q=q, H=1440)
+                g.paced = True
+                script, _ = next(g.stages(LineState.empty(), F(0), ModeTimeline(0, "1").known(0)))
+            return next(e.trigger.lo for e in script.events if isinstance(e.trigger, ChipIn) and isinstance(e.actions[0], RerunAction))
+        for seconds in (0, 1, 5):
+            at = [next_run(q, seconds) for q in (0, F(1, 10), F(1, 2), F(9, 10), 1)]
+            self.assertEqual(at, sorted(at, reverse=True), seconds)
+
 
 class PublishTest(unittest.TestCase):
     def simulation(self, **k):
@@ -121,6 +151,16 @@ class PublishTest(unittest.TestCase):
         before = sim.script
         self.assertFalse(sim.publish(old.id, *out[0]))
         self.assertIs(sim.script, before)
+
+    def test_a_position_trigger_cancels_the_run_going_on(self):
+        sim, chip = self.simulation()
+        req, out = self.run_of(sim)
+        sim.publish(req.id, *out[0])
+        at = next(e.trigger.lo for e in sim.script.events if isinstance(e.trigger, ChipIn) and isinstance(e.actions[0], RerunAction))
+        self.go(sim, chip, at + 1)
+        self.assertIsNot(sim.request, req)
+        self.assertEqual(sim.request.chip, at)
+        self.assertFalse(sim.publish(req.id, *out[1]))
 
     def test_what_a_stage_did_is_not_done_again(self):
         sim, chip = self.simulation()

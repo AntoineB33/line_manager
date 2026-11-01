@@ -9,14 +9,14 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from helpers import Interval  # noqa: E402
 
-from generator import RulesGenerator  # noqa: E402
+from generator import RulesGenerator, RunStats  # noqa: E402
 from line import FLAT, USER, LineState, Op  # noqa: E402
 from modes import ModeTimeline  # noqa: E402
 from problems import PresenceRatioProblem  # noqa: E402
 from region import Region  # noqa: E402
 from resolve import apply_edit, flattened  # noqa: E402
 from rules import parse_rules  # noqa: E402
-from simulation import Chip, Simulation  # noqa: E402
+from simulation import LOG_KEPT, Chip, Simulation  # noqa: E402
 from solver import solve  # noqa: E402
 
 RULES = ["A → B or C", "C → no B 1 unit on the right"]
@@ -136,6 +136,80 @@ class SimulationTest(unittest.TestCase):
             self.assertIsNone(s.edit_now([Op.put("A", Interval.closed(4 * k + 1, 4 * k + 2))]))
         self.assertIsNone(s.flat_to)
         self.assertTrue(s.state.line.presence("A").contains(F(1)))
+
+    def test_every_kind_counts(self):
+        """The kind with the most intervals is right of the chip: J, left of it, still goes."""
+        rs = parse_rules(RULES)
+        ops = [Op.put("J", Interval.closed(2 * i - 1000, 2 * i - 999)) for i in range(100)]
+        ops += [Op.put("K", Interval.closed(2 * i + 10, 2 * i + 11)) for i in range(400)]
+        s = self.sim(rs, 10 ** 9)
+        s.state = apply_edit(rs, s.state, ops, USER)
+        kept = s.state.line.presence("K")
+        s.memory_limit = s.state.memory() // 2
+        s._within_memory(F(0))
+        self.assertIsNotNone(s.flat_to)
+        self.assertIsNotNone(s.gone_to)
+        self.assertEqual(s.state.line.presence("K"), kept)
+        self.assertFalse(s.state.line.presence("J").contains(F(-1000)))
+
+    def test_what_only_claims_is_counted(self):
+        """Nothing on the line there: the "no K" elements are what takes the memory."""
+        rs = parse_rules(RULES)
+        s = self.sim(rs, 10 ** 9)
+        s.state = apply_edit(rs, s.state, [Op.put_no("Q", Interval.closed(2 * i - 1000, 2 * i - 999)) for i in range(100)], USER)
+        before = s.state.memory()
+        s.memory_limit = before // 2
+        s._within_memory(F(0))
+        self.assertLess(s.state.memory(), before)
+
+    def test_the_mode_rules_alone_reach_the_limit(self):
+        """No edit of the user or the script: what the chip drags is flattened all the same."""
+        rs = parse_rules(["mode 1 → D", "mode 2 → no D"])
+        g = RulesGenerator(rs, PresenceRatioProblem({}, 4), 0.5)
+        modes = ModeTimeline(0, "1", [(F(i, 2) + 1, "2" if i % 2 == 0 else "1") for i in range(60)])
+        s = Simulation(LineState.empty(), g, Chip([(0, 0), (1000, 1000)]), modes)
+        s.memory_limit = 3000
+        s.advance(F(31))
+        self.assertIsNotNone(s.flat_to)
+        self.assertLessEqual(s.state.memory(), 3000)
+
+    def test_the_log_stays_small(self):
+        s = self.sim(parse_rules(RULES), 10 ** 9)
+        s.start()
+        for i in range(3000):
+            s.log.ran((F(i), F(i), "script", s.script, RunStats()))
+            s.log.refuse((F(i), "script", "no"))
+        self.assertLessEqual(len(s.log.runs), 2 * LOG_KEPT)
+        self.assertLessEqual(len(s.log.refused), 2 * LOG_KEPT)
+        self.assertEqual(s.log.refused_count, 3000)
+        self.assertGreater(s.log.run_count, 3000)
+        self.assertEqual(len(s.log.runs_since(s.log.run_count - 2)), 2)
+        self.assertEqual(s.log.refused_since(0)[-1][0], 2999)
+
+    def test_only_the_newest_run_keeps_what_it_compiled(self):
+        s = self.sim(parse_rules(["mode 1 → D"]), 10 ** 9)
+        s.start()
+        s.log.ran((F(1), F(1), "script", s.script, RunStats()))
+        self.assertIsNone(s.log.runs[-2][3].base)
+        self.assertEqual(s.log.runs[-2][3].stretches, [])
+        self.assertIs(s.log.runs[-1][3], s.script)
+
+    def test_the_trajectory_stays_small(self):
+        chip = Chip([(0, 0)])
+        for i in range(1, 5001):
+            chip.extend(F(i, 20), F(i, 20))
+        self.assertEqual(len(chip.points), 2)
+        self.assertEqual(chip.position(F(7, 20)), F(7, 20))
+        chip.extend(F(5001, 20) + 1, F(5001, 20))  # another speed
+        self.assertEqual(len(chip.points), 3)
+
+    def test_a_stopped_step_gives_the_trajectory_back(self):
+        chip = Chip([(0, 0), (1, 1)])
+        s = Simulation(LineState.empty(), RulesGenerator(parse_rules(RULES), PresenceRatioProblem({}, 4), 0.5), chip, ModeTimeline(0, "1"))
+        snap = s.snapshot()
+        chip.extend(2, 2)
+        s.restore(snap)
+        self.assertEqual(chip.points, [(0, 0), (1, 1)])
 
     def test_under_the_limit_nothing_happens(self):
         rs = parse_rules(RULES)

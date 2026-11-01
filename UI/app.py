@@ -361,13 +361,13 @@ class Session:
         log = self.sim.log
         refused, runs = self.seen
         out = []
-        for t, c, why, _, stats in log.runs[runs:]:
+        for t, c, why, _, stats in log.runs_since(runs):
             if stats.chosen != "no-op":
                 out.append(f"generator at chip {c} ({why}): {stats.chosen}")
-        for t, src, why in log.refused[refused:]:
+        for t, src, why in log.refused_since(refused):
             if src != "user":
                 out.append(f"refused at time {t} ({src}): {why}")
-        self.seen = (len(log.refused), len(log.runs))
+        self.seen = (log.refused_count, log.run_count)
         return out
 
     # ------------------------------------------------------------ commands
@@ -476,7 +476,7 @@ class Session:
                 + ", ".join(f"{k} {v}" for k, v in sorted((getattr(p, 'targets', None) or getattr(p, 'lengths', {})).items()))
                 for p, w in self.problems] or ["no optimization problem"]
         out.append("constraints (from the chip): " + (", ".join(map(str, self.constraints)) or "none"))
-        out.append(f"allocated resources quantity {self.q}, {len(self.sim.log.runs)} generator runs")
+        out.append(f"allocated resources quantity {self.q}, {self.sim.log.run_count} generator runs")
         return "\n".join(out)
 
     def state_text(self) -> str:
@@ -568,7 +568,7 @@ def start(rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=
     speed:    its speed, > 0, in positions per second
     line:     the initial state of the line, as edits ("A on [1, 3)", "A 50% at 2")
     problems: [(problem, weight)]: PresenceRatioProblem, MinimumLengthProblem
-    q:        the allocated resources quantity, in (0, 1)
+    q:        the allocated resources quantity, in [0, 1]
     constraints: what the generated script keeps true after the chip: constraints.py's
               (FifteenMinuteBreaks()), or edits written from the chip, as text
               ("Future on (0, inf)": Future on (chip, inf))

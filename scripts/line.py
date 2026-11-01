@@ -276,7 +276,19 @@ class LineState:
     def memory(self) -> int:
         """About what it takes, in bytes: each interval is kept in the line, the claims and
         the edits it comes from."""
+        return BYTES_PER_INTERVAL * sum(len(r.core.intervals) for r in self._regions()) + BYTES_PER_EDIT * len(self.history)
+
+    def _regions(self) -> list:
         regions = [r for d in self.line.vals.values() for r in d.values()]
         for c in (self.claims.pos, self.claims.neg, self.claims.taken):
             regions += [r for d in c.values() for r in d.values()]
-        return BYTES_PER_INTERVAL * sum(len(r.core.intervals) for r in regions) + BYTES_PER_EDIT * len(self.history)
+        return regions
+
+    def starts_before(self, c) -> list:
+        """Where the intervals that end before c start, of every kind and claim, in order,
+        each position once."""
+        out = []
+        for x in sorted(iv.lo for r in self._regions() for iv in r.core.intervals if iv.hi < c):
+            if not out or out[-1] != x:
+                out.append(x)
+        return out

@@ -93,8 +93,14 @@ class Chip:
     def extend(self, t, x) -> None:
         """The trajectory goes on to (t, x): t after the last time, x not to the left."""
         t, x = Fraction(t), Fraction(x)
-        if not t > self.points[-1][0] or x < self.points[-1][1]:
+        t1, x1 = self.points[-1]
+        if not t > t1 or x < x1:
             raise ValueError("the chip goes on later, and never to the left")
+        if len(self.points) > 1:
+            t0, x0 = self.points[-2]
+            if (x1 - x0) * (t - t1) == (x - x1) * (t1 - t0):  # the same speed: one segment, whatever the time
+                self.points[-1] = (t, x)
+                return
         self.points.append((t, x))
 
     def position(self, t: Fraction) -> Fraction:
@@ -153,6 +159,8 @@ class Log:
     changes: list[Change] = field(default_factory=list)
     refused: list[tuple[Fraction, str, str]] = field(default_factory=list)  # (time, source, reason)
     runs: list[tuple[Fraction, Fraction, str, Script, RunStats]] = field(default_factory=list)
+    refused_gone: int = 0  # how many were dropped from the start of `refused`
+    runs_gone: int = 0  # and of `runs`
 
     def changed(self, change: Change) -> None:
         """The last changes only: each one keeps two states, which the memory limit must
@@ -160,6 +168,37 @@ class Log:
         self.changes.append(change)
         if len(self.changes) > 2 * LOG_KEPT:
             del self.changes[:LOG_KEPT]
+
+    def refuse(self, entry: tuple) -> None:
+        self.refused.append(entry)
+        if len(self.refused) > 2 * LOG_KEPT:
+            del self.refused[:LOG_KEPT]
+            self.refused_gone += LOG_KEPT
+
+    def ran(self, run: tuple) -> None:
+        """The last runs only. Only the newest keeps what its script compiled: the rest keep
+        older states too, which the memory limit could not free."""
+        if self.runs:
+            t, c, why, script, stats = self.runs[-1]
+            self.runs[-1] = (t, c, why, replace(script, stretches=[], base=None), stats)
+        self.runs.append(run)
+        if len(self.runs) > 2 * LOG_KEPT:
+            del self.runs[:LOG_KEPT]
+            self.runs_gone += LOG_KEPT
+
+    @property
+    def refused_count(self) -> int:
+        return self.refused_gone + len(self.refused)
+
+    @property
+    def run_count(self) -> int:
+        return self.runs_gone + len(self.runs)
+
+    def refused_since(self, count: int) -> list:
+        return self.refused[max(0, count - self.refused_gone):]
+
+    def runs_since(self, count: int) -> list:
+        return self.runs[max(0, count - self.runs_gone):]
 
 
 class Simulation:
@@ -198,14 +237,17 @@ class Simulation:
 
     def snapshot(self) -> tuple:
         """What a step changes, to go back to it (`restore`) if the step is interrupted."""
-        return (self.state, len(self.log.changes), len(self.log.refused), len(self.log.runs), self.script,
+        return (self.state, len(self.log.changes), self.log.refused_count, self.log.run_count, self.script,
                 self.revealed, self._since_install, list(self._was_true), list(self._fired), self.t, self.started,
-                len(self.chip.points), self._stretch, self.request, self._shift, self.definitive)
+                len(self.chip.points), self.chip.points[-1], self._stretch, self.request, self._shift, self.definitive,
+                self.flat_to, self.gone_to)
 
     def restore(self, snap: tuple) -> None:
         (self.state, nc, nr, nu, self.script, self.revealed, self._since_install, self._was_true, self._fired,
-         self.t, self.started, npts, self._stretch, self.request, self._shift, self.definitive) = snap
-        del self.log.changes[nc:], self.log.refused[nr:], self.log.runs[nu:], self.chip.points[npts:]
+         self.t, self.started, npts, last, self._stretch, self.request, self._shift, self.definitive,
+         self.flat_to, self.gone_to) = snap
+        del self.log.changes[nc:], self.log.refused[max(0, nr - self.log.refused_gone):], self.log.runs[max(0, nu - self.log.runs_gone):]
+        self.chip.points[npts - 1:] = [last]  # (a step of the same speed moves the last point)
 
     def known(self, t: Fraction):
         return self.modes.known(self.chip.position(t))
@@ -278,7 +320,7 @@ class Simulation:
             self.script = self._fit(self.script)
             if self.definitive >= req.chip + getattr(self.gen, "horizon", 0):
                 self.request = None
-                self.log.runs.append((t, req.chip, req.why, self.script, RunStats(chosen="the script in place, as a last resort")))
+                self.log.ran((t, req.chip, req.why, self.script, RunStats(chosen="the script in place, as a last resort")))
                 return
 
     def _fit(self, script: Script) -> Script:
@@ -343,7 +385,7 @@ class Simulation:
         self.script = script
         self._reset()
         self.definitive = None if stats.definitive is None else max(stats.definitive, self.definitive or stats.definitive)
-        self.log.runs.append((t, c, why, script, stats))
+        self.log.ran((t, c, why, script, stats))
 
     def replace_script(self, script: Script) -> None:
         """The user's script (script_text.py) replaces the one in place, and the run going
@@ -396,7 +438,7 @@ class Simulation:
             except Refused as e:
                 why = str(e)
         if why:
-            self.log.refused.append((t, source, why))
+            self.log.refuse((t, source, why))
             return False
         self.log.changed(Change(t, self.chip.position(t), source, before, after))
         self.state = after
@@ -408,8 +450,7 @@ class Simulation:
         the furthest first, then half of what is flat is removed, and so on."""
         while self.state.memory() > self.memory_limit:
             del self.log.changes[:]  # they keep older states
-            busiest = max((r for d in self.state.line.vals.values() for r in d.values()), key=lambda r: len(r.core.intervals), default=None)
-            starts = [iv.lo for iv in busiest.core.intervals if iv.hi < c] if busiest else []
+            starts = self.state.starts_before(c)
             layered = [x for x in starts if self.flat_to is None or x >= self.flat_to]
             flat = [x for x in starts if self.flat_to is not None and x < self.flat_to and (self.gone_to is None or x >= self.gone_to)]
             if len(layered) >= 2:
@@ -440,6 +481,7 @@ class Simulation:
         while self.t < end:
             t1 = min(self._next_instant(self.t), end)
             self._sweep(self.t, t1)
+            self._within_memory(self.chip.position(t1))  # (the mode rules add to the line too)
             self.t = t1
             self._instant(self.t)
 
@@ -450,12 +492,12 @@ class Simulation:
 
     def edit_now(self, ops: list[Op]) -> str | None:
         """An edit of the user at the current time: None, or why it is refused."""
-        n = len(self.log.refused)
+        n = self.log.refused_count
         if not self.started:  # an edit of the first instant: the rest of it at start()
             self._edit(self.t, ops, USER, "user")
         else:
             self._instant(self.t, edits=[ops])
-        refused = [why for _, src, why in self.log.refused[n:] if src == "user"]
+        refused = [why for _, src, why in self.log.refused_since(n) if src == "user"]
         return refused[0] if refused else None
 
     def modes_changed(self) -> None:
@@ -543,9 +585,6 @@ class Simulation:
                         c = self.chip.position(t)
                         self._edit(t, [o for k in self.script.constraints for o in k.ops(self.state, c)], GEN, "script")
                     elif isinstance(a, RerunAction):
-                        if isinstance(ev.trigger, ChipIn) and self.request is not None:
-                            self._was_true[i] = False  # a run goes on: not before it ends
-                            continue
                         rerun = ("start" if a.first else "user edit" if isinstance(ev.trigger, Edited)
                                  else "uncovered" if isinstance(ev.trigger, Uncovered) else "script")
                 if rerun:
@@ -601,7 +640,7 @@ class Simulation:
                 self.log.changed(Change(t, ev.start, "mode", ev.before, ev.after, ev.at))
                 self.state = ev.after
             else:
-                self.log.refused.append((t0, "mode", ev[1]))
+                self.log.refuse((t0, "mode", ev[1]))
 
     def ahead(self):
         """The state as a function of the chip's position p, from where it is, for the

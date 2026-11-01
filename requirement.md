@@ -26,7 +26,7 @@ A "mode rule" is the same as an element rule, but can add or remove elements onl
 Example:
 - mode 1 → D 100% & E 100%
 
-The state of the line can be modified only by the user (changing the mode, adding or removing elements) and the "generated script".
+The state of the line can be modified only by the user, the mode rules, and the "generated script".
 
 The "rules generator" takes the current state of the line and the chip's position and produces a "generated script" to solve optimization problems and satisfy constraints.
 This generated script is a very concise text showing events and the corresponding triggers for continuous edits of the line or a new run of the rules generator.
@@ -46,12 +46,12 @@ if the chip is between $x_7$ and $x_8$ and mode is 2, then the generator runs ag
 
 The "allocated resources quantity" hyperparameter in [0, 1] balances between resource usage economy (0) and optimization problem solving (1). When the hyperparameter is lower, then a rules generator run will be faster and use less CPU resources to solve the optimization problems, and the current generated script will trigger less frequently a new rules generator run.
 
-A run of the rules generator is progressive: it publishes a series of generated scripts, each replacing the previous one, and ends after publishing the last one. The generated script is "definitive" up to a position x when every next script of the same run gives the same instructions for the chip's positions before x, whatever the modes. If a run has made the script definitive up to x, then 10 seconds later it must have made it definitive up to x + 10 units, using an approximation if resources are limited. An approximation may lower the optimization score but never breaks a constraint. At the start of a run, the generator must instantly publish a new script that is definitive on the 10 units on the right of the chip. If the chip is beyond the definitiveness (because the program was put to sleep), then the generator must quickly catch up and publish a new script that is definitive on the 10 units on the right of the chip. The duration of a run of the rules generator depends on the allocated resources quantity hyperparameter.
+A run of the rules generator is progressive: it publishes a series of generated scripts, each replacing the previous one, and ends after publishing the last one. The generated script is "definitive" up to a position x when every next script of the same run gives the same resulting line for the chip's positions before x, whatever the modes. If a run has made the script definitive up to x, then 10 seconds later it must have made it definitive up to x + 10 units, using an approximation if resources are limited. An approximation may lower the optimization score but never breaks a constraint. At the start of a run, the generator must nearly instantly publish a new script that is definitive on the 10 units on the right of the chip. If the chip is beyond the definitiveness (because the program was put to sleep), then the generator must quickly catch up and publish a new script that is definitive on the 10 units on the right of the chip. The duration of a run of the rules generator depends on the allocated resources quantity hyperparameter.
 To satisfy this pace, the generator can look at the current generated script.
 
 The "probability finder" program is used to find probability rules in the mode transitions pattern. This helps the rules generator being more performant with a low allocated resources quantity hyperparameter.
 
-Edits from the user (including mode switches) win over what is on the line. Nothing more than necessary is changed from the older elements, or more if it helps keeping a fast computation. If a result cannot be computed in reasonable time, the edit is refused. If the edit leads to a contradiction with the constraints the generated script must satisfy, the edit is refused. For example:
+Edits from the user (including mode switches) win over what is on the line. Nothing more than necessary is changed from the older elements. If a result cannot be computed in reasonable time, the edit is refused. If the edit leads to a contradiction with the constraints the generated script must satisfy, the edit is refused. For example:
 "A → B 100% or C 100%"
 A and B at [1, 2]
 user edit: remove B at 1.5
@@ -69,7 +69,7 @@ user edit 2: remove A at 1
 Now the line is empty again.
 
 
-Every calculation, except for the run of the rules generator, must be considered instantaneous for the state of the line. If the user does an edit that takes time to compute, then when done the state of the line is shown as if the edit was instantaneous. During the calculation, the display of the line doesn't stop and continues to update smoothly, then when it is complete it instantly updates as if the calculation happened instantly. For example, the user changes a mode that must cut the element the chip was pushing forward, but it takes time. So the chip continues to push the element forward, and when the calculation is done, the element has a hole behind the chip as if it started to cut the element at the chip's position when the mode was changed.
+Every calculation, except for the run of the rules generator, must be considered instantaneous for the state of the line. If the user does an edit that takes time to compute, then when done the state of the line is shown as if the edit was instantaneous. During the calculation, the display of the line doesn't stop and continues to update smoothly, then when it is complete it updates as if the calculation happened instantly. For example, the user changes a mode that must cut the element the chip was pushing forward, but it takes time. So the chip continues to push the element forward, and when the calculation is done, the element has a hole behind the chip as if it started to cut the element at the chip's position when the mode was changed.
 For the rules generator however, when a new generated script is published, it is applied and doesn't revert the display. When the rules generator starts, it takes a snapshot of the current state of the line and the chip's position, and uses it to compute the generated script. That means that if it returns a new script, it could be that the current state already disrupts the new plans so much, that the new script instantly triggers a new run.
 
 When memory limit is reached, the furthest elements in the left of the chip get flattened (so the reverse logic is degraded there). Even further, the elements are removed.

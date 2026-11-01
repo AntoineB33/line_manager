@@ -35,7 +35,7 @@ and plans the window W = (c, c + H], H the longest horizon of its problems.
    probability finder where it predicts one (else the mode goes on). Each compiled
    stretch is in the script (script.Script.stretches); other mode sequences are not.
 
-The hyperparameter q in (0, 1):
+The hyperparameter q in [0, 1]:
     budget      B(q) = 2 + floor(36 q)           candidates evaluated (non-decreasing)
     distance    D(q) = H (1 - q / 2)             rerun when the chip has moved D (decreasing); with mode
                                                  rules, they are compiled up to c + D / 6 (a run compiles
@@ -106,8 +106,8 @@ class RulesGenerator:
     def __init__(self, rules: RuleSet, problems, q: float, use_probability: bool = True, constraints=()) -> None:
         """problems: a problem, or [(problem, weight)] with weights >= 0; constraints:
         constraints.py's (anything with `ops(state, chip)`)."""
-        if not 0 < q < 1:
-            raise ValueError("the allocated resources quantity must be in (0, 1)")
+        if not 0 <= q <= 1:
+            raise ValueError("the allocated resources quantity must be in [0, 1]")
         self.rules = rules
         self.problems = [(problems, Fraction(1))] if hasattr(problems, "error") else [(p, Fraction(w)) for p, w in problems]
         if any(w < 0 for _, w in self.problems):
@@ -151,14 +151,19 @@ class RulesGenerator:
 
     def frontiers(self, c: Fraction) -> list:
         """Where the stages of a run from c make the script definitive: c + PACE, then steps
-        of at least PACE up to c + H, as many as q allows (the lower q, the shorter the run).
-        None for a run that reaches c + H at once."""
+        of at least PACE up to c + H, as many as q allows (the lower q, the shorter the run),
+        at least one: with q = 0 too a run reaches c + H, or it would run again sooner than
+        with a higher q. None for a run that reaches c + H at once."""
         first = c + PACE
         rest = c + self.horizon - first
         if rest <= 0:
             return [None]
-        more = math.ceil(Fraction(str(self.q)) * rest / PACE)
-        return [first + rest * i / more for i in range(more + 1)] if more else [first]
+        more = max(1, math.ceil(Fraction(str(self.q)) * rest / PACE))
+        return [first + rest * i / more for i in range(more + 1)]
+
+    def most_stages(self) -> int:
+        """The stages of a run at q = 1, the most a run can have."""
+        return len(RulesGenerator(self.rules, self.problems, 1).frontiers(Fraction(0)))
 
     def run(self, state: LineState, chip, known: ModeKnowledge) -> tuple[Script, RunStats]:
         """The last script of the run."""
@@ -225,9 +230,10 @@ class RulesGenerator:
                 after_edits = []
                 if len(frontiers) > 1 or not self._futile(state, ops):
                     next_run = D / 18 if self.rules.mode_rules else D
-                    if self.paced:  # after this run, whatever it takes: twice the time it is going to take
+                    if self.paced:  # after this run, or it would cancel it: twice the time of the longest
+                        # run, whatever q is, so that a higher q never asks for its next run later
                         took = Fraction(time.perf_counter() - began).limit_denominator(1000)
-                        next_run = max(next_run, 2 * took * len(frontiers) * self.speed)
+                        next_run = max(next_run, 2 * took * self.most_stages() * self.speed)
                     after_edits.append(Event(ChipIn(c + next_run, INF), (RerunAction(),)))
                     after_edits.append(Event(TransitionCount(rerun_transitions(self.q)), (RerunAction(),)))
                     after_edits += self._watches(current, c, D, known.current_mode())

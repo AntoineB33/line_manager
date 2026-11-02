@@ -72,7 +72,7 @@ from problems import MinimumLengthProblem, PresenceRatioProblem  # noqa: F401 (t
 from region import Region
 from resolve import Refused, apply_edit
 from rules import RuleSet
-from script import ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Uncovered, Edited, score
+from script import SHOW, ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Uncovered, Edited, score
 from solver import lhs_region
 
 PREDICTIONS = ("scenario", "uniform", "none")
@@ -252,7 +252,8 @@ class RulesGenerator:
                 stretches, stats.refused = compile_runs(self.rules, current, ahead, self.constraints)
             stats.chosen, stats.key, stats.final, stats.definitive = best_label, best_key, final, hi
             events = ([Event(ChipIn(c, INF), (keep,))] if keep is not None else []) + carried + edits + after_edits
-            yield Script(events, stretches, covered, c, current, live, self.constraints), replace(stats)
+            yield Script.of(events, on_view=SHOW, stretches=stretches, covered=covered, origin=c, base=current, live=live,
+                            constraints=self.constraints), replace(stats)
             lo = hi
 
     def _stage(self, ctx: _Context, state: LineState, base: LineState, lo, hi, stats: RunStats, best_key, left: int):

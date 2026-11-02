@@ -17,6 +17,7 @@ from region import Region
 from resolve import apply_edit
 from rules import parse_rules
 from script import ChipIn, Edited, EditAction, Event, RerunAction, ScoreBelow, Script, TransitionCount
+from script_text import parse_script
 from simulation import Chip, Simulation, UserEdit
 
 POOL = ["A → B or C", "B → D", "B → no D 1 unit on the right", "A → no C 1 unit on the left", "C → D",
@@ -65,19 +66,41 @@ class ScriptTest(unittest.TestCase):
         user = apply_edit(rs, LineState.empty(), [Op.put("C", Interval.closed(4, 5))], USER)
         cases = [
             (LineState.empty(), Op.put("B", Interval.closed(-1, 1)), "N1"),  # left of the chip
-            (LineState.empty(), Op.put("B", Interval.point(0)), "N1"),  # the chip's position
-            (LineState.empty(), Op.put("A", Interval.closed(1, 2)), "N1"),  # its consequence B on [0, 1]
+            (LineState.empty(), Op.put("A", Interval.closed(0, 1)), "N1"),  # its consequence B on [-1, 0]
             (user, Op.take("C", Interval.closed(4, 5)), "N2"),  # remove the user's C
             (user, Op.put("C", Interval.closed(4, 5), 50), "N2"),  # change it
             (user, Op.put("B", Interval.point(4)), "N2"),  # newest wins: the user's C would go
         ]
         for state, op, why in cases:
-            sim, log = self.run_script(Script([Event(ChipIn(0, 10), (EditAction((op,)),))]), rs, state)
+            sim, log = self.run_script(Script.of([Event(ChipIn(0, 10), (EditAction((op,)),))]), rs, state)
             self.assertEqual(sim.state.line, state.line, op)
             self.assertTrue(log.refused and log.refused[0][2].startswith(why), (why, log.refused))
-        sim, log = self.run_script(Script([Event(ChipIn(0, 10), (EditAction((Op.put("A", Interval.closed(2, 3)),)),))]), rs, LineState.empty())
+        sim, log = self.run_script(Script.of([Event(ChipIn(0, 10), (EditAction((Op.put("A", Interval.closed(2, 3)),)),))]), rs, LineState.empty())
         self.assertEqual(sim.state.line.presence("B"), Region.of(Interval.closed(1, 2)))
         check_log(log, rs)
+
+    def test_at_the_chips_position(self):
+        """Only its left side is out of reach: what is at the chip can change."""
+        rs = parse_rules(["A → B 1 unit on the left"])
+        sim, log = self.run_script(Script.of([Event(ChipIn(0, 10), (EditAction((Op.put("B", Interval.point(0)),)),))]), rs, LineState.empty())
+        self.assertEqual(sim.state.line.presence("B"), Region.of(Interval.point(0)))
+        self.assertFalse(log.refused)
+        check_log(log, rs)
+
+    def test_what_the_rules_placed_from_the_users_element_can_go(self):
+        """The script can remove what the user's element brought through the rules, as long
+        as the element stays and the rules hold."""
+        a = Interval.point(5)
+        no_b, x = Op.put_no("B", a), Op.put("X", a)
+        for rules, op, gone in ((["A → B or C"], no_b, True), (["A & not X → B"], x, True), (["A → B"], no_b, False)):
+            with self.subTest(rules):
+                rs = parse_rules(rules)
+                user = apply_edit(rs, LineState.empty(), [Op.put("A", a)], USER)
+                sim, log = self.run_script(Script.of([Event(ChipIn(0, 10), (EditAction((op,)),))]), rs, user)
+                self.assertTrue(sim.state.line.presence("A").contains(5))
+                self.assertEqual(sim.state.line.presence("B").contains(5), not gone)
+                self.assertEqual(bool(log.refused), not gone)  # (A → B: B cannot go while A stays)
+                check_log(log, rs)
 
 
 class Oracle(RulesGenerator):
@@ -605,6 +628,67 @@ class ProblemsTest(unittest.TestCase):
         self.assertFalse(after.line.presence("A"))
 
 
+class SameResultTest(unittest.TestCase):
+    """requirement.md: the same script, published at the same time, gives the same line once
+    the chip stops, however often its loops iterate."""
+
+    RULES = ["mode 2 → C", "A → B"]
+
+    def script(self, gen):
+        script = gen.run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))[0]
+        kept = [e for e in script.events if not any(isinstance(a, RerunAction) for a in e.actions)]
+        return script.with_events(kept)
+
+    def line(self, step):
+        rs = parse_rules(self.RULES)
+        modes = ModeTimeline(0, "1", [(F(7, 3), "2"), (F(22, 3), "1"), (F(14), "2")])
+        gen = RulesGenerator(rs, [], 0.5, constraints=[KeepOn(Op.put("D", Interval.open_closed(1, 3))), FifteenMinuteBreaks("E", "F", 2, 3)])
+        sim = Simulation(LineState.empty(), gen, Chip([(0, 0), (20, 20)]), modes)
+        sim.start()
+        sim.replace_script(self.script(gen))
+        t = F(0)
+        while t < 30:
+            t += step
+            sim.advance(t)
+        return sim.state.line
+
+    def test_whatever_the_steps(self):
+        lines = [self.line(step) for step in (F(1), F(1, 7), F(13, 4))]
+        self.assertTrue(lines[0].kinds())
+        self.assertEqual(lines[0], lines[1])
+        self.assertEqual(lines[0], lines[2])
+
+
+class ChangingTheScriptTest(unittest.TestCase):
+    def simulation(self, text):
+        sim = Simulation(LineState.empty(), RulesGenerator(parse_rules([]), [], 0.5), Chip([(0, 0), (20, 20)]), ModeTimeline(0, "1"))
+        sim.start()
+        sim.replace_script(parse_script(text, Script()))
+        return sim
+
+    def test_a_loop_adds_to_another_one(self):
+        add = 'if the chip is at or after 2, then add to every 1 s: "if the chip is at or after 3, then put A 100% on [5, 6]".'
+        sim = self.simulation(add)
+        sim.advance(1)
+        self.assertEqual(len(sim.script.loops), 1)
+        sim.advance(4)
+        self.assertEqual([loop.period for loop in sim.script.loops], [F(1, 20), F(1)])
+        self.assertTrue(sim.state.line.presence("A"))
+
+    def test_the_loops_apart_iterate_on_their_own(self):
+        sim = self.simulation("every 1 s:\n  if the chip is at or after 3, then put A 100% on [5, 6].")
+        sim.apart = True
+        sim.advance(4)
+        self.assertFalse(sim.state.line.presence("A"))
+        sim.iterate(F(1))
+        self.assertTrue(sim.state.line.presence("A"))
+
+    def test_the_line_is_shown_again(self):
+        sim = self.simulation("if the chip is at or after 3, then show the line.")
+        sim.advance(4)
+        self.assertEqual(sim.shown, 1)
+
+
 class StepByStepTest(unittest.TestCase):
     """A simulation run step by step (the interactive program) is the simulation run at once."""
 
@@ -695,7 +779,7 @@ class StepByStepTest(unittest.TestCase):
         rs = parse_rules(["A → B"])
         sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 4), 0.5), Chip([(0, 0)]),
                          ModeTimeline(0, "1"))
-        self.assertEqual(sim.script.text(), "if the program starts, then run the generator once, as soon as possible.")
+        self.assertEqual(sim.script.text(), "every 1/20 s:\n  if the program starts, then run the generator once, as soon as possible.")
         self.assertIsNone(sim.edit_now([Op.put("A", Interval.closed(2, 3))]))
         self.assertEqual(sim.log.runs, [])
         sim.start()

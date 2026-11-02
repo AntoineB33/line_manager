@@ -94,11 +94,14 @@ class ParseTest(unittest.TestCase):
                           "if the chip is in [3+ε, 4] and mode is 7, then apply the mode rules.",
                           "elsewhere, apply the mode rules."])
         script = parse_script(text, Script())
-        self.assertEqual(script.text(), text)
+        self.assertEqual(parse_script(script.text(), Script()).text(), script.text())
+        self.assertEqual(script.text().splitlines()[0], "every 1/20 s:")
+        self.assertEqual(script.text().splitlines()[-1], "if the user edits the line, then take no A off [1, 2].")
         self.assertEqual(script.events[0].trigger, ChipIn(F(1), F(5, 2), "2"))
         self.assertEqual(script.events[2].trigger, TransitionCount(1))
-        self.assertIsInstance(script.events[3].trigger, Edited)
-        self.assertIsInstance(script.events[4].trigger, Start)
+        self.assertIsInstance(script.events[-1].trigger, Edited)
+        self.assertIsInstance(script.on_edit[0].trigger, Edited)
+        self.assertIsInstance(script.events[3].trigger, Start)
         self.assertEqual(script.events[1].actions, (RerunAction(),))
         self.assertEqual(script.covered, [(Pos(3, 1), Pos(4), "7")])
         self.assertTrue(script.live)
@@ -233,12 +236,44 @@ class ReplaceTest(unittest.TestCase):
         self.assertIn("[50, 60]", s.sim.script.text())
 
 
+class PartsOfTheScriptTest(unittest.TestCase):
+    """The state, S_f, s_u and s_v of requirement.md, in the text."""
+
+    TEXT = "\n".join(["every 1/20 s:",
+                      "  if the chip is at or after 3, then put A 100% on [5, 6].",
+                      "every 2 s:",
+                      "  if the optimization score becomes less than 1/2, then run the generator again.",
+                      "if the user edits the line, then run the generator again.",
+                      "if the view moves or is resized, then show the line."])
+
+    def test_written_and_read(self):
+        script = parse_script(self.TEXT, Script())
+        self.assertEqual(script.text(), self.TEXT)
+        self.assertEqual([loop.period for loop in script.loops], [F(1, 20), F(2)])
+        self.assertEqual(len(script.on_edit), 1)
+        self.assertTrue(script.shows_line())
+
+    def test_a_script_changes_the_others_not_itself(self):
+        line = 'if the chip is at or after 3, then remove from every 2 s: "if the chip is at or after 9, then show the line"; run the generator again.'
+        script = parse_script(line, Script())
+        self.assertEqual(parse_script(script.text(), Script()).text(), script.text())
+        self.assertEqual(len(script.events[0].actions), 2)
+        for wrong in ('every 2 s:\n' + line,
+                      'if the view moves or is resized, then add to the view script: "if the chip is at or after 9, then show the line".'):
+            with self.assertRaisesRegex(ScriptError, "does not change itself"):
+                parse_script(wrong, Script())
+
+    def test_a_loop_has_a_period(self):
+        with self.assertRaises(ScriptError):
+            parse_script("every 0 s:", Script())
+
+
 class EventsOfTheRequirementTest(unittest.TestCase):
     """The events of the example of requirement.md."""
 
     def test_written_and_read(self):
-        text = "\n".join(["if D 100% exceeds a presence ratio of 1/4 over the next 10 when the chip is in [2, 6) and mode is 1, then run the generator again.",
-                          "if the optimization score becomes less than 9/10, then run the generator again."])
+        text = "\n".join(["every 1/20 s:", "  if D 100% exceeds a presence ratio of 1/4 over the next 10 when the chip is in [2, 6) and mode is 1, then run the generator again.",
+                          "  if the optimization score becomes less than 9/10, then run the generator again."])
         script = parse_script(text, Script())
         self.assertEqual(script.text(), text)
         self.assertEqual(script.events[0].trigger, PresenceAbove("D", F(100), F(1, 4), F(10), F(2), F(6), "1"))

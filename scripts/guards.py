@@ -1,10 +1,12 @@
 """What a generated script may never do, checked on the result of each of its edits:
 
-N1  change the left side of the chip or what is at the chip's position: the line and
-    the claims on (-inf, chip] are unchanged;
+N1  change the left side of the chip: the line and the claims on (-inf, chip) are
+    unchanged (what is at the chip's position may change);
 N2  remove (or change) an element added by the user: the user's claims (their
     removals included) are unchanged. An edit of the script never makes one give way
     (resolve.py refuses it), and the user's edits always come before the script's.
+    What the rules placed from them may go, while the claims stay and the rules still
+    hold: another operand of an "or", or a left side no longer met.
 
 The script also carries out the mode rules (mode_rules.py), as its run compiled them
 (script.Script.stretches). Each of their edits acts at the chip's position x only, so
@@ -26,8 +28,8 @@ from line import USER, Claims, LineState
 from region import Region
 
 
-def left_side(chip, closed: bool = True) -> Region:
-    return Region.of(Interval(-INF, chip, False, closed))
+def left_side(chip) -> Region:
+    return Region.of(Interval(-INF, chip, False, False))
 
 
 def claims_on(c: Claims, region: Region) -> dict:
@@ -65,7 +67,7 @@ def check_script_edit(before: LineState, after: LineState, chip) -> str | None:
     """None if the edit respects N1 and N2, else the reason."""
     left = left_side(chip)
     if not before.line.same_on(after.line, left) or not same_dict(claims_on(before.claims, left), claims_on(after.claims, left)):
-        return f"N1: would change the line at or left of the chip ({chip})"
+        return f"N1: would change the line left of the chip ({chip})"
     if not same_dict(user_claims(before.claims), user_claims(after.claims)):
         return "N2: would remove or change an element added by the user"
     return None
@@ -75,7 +77,7 @@ def check_mode_edit(before: LineState, after: LineState, at: Region, chip) -> st
     """None if an edit of the mode rules on `at` (the chip's position {chip}, or the
     positions a continuous change goes through from chip on) respects M1 and N2, else
     the reason."""
-    left = left_side(chip, closed=False)
+    left = left_side(chip)
     if not before.line.same_on(after.line, left) or not same_dict(claims_on(before.claims, left), claims_on(after.claims, left)):
         return f"M1: would change the line left of the chip ({chip})"
     away = at.complement()

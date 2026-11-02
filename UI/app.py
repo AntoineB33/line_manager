@@ -201,6 +201,7 @@ class Session:
         self.calculator = Calculator()
         atexit.register(self.calculator.close)
         self.sim.calculate = self._calculate
+        self.sim.apart = True  # (and the script's loops have threads of their own: gui.App._looper)
 
     def _calculate(self, name: str, *args) -> tuple:
         out = self.calculator.ask(name, *args)
@@ -327,7 +328,7 @@ class Session:
             elif isinstance(trig, ChipIn):
                 at.append(F(trig.lo))
             elif isinstance(trig, TransitionCount):
-                left = trig.k - self.sim._since_install
+                left = trig.k - self.sim.script.since
                 other.append(f"after {left} more mode transition{'s' if left != 1 else ''}")
         return at, other
 

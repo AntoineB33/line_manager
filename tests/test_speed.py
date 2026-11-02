@@ -568,7 +568,6 @@ class NothingReadsItTest(unittest.TestCase):
         s = self.session()
         s.sim.request = None
         s.sim.script = s.sim.gen.run(s.sim.state, F(0), s.sim.known(s.sim.t))[0]
-        s.sim._was_true, s.sim._fired = [False] * len(s.sim.script.events), [False] * len(s.sim.script.events)
         self.assertIn("the user edits what the rules, the constraints or the problems read", s.sim.script.text())
         s.command("add Other on [50, 51]")
         self.assertIsNone(s.sim.request)

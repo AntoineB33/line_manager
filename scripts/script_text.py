@@ -6,7 +6,9 @@ changed, added or deleted: what is written is what the script does. `previous` i
 script the text was written from, whose shortcuts are kept where they still apply.
 
 The lines at the top of the text, down to the first empty line, tell about the script
-and are not read.
+and are not read. A line "every p s:" starts the loop of period p; the lines that do not
+say their own part of the script (script.Edited, script.Viewed) are in the last one, or
+in the STEP loop before any.
 """
 
 from __future__ import annotations
@@ -19,11 +21,14 @@ from constraints import FifteenMinuteBreaks, KeepOn
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import Op
 from region import ONE, Region
-from script import MODE_RULES, ChipIn, ConstraintEditAction, Edited, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Start, TransitionCount, Uncovered
+from script import MODE_RULES, ON_EDIT, ON_VIEW, STEP, ChangeAction, ChipIn, ConstraintEditAction, Edited, EditAction, Event, Loop, PresenceAbove, RerunAction, ScoreBelow, Script, ShowLine, Start, TransitionCount, Uncovered, Viewed, loop_name
 
 _POS = re.compile(r"(?P<x>-?\d+(?:/\d+)?)?(?:(?P<s>[+-])?(?P<k>\d*)ε)?$")
 _BREAKS = re.compile(r"keep (\S+) on \(chip, chip \+ (\S+)\] with (\S+), as early as possible, none within (\S+) after as much (\S+)$")
 _APPLY = re.compile(rf"if the chip is in \[([^,]+), ([^,]+)\](?: and mode is (\w+))?, then {MODE_RULES}\.?$")
+_LOOP = re.compile(r"every (\S+) s:$")
+_CHANGE = re.compile(r'(add to|remove from) (every \S+ s|the user edit script|the view script): "(.+)"$')
+_OUTSIDE_QUOTES = r'(?=(?:[^"]*"[^"]*")*[^"]*$)'
 _OP = re.compile(r"put no (?P<no>\S+) on (?P<nw>.+)$|put (?P<k>\S+) (?P<v>[^ %]+)% on (?P<w>.+)$"
                  r"|take no (?P<tn>\S+) off (?P<tnw>.+)$|take (?P<t>\S+) off (?P<tw>.+)$")
 
@@ -144,6 +149,11 @@ def _action(text: str):
         return RerunAction(first=True)
     if text == str(ConstraintEditAction()):
         return ConstraintEditAction()
+    if text == str(ShowLine()):
+        return ShowLine()
+    m = _CHANGE.match(text)
+    if m:
+        return ChangeAction(m[1] == "add to", m[2], _event(m[3]))
     return EditAction(tuple(_op(p) for p in re.split(r", (?=put |take )", text)))
 
 
@@ -178,6 +188,8 @@ def _trigger(text: str):
         return Edited()
     if text == str(Edited(True)):
         return Edited(True)
+    if text == str(Viewed()):
+        return Viewed()
     if text == str(Uncovered()):
         return Uncovered()
     m = re.fullmatch(r"(\d+) mode transitions? happened", text)
@@ -210,7 +222,7 @@ def _event(line: str) -> Event:
     body = m[2]
     if body.endswith("....") or (body.endswith(".") and not body.endswith("...")):
         body = body[:-1]  # the end of the sentence
-    return Event(_trigger(m[1]), tuple(_action(a.strip()) for a in body.split("; ")))
+    return Event(_trigger(m[1]), tuple(_action(a.strip()) for a in re.split("; " + _OUTSIDE_QUOTES, body)))
 
 
 def parse_script(text: str, previous: Script, rules=None) -> Script:
@@ -219,12 +231,20 @@ def parse_script(text: str, previous: Script, rules=None) -> Script:
     if lines and lines[0].startswith("Generated script at time"):
         first = next((i for i, s in enumerate(lines) if not s.strip()), len(lines))
     was = {str(k): k for k in previous.constraints}
-    events, covered, constraints, live, errors = [], [], [], False, []
+    parts, covered, constraints, live, errors = {STEP: []}, [], [], False, []
+    on_edit, on_view, period = [], [], STEP
     for i, raw in enumerate(lines[first:], first + 1):
         line = raw.strip()
         if not line or line == "(empty script)":
             continue
         try:
+            m = _LOOP.match(line)
+            if m:
+                period = _number(m[1])
+                if period <= 0:
+                    raise ValueError("a loop's period is > 0")
+                parts.setdefault(period, [])
+                continue
             m = _APPLY.match(line)
             if m:
                 a, b = position(m[1]), position(m[2])
@@ -236,11 +256,18 @@ def parse_script(text: str, previous: Script, rules=None) -> Script:
             elif line.startswith("keep "):
                 constraints.append(was.get(line) or _constraint(line, rules))
             else:
-                events.append(_event(line))
+                e = _event(line)
+                part = on_edit if isinstance(e.trigger, Edited) else on_view if isinstance(e.trigger, Viewed) else parts[period]
+                name = ON_EDIT if part is on_edit else ON_VIEW if part is on_view else loop_name(period)
+                if any(isinstance(a, ChangeAction) and a.target == name for a in e.actions):
+                    raise ValueError(f"a script does not change itself: {name}")
+                part.append(e)
         except ValueError as e:
             errors.append((i, str(e)))
     if errors:
         raise ScriptError(errors)
     same = list(map(str, constraints)) == list(was)
     kept = [st for st in previous.stretches if same and any(m in (st.mode, None) and a <= st.a and st.b <= b for a, b, m in covered)]
-    return replace(previous, events=events, stretches=kept, covered=covered, live=live, constraints=tuple(constraints))
+    loops = [Loop(p, tuple(evs)) for p, evs in parts.items() if evs or p == STEP]
+    return replace(previous, loops=loops, on_edit=tuple(on_edit), on_view=tuple(on_view), frame=[], stretches=kept, covered=covered,
+                   live=live, constraints=tuple(constraints))

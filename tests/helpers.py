@@ -100,7 +100,7 @@ def check_log(log, rs, modes=None) -> int:
         assert not rules_hold(rs, ch.after.line, ch.after.claims), rules_hold(rs, ch.after.line, ch.after.claims)
         assert ch.after.line == solve(rs, ch.after.claims.problem())
         if ch.source == "mode":
-            left = left_side(ch.chip, closed=False)
+            left = left_side(ch.chip)
             assert ch.before.line.same_on(ch.after.line, left), "M1 line"
             assert same_dict(claims_on(ch.before.claims, left), claims_on(ch.after.claims, left)), "M1 claims"
             away = ch.at.complement()  # (the script's own claims may change there: its constraints, kept after the chip)

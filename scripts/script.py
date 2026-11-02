@@ -1,11 +1,30 @@
-"""Generated scripts: a text of events that trigger edits of the line or a new generator
-run. What the text says is what the script does, nothing else: the user can change it
-(script_text.py, Simulation.replace_script), and what is written then applies.
+"""Generated scripts. A script is an object with a state and three elements:
+- S_f (`frame` and `loops`): scripts executed in a loop by different threads at different
+  frequencies. `frame` is s_f, executed at every frame: a flat list of what to place,
+  which depends on the window, so `on_view` fills it where the window is. `loops` are the
+  others: `STEP` is the loop of the simulation's thread, the exact one (below), and any
+  other one has a thread of its own in the window (gui.App._looper).
+- s_u (`on_edit`): executed at each edit of the user.
+- s_v (`on_view`): executed when the view is moved or resized.
+Each can change the state, which includes the others but not itself (ChangeAction). The
+other fields of `Script` are the rest of the state.
+
+The STEP loop is exact: an iteration goes through the positions the chip went through
+since the last one, in order, each trigger at its exact position. So as long as the same
+script is in place, how often it iterates changes when the line adapts, not what it
+becomes (requirement.md). The other loops look at the line as it is when they iterate:
+what the generator writes goes in the STEP loop.
+
+What the text says is what the script does, nothing else: the user can change it
+(script_text.py, Simulation.replace_script), and what is written then applies. s_f is not
+in the text: `on_view` makes it.
 
 At the start of the program the script is only an instruction to run the rules
 generator once, as soon as possible (`Script.initial`).
 
 Lines
+- every p s: the lines under it are the loop of period p. Lines written before any such
+  line are in the STEP loop.
 - keep ...: a constraint of the script (constraints.py), written with its parameters.
 - if <trigger>, then <actions>.
 - if the chip is in [a, b] and mode is m, then apply the mode rules: the mode rules, the
@@ -22,11 +41,13 @@ Triggers
   installation of the script is revealed.
 - Edited(only): fires at each edit of the user; with `only`, of
   an element that a rule, a constraint or a problem of the generator reads.
+- Viewed(): the view moves or is resized.
 - Uncovered(): true while the chip is where the script does not apply the mode rules.
 - PresenceAbove(K, v, y, H, lo, hi, mode): true while the presence ratio of K at v% on
   (chip, chip + H] is above y, the chip in [lo, hi) and the mode at the chip `mode`.
 - ScoreBelow(z): true while the optimization score (`score`) is below z.
   Both are looked at at each instant.
+A line with Edited is in s_u and one with Viewed in s_v, wherever it is written.
 
 Actions
 - EditAction(ops): an edit of the line on exact intervals (continuous: any interval
@@ -35,6 +56,10 @@ Actions
 - ConstraintEditAction(): the edits the script's constraints ask for where it fires, on
   the line as it is. Then as EditAction.
 - RerunAction(): runs the rules generator again; its new script replaces this one.
+- ShowLine(): s_f is made again: what the view shows of the line.
+- ChangeAction(add, target, event): adds this event to a part of the script, or removes
+  it from it: `every p s`, `the user edit script` or `the view script`, never the part it
+  is in (script_text.py refuses it).
 
 Where the run compiled the mode rules ahead (`stretches`, mode_rules.Stretch), the
 simulation goes through what it compiled instead of computing it again: only a
@@ -45,7 +70,7 @@ d after `origin` and the line is `base` moved by d, every stretch is used moved 
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 
 from intervals import INF, Interval, IntervalSet, Num, _fmt
@@ -53,6 +78,8 @@ from line import Op
 from region import Region
 
 MODE_RULES = "apply the mode rules"
+STEP = Fraction(1, 20)  # the seconds between two iterations of the exact loop
+ON_EDIT, ON_VIEW = "the user edit script", "the view script"
 
 
 class _Now:
@@ -106,6 +133,12 @@ class Edited:
 
     def __str__(self) -> str:
         return "the user edits what the rules, the constraints or the problems read" if self.only else "the user edits the line"
+
+
+@dataclass(frozen=True)
+class Viewed:
+    def __str__(self) -> str:
+        return "the view moves or is resized"
 
 
 @dataclass(frozen=True)
@@ -169,34 +202,140 @@ class RerunAction:
 
 
 @dataclass(frozen=True)
+class ShowLine:
+    def __str__(self) -> str:
+        return "show the line"
+
+
+@dataclass(frozen=True)
 class Event:
-    trigger: Start | ChipIn | PresenceAbove | ScoreBelow | TransitionCount | Edited | Uncovered
+    trigger: Start | ChipIn | PresenceAbove | ScoreBelow | TransitionCount | Edited | Viewed | Uncovered
     actions: tuple
 
     def __str__(self) -> str:
         return f"if {self.trigger}, then " + "; ".join(map(str, self.actions)) + "."
 
 
+@dataclass(frozen=True)
+class ChangeAction:
+    add: bool
+    target: str  # `loop_name(p)`, ON_EDIT or ON_VIEW
+    event: Event
+
+    def __str__(self) -> str:
+        return f'{"add to" if self.add else "remove from"} {self.target}: "{str(self.event).removesuffix(".")}"'
+
+
+def loop_name(period: Fraction) -> str:
+    return f"every {_fmt(period)} s"
+
+
+@dataclass(frozen=True)
+class Loop:
+    """A script of S_f: these events, executed every `period` seconds."""
+    period: Fraction
+    events: tuple = ()
+
+
+@dataclass(frozen=True)
+class Place:
+    """An instruction of s_f. With the chip d further than when it was written: `item`, a
+    group of what stays on the line (no coords), moves back with the chip; or it is at
+    `coords`, each point going with the chip at its rate."""
+    item: object
+    shape: str
+    coords: tuple = ()
+    rates: tuple = ()
+
+    def run(self, canvas, scale: float, d: float, moved: float) -> None:
+        if not self.coords:
+            canvas.move(self.item, -scale * (d - moved), 0)
+            return
+        out = list(self.coords)
+        for i, r in enumerate(self.rates):
+            out[2 * i] += (r - 1) * scale * d
+        canvas.coords(self.item, *out)
+
+    def __str__(self) -> str:
+        return f"place {self.shape} at " + (", ".join(map(str, self.coords)) or "the line")
+
+
+SHOW = (Event(Viewed(), (ShowLine(),)),)
+
+
 @dataclass
 class Script:
-    events: list[Event] = field(default_factory=list)
+    loops: list[Loop] = field(default_factory=list)  # S_f, but for s_f
+    on_edit: tuple = ()  # s_u
+    on_view: tuple = ()  # s_v
+    frame: list[Place] = field(default_factory=list, compare=False)  # s_f
     stretches: list = field(default_factory=list)  # mode_rules.Stretch, in the order of the chip
     covered: list = field(default_factory=list)  # (lo, hi, mode): the positions and modes the run compiled
     origin: object = None  # the chip's position the run compiled from
     base: object = None  # the line it compiled from (line.LineState), its own edits made
     live: bool = False  # it applies the mode rules everywhere
     constraints: tuple = ()  # what it keeps
+    true: set = field(default_factory=set, compare=False)  # the text of the events true when last read
+    fired: set = field(default_factory=set, compare=False)  # and of those that fired
+    since: int = field(default=0, compare=False)  # the mode transitions since it was put in place
+
+    @staticmethod
+    def of(events=(), **fields) -> Script:
+        """The script of these events: each in the part of the script its trigger says, the
+        STEP loop if it says none."""
+        return Script(**fields).with_events(events)
 
     @staticmethod
     def initial() -> Script:
         """The script at the start of the program: run the generator once, as soon as possible."""
-        return Script([Event(Start(), (RerunAction(first=True),))])
+        return Script.of([Event(Start(), (RerunAction(first=True),))])
+
+    @property
+    def events(self) -> list[Event]:
+        """What the simulation executes (not s_v, which the window does)."""
+        return [e for loop in self.loops for e in loop.events] + list(self.on_edit)
+
+    def with_events(self, events) -> Script:
+        """The same script with these events; those of another loop stay in it."""
+        where = {str(e): loop.period for loop in self.loops for e in loop.events}
+        parts: dict = {STEP: []} | {loop.period: [] for loop in self.loops}
+        on_edit = []
+        for e in events:
+            (on_edit if isinstance(e.trigger, Edited) else parts[where.get(str(e), STEP)]).append(e)
+        return replace(self, loops=[Loop(p, tuple(evs)) for p, evs in parts.items() if evs or p == STEP], on_edit=tuple(on_edit))
+
+    def changed(self, a: ChangeAction) -> Script:
+        """The script after this action."""
+        def edit(events: tuple) -> tuple:
+            return (*events, a.event) if a.add else tuple(e for e in events if str(e) != str(a.event))
+        if a.target == ON_EDIT:
+            return replace(self, on_edit=edit(self.on_edit))
+        if a.target == ON_VIEW:
+            return replace(self, on_view=edit(self.on_view))
+        loops = list(self.loops)
+        for i, loop in enumerate(loops):
+            if loop_name(loop.period) == a.target:
+                loops[i] = replace(loop, events=edit(loop.events))
+                return replace(self, loops=loops)
+        period = Fraction(a.target.removeprefix("every ").removesuffix(" s"))
+        return replace(self, loops=loops + [Loop(period, (a.event,))]) if a.add else self
+
+    def in_step(self) -> list[Event]:
+        """The events the simulation's thread executes when the other loops have threads."""
+        return [e for loop in self.loops if loop.period == STEP for e in loop.events] + list(self.on_edit)
+
+    def shows_line(self) -> bool:
+        return any(isinstance(a, ShowLine) for e in self.on_view for a in e.actions)
 
     def text(self) -> str:
-        return "\n".join([str(k) for k in self.constraints] + [str(e) for e in self.events] +
-                         [f"if the chip is in [{lo}, {hi}]" + (f" and mode is {m}" if m is not None else "") + f", then {MODE_RULES}."
-                          for lo, hi, m in self.covered] +
-                         ([f"elsewhere, {MODE_RULES}."] if self.live else []))
+        applied = [f"if the chip is in [{lo}, {hi}]" + (f" and mode is {m}" if m is not None else "") + f", then {MODE_RULES}."
+                   for lo, hi, m in self.covered] + ([f"elsewhere, {MODE_RULES}."] if self.live else [])
+        out = [str(k) for k in self.constraints]
+        for loop in sorted(self.loops, key=lambda loop: loop.period != STEP):
+            body = [str(e) for e in loop.events] + (applied if loop.period == STEP else [])
+            if body:
+                out += [f"{loop_name(loop.period)}:"] + [f"  {line}" for line in body]
+        return "\n".join(out + [str(e) for e in self.on_edit + self.on_view])
 
     def rerun_triggers(self) -> list:
         return [e.trigger for e in self.events if any(isinstance(a, RerunAction) for a in e.actions)]

@@ -13,7 +13,7 @@ from modes import ModeTimeline
 from region import Region
 from resolve import apply_edit
 from rules import parse_rules
-from script import ChipIn, Event, PresenceAbove, RerunAction, ScoreBelow, score
+from script import ChipIn, Event, PresenceAbove, RerunAction, ScoreBelow, Script, score
 from simulation import Chip, Simulation
 import watch
 
@@ -85,9 +85,7 @@ class SimulationTest(unittest.TestCase):
         s = line_with([Interval.closed(40, 60)])
         sim = Simulation(s, RulesGenerator(parse_rules([]), PresenceRatioProblem({"A": F(1, 4)}, 40), 0.5), Chip([(0, 0), (100, 100)]), ModeTimeline(0, "1"))
         sim.start()
-        sim.script.events = events
-        sim._was_true = [False] * len(events)
-        sim._fired = [False] * len(events)
+        sim.script = Script.of(events)
         sim._looks = None
         sim._install = mock.Mock()
         return sim

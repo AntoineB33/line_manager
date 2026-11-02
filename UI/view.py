@@ -5,13 +5,17 @@
 goes with the chip: 0 for a point of the line, 1 for one that the chip drags, 1/2 for the
 middle of a band it drags. These rates come from two lists, at p and a little further:
 nothing here knows what the items are. So a frame moves what stays on the line with one
-`canvas.move`, and sets the few items that change shape; the list is built again only when
-what it shows can change (App.draw): the zoom, the line, or the chip past what is listed.
+`canvas.move`, and sets the few items that change shape: that is s_f, the script's `frame`
+(`Retained.frame`), which `Retained.move` executes. The list is built again only when what
+it shows can change (App.draw): the zoom, the line, the script, or the chip past what is
+listed.
 """
 
 from __future__ import annotations
 
 from fractions import Fraction as F
+
+from script import Place
 
 COLORS = ["#2e86de", "#10ac84", "#ee5253", "#ff9f43", "#5f27cd", "#01a3a4", "#c44569", "#8395a7", "#576574", "#b33939"]
 MODE_COLORS = ["#dfe6e9", "#ffeaa7", "#c7ecee", "#fab1a0", "#d6a2e8", "#badc58"]
@@ -157,7 +161,7 @@ class Retained:
     def __init__(self, canvas) -> None:
         self.c = canvas
         self.ids: dict = {}  # key -> [id, shape, coords, options, world]
-        self.reshaped: list = []  # (id, coords at p0, rates of its x)
+        self.reshaped: list = []  # Place: the items that change shape
         self.p0, self.scale, self.moved = F(0), 0.0, 0.0
 
     def sync(self, now: dict, later: dict | None, delta, p, X, scale: float) -> None:
@@ -201,20 +205,20 @@ class Retained:
                     (c.addtag_withtag if world else c.dtag)(*((WORLD, mine[0]) if world else (mine[0], WORLD)))
                     mine[4] = world
             if not world and any(r != 1 for r in rates):
-                self.reshaped.append((self.ids[key][0], coords, rates))
+                self.reshaped.append(Place(self.ids[key][0], shape, tuple(coords), tuple(rates)))
         if created:
             c.tag_raise(TOPMOST)
             c.tag_raise(FIXED)
 
-    def move(self, p) -> None:
-        """The chip at p: the view goes with it, what stays on the line goes back."""
+    def frame(self) -> list:
+        """s_f for what is on the canvas."""
+        return [Place(WORLD, "line")] + self.reshaped
+
+    def move(self, p, frame: list) -> None:
+        """The chip at p: s_f, the view going with it."""
         d = float(p - self.p0)
         if d == self.moved:
             return
-        self.c.move(WORLD, -self.scale * (d - self.moved), 0)
+        for place in frame:
+            place.run(self.c, self.scale, d, self.moved)
         self.moved = d
-        for item, coords, rates in self.reshaped:
-            out = list(coords)
-            for i, r in enumerate(rates):
-                out[2 * i] += (r - 1) * self.scale * d
-            self.c.coords(item, *out)

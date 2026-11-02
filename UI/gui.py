@@ -14,6 +14,11 @@ status line says when one is going on. Rules and edits are typed in the command 
 (type help); while the chip is paused, nothing that changes the line, the mode or the
 rules is accepted (the mode buttons and the selectors are disabled).
 
+The script's S_f goes as script.py says: each frame executes s_f (`draw`), which s_v makes
+(`_rebuild`) when the script, the view or what it shows changes; the simulation's thread is
+the exact loop (`_step`), and any other loop of the script has a thread of its own
+(`_looper`). `lock` lets only one of them change the simulation at a time.
+
 The simulation runs in a thread of its own, so the window never waits for it. Each
 step lets as much time run as has passed since the previous one, so whatever a
 calculation takes, the line ends up as if it had taken no time. A frame takes the chip
@@ -44,12 +49,12 @@ from tkinter import font as tkfont, messagebox
 
 from app import EDITS, PAUSED, ScriptError
 from intervals import Pos
+from script import STEP
 from session_log import SessionLog
 from single_window import listen, take_over
 from solver import STOP, Interrupted
 from view import CAPTION, RIGHT, TOPMOST, Retained, fixed_items, items, num, tick  # noqa: F401 (RIGHT, tick: also for the tests)
 
-STEP = F(1, 20)  # the time of a step, in seconds
 CONTROL = 0x4  # in the state of an event
 MIN_SPAN, MAX_SPAN = F(3), F(3 * 2 ** 17)  # the positions the window can show
 MIN_LEFT = 70  # (the captions on the left may need more: `App._edge`)
@@ -84,6 +89,8 @@ class App:
         self.log('Press Play to move the chip. Type "help" below for the commands.')
         self.opened: dict[str, list] = {}  # path -> [its text, the script it was written from]
         self.next_watch = 0.0
+        self.lock = threading.Lock()
+        self.loopers: set = set()  # the periods of the loops that have a thread
         self.worker = threading.Thread(target=self._work, daemon=True)
         self.worker.start()
         self.root.after(16, self._poll)
@@ -303,7 +310,8 @@ class App:
         while not self.stopping:
             began = time.time()
             try:
-                self._step(began)
+                with self.lock:
+                    self._step(began)
             except Interrupted:
                 pass  # Pause, in something that is read again at the next step
             except Exception as e:  # this thread goes on, or Play would do nothing from now on
@@ -311,6 +319,26 @@ class App:
                 self.out.put(f"the chip stops: {e}")
                 self.out.put(("paused",))
             time.sleep(max(0.0, float(STEP) - (time.time() - began)))
+
+    def _looper(self, period: F) -> None:
+        """The loops of this period of the script in place, in a thread of its own."""
+        while not self.stopping:
+            time.sleep(float(period))
+            with self.lock:
+                sim = self.s.sim
+                snap = sim.snapshot()
+                try:
+                    sim.iterate(period)
+                except Interrupted:
+                    sim.restore(snap)
+                except Exception as e:  # shown, and the loop goes on
+                    self.out.put(f"error: {e}")
+
+    def _loopers(self) -> None:
+        for loop in self.s.sim.script.loops:
+            if loop.period != STEP and loop.period not in self.loopers:
+                self.loopers.add(loop.period)
+                threading.Thread(target=self._looper, args=(loop.period,), daemon=True).start()
 
     def _step(self, began: float) -> None:
         busy = False
@@ -358,13 +386,14 @@ class App:
 
     def _publish(self) -> None:
         s = self.s
+        self._loopers()
         reruns, other = s.reruns()
         for msg in s.news():
             self.out.put(msg)
         self.snap = {"t": s.sim.t, "x": s.position, "mode": s.mode(), "speed": s.speed, "line": s.sim.state.line,
                      "claims": s.sim.state.claims, "kinds": s.kinds(), "reruns": reruns, "other": other,
                      "past": s.past_runs(), "modes": s.known_modes(), "script": s.script_text(), "script_object": s.sim.script,
-                     "mode_names": list(s.mode_names), "running": s.running() is not None, "ahead": s.sim.ahead(), "wall": self.wall,
+                     "mode_names": list(s.mode_names), "running": s.running() is not None, "ahead": s.sim.ahead(), "wall": self.wall, "shown": s.sim.shown,
                      "selection": s.selection() if s.selectors else None}
         if self.file is not None and self.file.state_due():
             self.file.state(s.state_text())
@@ -434,7 +463,7 @@ class App:
         ahead = sn["ahead"]
         key = getattr(ahead, "key", None)
         line = (key,) if key is not None and sn["wall"] is not None else (id(sn["line"]), id(sn["claims"]))
-        return (line, self.span, self.scrolled, w, self.paused, sn["mode"], sn["speed"], tuple(sn["reruns"]), tuple(sn["other"]),
+        return (id(sn["script_object"]), sn["shown"], line, self.span, self.scrolled, w, self.paused, sn["mode"], sn["speed"], tuple(sn["reruns"]), tuple(sn["other"]),
                 len(sn["past"]), sn["past"][-1:], len(sn["modes"]), tuple(sn["kinds"]), tuple(sn["mode_names"]), sn["selection"], sn["running"])
 
     def _rebuild(self, sn: dict, p, w: int) -> None:
@@ -450,7 +479,9 @@ class App:
         scale = (w - edge - RIGHT) / float(span)
         a, b = left - span / 2, left + span + span / 2
         X = lambda at: edge + float(at - left) * scale
-        now = items(sn, line, claims, p, left, span, a, b, scale, w)
+        script = sn["script_object"]
+        shows = script.shows_line()  # s_v
+        now = items(sn, line, claims, p, left, span, a, b, scale, w) if shows else {}
         ahead = sn["ahead"]
         until = ahead.until(Pos(p)) if sn["wall"] is not None and ahead is not None and hasattr(ahead, "until") else None
         self.formula, later, delta = None, None, None
@@ -466,8 +497,9 @@ class App:
                 self.formula = (ahead, until)
                 self.valid = min(self.valid, until.x)
                 left2 = p + delta + self.scrolled - span / 4
-                later = items(sn, state.line, state.claims, p + delta, left2, span, a, b, scale, w)
+                later = items(sn, state.line, state.claims, p + delta, left2, span, a, b, scale, w) if shows else None
         self.view.sync(now, later, delta, p, X, scale)
+        script.frame = self.view.frame()
         if self.formula is None and sn["wall"] is not None:
             self.valid = p  # no formula: each frame reads the line
         self._mode_buttons(sn["mode_names"], sn["mode"], sn["selection"])
@@ -490,7 +522,7 @@ class App:
             self.sign = sign
             self._rebuild(sn, p, w)
         else:
-            self.view.move(p)
+            self.view.move(p, sn["script_object"].frame)  # s_f
             if self.shown is not None:
                 self.shown = (p, *self.shown[1:])
         t = sn["t"] + (p - x) / sn["speed"]

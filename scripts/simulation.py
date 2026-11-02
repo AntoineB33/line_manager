@@ -18,6 +18,11 @@ compiled for them (script.Script.stretches, mode_rules.Stretch), or else compute
 line as it is. Where the text does not say so, the mode rules do nothing. Sweeps are cut
 at the multiples of half the smallest rule offset.
 
+An iteration of the script's exact loop is one `advance` (script.py): whatever the steps,
+the instants it stops at are the same, so the line is too. With `apart` (the window), the
+other loops are left to their own threads (`iterate`); without it, they iterate at each
+instant.
+
 A simulation can also go step by step (the interactive program, UI/app.py):
 `start()` is the first instant, `advance(t)` runs it up to time t (starting it if
 needed), the chip's trajectory being extended as it goes (`Chip.extend`); `edit_now`
@@ -47,7 +52,7 @@ from region import Region
 from solver import Line, Undetermined, limited
 from resolve import Refused, apply_edit, flattened, owned_by_others, rebuild
 from watch import due, look
-from script import ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Start, TransitionCount, Uncovered, Edited, score
+from script import SHOW, ChangeAction, ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, ShowLine, Start, TransitionCount, Uncovered, Edited, score
 
 
 EDIT_LIMIT = 2  # the seconds an edit of the user can take: beyond, it is refused
@@ -218,7 +223,7 @@ class Simulation:
         if modes.start != chip.position(Fraction(0)):
             raise ValueError("modes start where the chip starts")
         self._settled = None  # (position, mode, script, the state before, after): see `_settle`
-        self._looks = None  # (script, for each of its events the last watch.look or None)
+        self._looks = None  # (script, {the text of an event: its last watch.look or None})
         self.state = state
         self.gen = generator
         self.rules = generator.rules
@@ -228,9 +233,6 @@ class Simulation:
         self.log = Log()
         self.script = Script.initial()
         self.revealed = 0
-        self._since_install = 0
-        self._was_true: list[bool] = [False] * len(self.script.events)
-        self._fired: list[bool] = [False] * len(self.script.events)
         self.t = Fraction(0)
         self.started = False
         h = self.rules.smallest_offset
@@ -240,6 +242,8 @@ class Simulation:
         self._shift = None
         self._missed = None  # (script, state): no stretch of that script takes over on that line
         self.background = False  # runs of the generator complete later (`complete`)
+        self.apart = False  # the loops other than the exact one have threads of their own
+        self.shown = 0  # how many times a script asked to show the line (script.ShowLine)
         self.request: RunRequest | None = None  # the run asked for and not completed
         self.definitive = None  # how far the run's scripts are definitive
         self.calculate = None  # (job, *args) -> its answer, the user's edits computed elsewhere
@@ -252,12 +256,12 @@ class Simulation:
     def snapshot(self) -> tuple:
         """What a step changes, to go back to it (`restore`) if the step is interrupted."""
         return (self.state, len(self.log.changes), self.log.refused_count, self.log.run_count, self.script,
-                self.revealed, self._since_install, list(self._was_true), list(self._fired), self.t, self.started,
+                self.revealed, self.script.since, set(self.script.true), set(self.script.fired), self.t, self.started,
                 len(self.chip.points), self.chip.points[-1], self._stretch, self.request, self._shift, self.definitive,
                 self.flat_to, self.gone_to, self._settled)
 
     def restore(self, snap: tuple) -> None:
-        (self.state, nc, nr, nu, self.script, self.revealed, self._since_install, self._was_true, self._fired,
+        (self.state, nc, nr, nu, self.script, self.revealed, self.script.since, self.script.true, self.script.fired,
          self.t, self.started, npts, last, self._stretch, self.request, self._shift, self.definitive,
          self.flat_to, self.gone_to, self._settled) = snap
         del self.log.changes[nc:], self.log.refused[max(0, nr - self.log.refused_gone):], self.log.runs[max(0, nu - self.log.runs_gone):]
@@ -317,7 +321,8 @@ class Simulation:
                 base = after
                 events.insert(at, Event(ChipIn(req.chip, req.chip + self.gen.horizon), (EditAction(tuple(ops)),)))
                 at += 1
-        script = replace(s, events=events, covered=covered, constraints=constraints, live=s.live or bool(constraints and self.rules.mode_rules))
+        script = replace(s.with_events(events), on_view=s.on_view or SHOW, covered=covered, constraints=constraints,
+                         live=s.live or bool(constraints and self.rules.mode_rules))
         req.published, req.pace_at, req.previous = True, req.time + LAST_RESORT, script
         self._carry(script)
         self.script = script
@@ -358,7 +363,7 @@ class Simulation:
         covered = [(lo, hi, m) for lo, hi, m in script.covered if m is not None]
         if self.rules.mode_rules and self.request is not None:
             covered.insert(0, (Pos(self.request.chip), x, None))
-        return replace(script, events=events, covered=covered)
+        return replace(script.with_events(events), covered=covered)
 
     def publish(self, request_id: int, script: Script, stats: RunStats) -> bool:
         """The run asked for by `request` found a script and goes on: it replaces the one in
@@ -380,23 +385,19 @@ class Simulation:
         self._stretch = None
         self._live_rules = {}
         self._shift = None  # how far the script's stretches are moved: decided when they are first needed
-        self._since_install = 0
+        self.script.since = 0
 
     def _carry(self, script: Script, same_constraints: bool = True) -> None:
         """The events of `script` that are in the one in place stay as they were (what they
         did is not done again), unless they satisfy constraints that changed."""
-        seen = {str(e): i for i, e in enumerate(self.script.events)}
-        at = [seen.get(str(e)) if same_constraints or not any(isinstance(a, ConstraintEditAction) for a in e.actions) else None
-              for e in script.events]
-        self._was_true = [i is not None and self._was_true[i] for i in at]
-        self._fired = [i is not None and self._fired[i] for i in at]
+        kept = {str(e) for e in script.events if same_constraints or not any(isinstance(a, ConstraintEditAction) for a in e.actions)}
+        script.true, script.fired = self.script.true & kept, self.script.fired & kept
 
     def _set_script(self, t: Fraction, c: Fraction, why: str, script: Script, stats: RunStats, keep: bool = False) -> None:
         if keep:
             self._carry(script)
         else:
-            self._was_true = [False] * len(script.events)
-            self._fired = [False] * len(script.events)
+            script.true, script.fired = set(), set()
         self.script = script
         self._reset()
         self.definitive = None if stats.definitive is None else max(stats.definitive, self.definitive or stats.definitive)
@@ -406,15 +407,17 @@ class Simulation:
         """The user's script (script_text.py) replaces the one in place, and the run going
         on is cancelled (its script would replace the user's). An event that was already
         there stays as it was (what it did is not done again), the others are evaluated
-        at the next instant; with other constraints, those that satisfy them too."""
+        at once, as for a published script; with other constraints, those that satisfy
+        them too."""
         self._carry(script, list(map(str, script.constraints)) == list(map(str, self.script.constraints)))
         self.script = script
         self.request = None
         self.definitive = None
         self._reset()
+        if self.started:
+            self._after_edits(self.t, False, False, "user edit")
 
-    def _cond(self, i: int, t: Fraction) -> bool:
-        trig = self.script.events[i].trigger
+    def _cond(self, trig, t: Fraction) -> bool:
         if isinstance(trig, Start):
             return True
         if isinstance(trig, Edited):
@@ -430,7 +433,7 @@ class Simulation:
             return trig.holds(self.state, c, self.modes.mode_at(c))
         if isinstance(trig, ScoreBelow):
             return score(self.gen.problems, self.state, self.chip.position(t)) < trig.z
-        return self._since_install >= trig.k
+        return self.script.since >= trig.k
 
     def _edit(self, t: Fraction, ops: list[Op], owner: str, source: str) -> bool:
         before = self.state
@@ -557,7 +560,7 @@ class Simulation:
         if self.request is not None and self.request.published:
             cands.append(self.request.pace_at)
         if self._looks is not None and self._looks[0] is self.script:
-            cands += [self.chip.first_time(e[0]) for e in self._looks[1] if e is not None and e[0] != INF and e[0] > c]
+            cands += [self.chip.first_time(e[0]) for e in self._looks[1].values() if e is not None and e[0] != INF and e[0] > c]
         later = [x for x in cands if x > t]
         return min(later, default=INF)
 
@@ -577,32 +580,50 @@ class Simulation:
             # for the user's edits holds by itself: nothing to catch up)
         c = self.chip.position(t)
         revealed = sum(1 for p, _ in self.modes.transitions if p <= c)
-        self._since_install += revealed - self.revealed
+        self.script.since += revealed - self.revealed
         self.revealed = revealed
         if run:  # a new generator: its run replaces the script
             self._install(t, why)
         self._edited = edited and not first
-        for _ in range(3):
-            rerun = None
-            problems = getattr(self.gen, "problems", ())
-            looks = self._looks[1] if self._looks is not None and self._looks[0] is self.script else [None] * len(self.script.events)
-            self._looks = (self.script, looks)
-            for i, ev in enumerate(self.script.events):
+        self._execute(t, None)
+
+    def iterate(self, period: Fraction) -> None:
+        """An iteration of the loop of this period, on its own thread (`apart`)."""
+        if self.started:
+            self._execute(self.t, period)
+
+    def _events(self, period: Fraction | None) -> list[Event]:
+        if period is not None:
+            return [e for loop in self.script.loops if loop.period == period for e in loop.events]
+        return self.script.in_step() if self.apart else self.script.events
+
+    def _execute(self, t: Fraction, period: Fraction | None) -> None:
+        """The events of that loop (None: of what goes with the chip), each when it is true
+        and was not. An event that changes the script or runs the generator ends the pass,
+        and the script in place is executed in turn."""
+        problems = getattr(self.gen, "problems", ())
+        for _ in range(32):
+            again = rerun = False
+            script, events = self.script, self._events(period)
+            looks = self._looks[1] if self._looks is not None and self._looks[0] is script else {}
+            self._looks = (script, looks)
+            for ev in events:
+                key = str(ev)
                 c = self.chip.position(t)
                 mode = self.modes.mode_at(c)
-                if not due(looks[i], ev.trigger, self.state, c, mode, problems):
+                if not due(looks.get(key), ev.trigger, self.state, c, mode, problems):
                     continue
-                now = self._cond(i, t)
-                looks[i] = look(ev.trigger, self.state, c, mode, problems)
-                rising = now and not self._was_true[i]
-                self._was_true[i] = now
+                now = self._cond(ev.trigger, t)
+                looks[key] = look(ev.trigger, self.state, c, mode, problems)
+                rising = now and key not in script.true
+                (script.true.add if now else script.true.discard)(key)
                 if isinstance(ev.trigger, TransitionCount):
-                    rising = now and not self._fired[i]
+                    rising = now and key not in script.fired
                 elif isinstance(ev.trigger, Edited):
                     rising = now  # at each edit
                 if not rising:
                     continue
-                self._fired[i] = True
+                script.fired.add(key)
                 if isinstance(ev.trigger, Edited):
                     self._edited = False  # this edit is answered
                 for a in ev.actions:
@@ -610,16 +631,22 @@ class Simulation:
                         self._edit(t, list(a.ops), GEN, "script")
                     elif isinstance(a, ConstraintEditAction):
                         c = self.chip.position(t)
-                        self._edit(t, [o for k in self.script.constraints for o in k.ops(self.state, c)], GEN, "script")
+                        self._edit(t, [o for k in script.constraints for o in k.ops(self.state, c)], GEN, "script")
                     elif isinstance(a, RerunAction):
                         rerun = ("start" if a.first else "user edit" if isinstance(ev.trigger, Edited)
                                  else "uncovered" if isinstance(ev.trigger, Uncovered) else "script")
-                if rerun:
+                    elif isinstance(a, ShowLine):
+                        self.shown += 1
+                    elif isinstance(a, ChangeAction):
+                        self.script, again = self.script.changed(a), True
+                if rerun or again:
                     break
-            if not rerun:
-                self._settle(t)
+            if rerun:
+                self._install(t, rerun)
+            elif not again:
+                if period is None:
+                    self._settle(t)
                 return
-            self._install(t, rerun)
         raise AssertionError("reruns did not settle")
 
     def _settle(self, t: Fraction) -> None:

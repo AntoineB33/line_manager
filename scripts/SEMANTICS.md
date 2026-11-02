@@ -69,8 +69,8 @@ positions are x + kε (below); ±∞ appears only as an open endpoint.
   exact first time the chip reaches a position.
   - The chip is at real positions: at c it is at c + 0ε. It passes c+ε, c+2ε, …
     at the same moment it leaves c, in that order, and c−ε, c−2ε, … just before
-    reaching c. So "the left side of the chip and its position" is
-    (−∞, c] = all positions up to c + 0ε, and c+ε is on its right.
+    reaching c. So "the left side of the chip" is (−∞, c) = all positions up
+    to c−ε, and c+ε is on its right.
 - **Modes.**
   - Modes are defined on [start, ∞), the positions the chip can be at.
   - A timeline is an initial mode plus a finite list of strictly increasing
@@ -563,12 +563,14 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
 - **User edits** may change anything, anywhere, including at or left of the chip.
 - **Script edits** are refused if their *result*, after the rules have been
   applied, would break either of these:
-  - **N1.** It would change the line or the claims on (−∞, chip], that is, the
-    left side of the chip or the chip's position (chip + ε is on its right).
+  - **N1.** It would change the line or the claims on (−∞, chip), the left side of
+    the chip. What is at the chip's position may change.
   - **N2.** It would remove or change a claim of the user, removals included.
     `resolve.py` already refuses such an edit, and the user's edits always come
     before the script's elements, so a later computation never gives the script
-    the upper hand either.
+    the upper hand either. What the rules placed from the user's claims may go
+    (`test_what_the_rules_placed_from_the_users_element_can_go`): "no B" with
+    `A → B or C` and the user's A gives C. With `A → B`, B cannot go while A stays.
 - **Mode rules** act at the chip as it moves, from the start of the program,
   through the script's stretches only. `mode_rules.py`.
   - The chip's position is a single point x. When the chip is at x, the mode
@@ -743,7 +745,31 @@ script changes it also checks N1 and N2.
 ### The script
 
 A run receives the state, the chip position c and the revealed modes, and
-returns a script made of events.
+returns a script: an object (`script.Script`) with a state and three elements.
+
+- S_f: `frame` (s_f), executed at every frame, and `loops`, each of a period. s_f is a
+  flat list of what to place (`script.Place`); it depends on the window, so a run does
+  not write it: s_v does, each time a script is put in place, and it is not in the text.
+- s_u (`on_edit`): the events of `Edited`, executed at each edit of the user.
+- s_v (`on_view`): the events of `Viewed`, executed when the view moves or is resized.
+  `ShowLine` makes s_f; the window also makes it again when the chip goes past what it
+  lists (§ What a frame does).
+
+Everything else of `Script` is its state: the constraints, what it covers, the
+stretches, and what its events have done (`true`, `fired`, `since`). A script changes
+another one with `ChangeAction`, never itself (`script_text` refuses it).
+
+**The loops.** The `STEP` loop is the simulation's thread, and it is exact: one iteration
+is one `advance`, which stops at the same instants whatever its steps, so a trigger fires
+at its position and not at the next iteration (`SameResultTest`). A script is evaluated
+at once when it is put in place, for the same reason. Any other loop has a thread of its
+own in the window (`gui.App._looper`, `Simulation.iterate`) and reads the line as it is
+then: without a window (`Simulation.apart` false), it iterates at each instant. The
+generator writes only the `STEP` loop.
+
+**What is guaranteed.** With the same script published at the same time, once the chip
+stops and the user does nothing, the line is the same whatever the iterations did on the
+way. That lasts until the next publication: a run's scripts depend on when it publishes.
 
 **Triggers:**
 

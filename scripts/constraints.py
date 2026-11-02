@@ -2,8 +2,8 @@
 
 A constraint gives, for the line as it is and the chip at c, where its elements must be
 after the chip, `targets(state, c)` ({kind: region} on (c, inf)), and the edits that
-make it hold, `ops(state, c)` (on positions after c only: the past and the chip's
-position never change, N1; none if it already holds). The generator makes the edits
+make it hold, `ops(state, c)` (on positions after c only, so nothing left of the chip
+changes, N1; none if it already holds). The generator makes the edits
 first and scores its candidates on top of them; its script makes them again where it
 is put in place (script.ConstraintEditAction). As the chip goes, the mode rules the
 generator compiles keep the targets too (mode_rules.ModeRules.constrain): a break the

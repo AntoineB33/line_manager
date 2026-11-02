@@ -36,7 +36,7 @@ The "rules generator" takes the current state of the line and the chip's positio
 A generated script must never:
 - change the left side of the chip.
 - remove elements added by the user. It can however remove elements indirectly added by the user through the rules, without removing the user-added elements themselves.
-At the absolute start of the program, the generated script is only an instruction to run the rules generator once as soon as possible. The generated script is changed only when the generator finds a new one or the user edits it. If the generator is called to run again while it is already running, the previous run is cancelled and the new one starts.
+At the absolute start of the program, the generated script is only an instruction to run the rules generator once as soon as possible. The generated script is changed only when the generator finds a new one or the user or the generated script itself edits it. If the generator is called to run again while it is already running, the previous run is cancelled and the new one starts.
 
 The generated script must be an object with a state and those three elements:
 $S_f$ a set of scripts that is executed in a loop by different threads at different frequencies.
@@ -57,7 +57,7 @@ if presence ratio of A > g, then…
 else
   …
 
-If the same generated script is published at the same time on different machines, then at any point, if the chip stops and the user does nothing, we can find the exact same result by giving a few more loop iteration for every script. The only thing that could differ is the exact moments the line adapts, because the loop iterations don’t happen at the same time.
+For different machines, if the same generated script get published at the same time, then at any point, if the chip stops and the user does nothing, the same line state must be found, if adding a few more loop iterations on the scripts.
 
 The "allocated resources quantity" hyperparameter in [0, 1] balances between resource usage economy (0) and optimization problem-solving (1). When the hyperparameter is lower, then a rules generator run will be faster and use less CPU resources to solve the optimization problems, and the current generated script will trigger less frequently a new rules generator run. At 1, the generator uses all the time the pace allows finding the best arrangement, and a run ends only when its script never needs a new run and reaches the best possible score in every scenario; if that cannot be established, the run never ends.
 

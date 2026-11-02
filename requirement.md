@@ -35,18 +35,31 @@ The state of the line can be modified only by the user, the mode rules, and the 
 The "rules generator" takes the current state of the line and the chip's position and produces a "generated script" to solve optimization problems and satisfy constraints.
 This generated script is a very concise text showing events and the corresponding triggers for continuous edits of the line or a new run of the rules generator.
 A generated rule must never:
-- change the left side of the chip and what is at the position of the chip.
-- remove elements added by the user.
+- change the left side of the chip.
+- remove elements added by the user. It can however remove elements indirectly added by the user through the rules, without removing the user-added elements themselves.
 At the absolute start of the program, the generated script is only an instruction to run the rules generator once as soon as possible. The generated script is changed only when the generator finds a new one or the user edits it. If the generator is called to run again while it is already running, the previous run is cancelled and the new one starts.
 
-Example:
-if the optimization problem is a simple presence ratio target for each kind of element, the generated script looks like this:
-if the chip is between $x_1$ and $x_2$ and mode is 3, then set A 100% from chip to $x_3$ and B 100% from $x_3$ to $x_4$...
-if the chip is between $x_1$ and $x_5$ and mode is 2, then set C 100%...
-if D 100% exceeds a presence ratio of y when the chip is between $x_2$ and $x_6$ and mode is 1, then...
-if the optimization score becomes less than $z$, then the generator runs again.
-if the chip is between $x_7$ and $x_8$ and mode is 2, then the generator runs again.
-...
+The generated script must be an object with a state and those three elements:
+$S_f$ a set of scripts that is executed in a loop by different threads at different frequencies.
+$s_u$ a script that is executed when there is a user edit.
+$s_v$ a script that is executed when the view of the line is moved or resized.
+Each script can modify the state, which includes those three elements, but not itself.
+
+$s_f$ is a script in $S_f$ executed at every frame and is extremely straightforward:
+place rectangle at…
+place rectangle at… 
+remove rectangle…
+
+A script in $s_f$ could be something like that:
+if chip > x then
+  change the $s_f$
+if presence ratio of A > g, then…
+  …
+else
+  …
+
+The generated script must guarantee to get the same result on any machine. The only thing that could differ is the exact moments the line adapts, because the loop iterations don’t happen at the same time.
+
 
 The "allocated resources quantity" hyperparameter in [0, 1] balances between resource usage economy (0) and optimization problem solving (1). When the hyperparameter is lower, then a rules generator run will be faster and use less CPU resources to solve the optimization problems, and the current generated script will trigger less frequently a new rules generator run. At 1, the generator uses all the time the pace allows to find the best arrangement, and a run ends only when its script never needs a new run and reaches the best possible score in every scenario; if that cannot be established, the run never ends.
 

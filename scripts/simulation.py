@@ -46,6 +46,7 @@ from modes import ModeTimeline
 from region import Region
 from solver import Line, Undetermined, limited
 from resolve import Refused, apply_edit, flattened, owned_by_others, rebuild
+from watch import due, look
 from script import ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Start, TransitionCount, Uncovered, Edited, score
 
 
@@ -201,11 +202,23 @@ class Log:
         return self.runs[max(0, count - self.runs_gone):]
 
 
+class Ahead:
+    """The state as a function of the chip's position (`Simulation.ahead`). key: the same
+    while one formula gives it; until(p): where that formula stops, from p (None: none)."""
+
+    def __init__(self, at, key, until) -> None:
+        self.at, self.key, self.until = at, key, until
+
+    def __call__(self, p):
+        return self.at(p)
+
+
 class Simulation:
     def __init__(self, state: LineState, generator: RulesGenerator, chip: Chip, modes: ModeTimeline, user_edits: list[UserEdit] = ()) -> None:
         if modes.start != chip.position(Fraction(0)):
             raise ValueError("modes start where the chip starts")
         self._settled = None  # (position, mode, script, the state before, after): see `_settle`
+        self._looks = None  # (script, for each of its events the last watch.look or None)
         self.state = state
         self.gen = generator
         self.rules = generator.rules
@@ -249,6 +262,7 @@ class Simulation:
          self.flat_to, self.gone_to, self._settled) = snap
         del self.log.changes[nc:], self.log.refused[max(0, nr - self.log.refused_gone):], self.log.runs[max(0, nu - self.log.runs_gone):]
         self.chip.points[npts - 1:] = [last]  # (a step of the same speed moves the last point)
+        self._looks = None
 
     def known(self, t: Fraction):
         return self.modes.known(self.chip.position(t))
@@ -510,6 +524,7 @@ class Simulation:
         """New rules or problems: the line is computed again from the user's edits, and the
         generator runs again."""
         self.gen, self.rules = generator, generator.rules
+        self._looks = None
         h = self.rules.smallest_offset
         self.grid = h / 2 if h else None
         self._replace(self.state.history, why="rules or problems changed", run=True)
@@ -541,6 +556,8 @@ class Simulation:
             cands.append(self.chip.first_time((c // self.grid + 1) * self.grid))
         if self.request is not None and self.request.published:
             cands.append(self.request.pace_at)
+        if self._looks is not None and self._looks[0] is self.script:
+            cands += [self.chip.first_time(e[0]) for e in self._looks[1] if e is not None and e[0] != INF and e[0] > c]
         later = [x for x in cands if x > t]
         return min(later, default=INF)
 
@@ -567,8 +584,16 @@ class Simulation:
         self._edited = edited and not first
         for _ in range(3):
             rerun = None
+            problems = getattr(self.gen, "problems", ())
+            looks = self._looks[1] if self._looks is not None and self._looks[0] is self.script else [None] * len(self.script.events)
+            self._looks = (self.script, looks)
             for i, ev in enumerate(self.script.events):
+                c = self.chip.position(t)
+                mode = self.modes.mode_at(c)
+                if not due(looks[i], ev.trigger, self.state, c, mode, problems):
+                    continue
                 now = self._cond(i, t)
+                looks[i] = look(ev.trigger, self.state, c, mode, problems)
                 rising = now and not self._was_true[i]
                 self._was_true[i] = now
                 if isinstance(ev.trigger, TransitionCount):
@@ -692,12 +717,16 @@ class Simulation:
             def at(p):
                 st = plan.exact(p - d) if p - d <= cur[0].b else None
                 return None if st is None else _moved(st, d, history)
-            return at
+
+            def until(p):
+                end = plan.formula_until(p - d)
+                return None if end is None else min(end, cur[0].b) + d
+            return Ahead(at, (id(plan), d), until)
         mr = self._live_rules.get(mode)
         plan = mr.plan if mr is not None else None
         if plan is not None and plan.last is state and plan.next == x:
-            return plan.exact
-        return lambda p: None
+            return Ahead(plan.exact, id(plan), plan.formula_until)
+        return Ahead(lambda p: None, None, lambda p: None)
 
     def _align(self, x: Pos) -> Fraction:
         """How far the script's stretches are moved, decided the first time they are needed

@@ -749,6 +749,22 @@ returns a script made of events.
 
 - `ChipIn(lo, hi, mode)`: fires at each instant the chip enters [lo, hi) with
   that mode.
+**Looking at the triggers** (`watch.py`). The simulation does not test every trigger at
+every step. It keeps, for each one, the next position of the chip where it can change
+and what it reads, and tests it again when the chip gets there or when that changes. A
+presence ratio on (chip, chip + H] is linear between the edges of the line and those edges
+minus H, so where it crosses y is known in advance; a score of presence ratio problems
+too, adding the points where a ratio crosses its target. The instants stop at these
+positions, so the trigger fires there and not at the next step (TINY after the level,
+as "exceeds" has no first position). A score that reads other problems is read at each
+instant, and so are `Edited`, `Uncovered` and `TransitionCount`, which compute nothing.
+
+**What a frame does** (`UI/view.py`). The items stay on the canvas, and each point knows
+how fast it goes with the chip, from the list of items at p and a little further. A frame
+moves what stays on the line in one call and sets the items that change shape. The list
+is built again when the zoom, the scroll, the line, the modes or the formula change, or
+when the chip goes past what is listed; with no formula, at each frame.
+
 - `TransitionCount(k)`: fires after k revealed transitions (a generator does not write
   it any more: which modes matter says more than how many; the user can).
 - `Start`: the initial script's only trigger: the program starts.

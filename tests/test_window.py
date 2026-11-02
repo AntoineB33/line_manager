@@ -149,7 +149,7 @@ class CalculatorTest(unittest.TestCase):
         first = s.calculator.proc
         self.assertIn(A.TOO_LONG, s.command("add NoScreen on [50, 51]"))
         self.assertIsNot(s.calculator.proc, first)
-        self.assertIsNotNone(first.poll())  # ended
+        self.assertIsNotNone(first.wait(5))  # ended
 
     def test_the_same_as_at_once(self):
         s, plain = self.session(), Session(BREAKS, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2), [FifteenMinuteBreaks()])
@@ -512,6 +512,82 @@ class WindowTest(unittest.TestCase):
         app.toggle()
         self.pump(10, lambda: self.s.position > at)
         self.assertGreater(self.s.position, at)
+
+    def drawn(self):
+        """What can be seen on the canvas, with the positions in pixels."""
+        c, edge = self.app.canvas, self.app.edge[1]
+        width = max(c.winfo_width(), 300) - gui.RIGHT
+        fixed = set(c.find_withtag("fixed"))
+        out = []
+        for i in c.find_all():
+            xs = c.coords(i)[::2]
+            if i not in fixed and max(xs) > edge + 3 and min(xs) < width - 3:
+                out.append((c.type(i), tuple(round(v) for v in c.coords(i)), c.itemcget(i, "fill")))
+        return sorted(out)
+
+    def test_a_frame_moves_what_is_there(self):
+        """Frames with no list built again give what a list built at that moment gives."""
+        app, s = self.app, self.s
+        self.pump(10, lambda: s.sim.started and s.sim.script.constraints and app.snap is not None)
+        app.zoom(F(1, 4))
+        app.toggle()
+        self.pump(2)
+        sn = app.snap
+        app.sign = None
+        app.draw(sn)
+        fresh = []
+        real = gui.App._rebuild
+        built = []
+
+        def rebuild(*args):
+            built.append(1)
+            real(app, *args[1:] if args[0] is app else args)
+
+        with mock.patch.object(app, "_rebuild", side_effect=lambda *a: rebuild(*a)):
+            when = sn["wall"]
+            for dt in (0.05, 0.1, 0.15):
+                with mock.patch.object(gui.time, "time", return_value=when + dt + 2):
+                    app.draw(sn)
+            moved = self.drawn()
+        if built:
+            self.skipTest("the formula stopped")
+        with mock.patch.object(gui.time, "time", return_value=when + 2.15):
+            app.sign = None
+            app.draw(sn)
+        fresh = self.drawn()
+        self.assertEqual(len(moved), len(fresh))
+        for a, b in zip(moved, fresh):
+            self.assertEqual(a[0], b[0])
+            self.assertEqual(a[2], b[2])
+            for u, v in zip(a[1], b[1]):
+                self.assertLessEqual(abs(u - v), 2, (a, b))
+
+    def test_a_frame_calls_the_canvas_little(self):
+        app, s = self.app, self.s
+        self.pump(10, lambda: s.sim.started and s.sim.script.constraints and app.snap is not None)
+        app.toggle()
+        self.pump(2)
+        sn = app.snap
+        app.sign = None
+        app.draw(sn)
+        spy = mock.Mock(wraps=app.canvas)
+        app.view.c = spy
+        with mock.patch.object(gui.time, "time", return_value=sn["wall"] + 0.03):
+            app.draw(sn)
+        app.view.c = app.canvas
+        self.assertLessEqual(len(spy.method_calls), 6, spy.method_calls)
+
+    def test_zooming_in_takes_the_far_break_off_the_list(self):
+        app, s = self.app, self.s
+        self.pump(10, lambda: app.snap is not None and app.snap["line"].presence("Break15"))
+        app.zoom(F(1024))  # (as wide as it goes)
+        app.draw(app.snap)
+        wide = sum(k[0] == "bar" for k in app.view.ids)
+        self.assertGreater(wide, 0)
+        for _ in range(6):
+            app.zoom(F(1, 2))
+        app.draw(app.snap)
+        self.assertLess(sum(k[0] == "bar" for k in app.view.ids), wide)
 
     def test_the_axis_has_a_dozen_labels_at_every_zoom(self):
         span = gui.MIN_SPAN

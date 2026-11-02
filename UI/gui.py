@@ -25,7 +25,7 @@ the chip where it would have gone. Pause stops
 a step being computed (solver.STOP): it is undone, and computed again after Play.
 The GIL's switch interval is shortened (`run`) so that the drawing is not starved by
 the simulation's thread. `run` also writes what happens and the state in logs/
-(session_log.py). Opening a window closes the one open (single_window.py).
+(session_log.py). What is drawn stays on the canvas from one frame to the next (view.py). Opening a window closes the one open (single_window.py).
 """
 
 from __future__ import annotations
@@ -47,16 +47,13 @@ from intervals import Pos
 from session_log import SessionLog
 from single_window import listen, take_over
 from solver import STOP, Interrupted
+from view import CAPTION, RIGHT, TOPMOST, Retained, fixed_items, items, num, tick  # noqa: F401 (RIGHT, tick: also for the tests)
 
 STEP = F(1, 20)  # the time of a step, in seconds
-COLORS = ["#2e86de", "#10ac84", "#ee5253", "#ff9f43", "#5f27cd", "#01a3a4", "#c44569", "#8395a7", "#576574", "#b33939"]
-MODE_COLORS = ["#dfe6e9", "#ffeaa7", "#c7ecee", "#fab1a0", "#d6a2e8", "#badc58"]
-OWNERS = {"user": ("#2d3436", "you"), "generated": ("#e17055", "the generated script"), "mode": ("#8e44ad", "the mode rules")}
 CONTROL = 0x4  # in the state of an event
 MIN_SPAN, MAX_SPAN = F(3), F(3 * 2 ** 17)  # the positions the window can show
-MIN_LEFT, RIGHT, TOP = 70, 20, 34  # (the captions on the left may need more: `App._edge`)
-CAPTION = ("TkDefaultFont", 10, "bold")
-MODE_H, ROW_H, BAR_H = 20, 30, 16
+MIN_LEFT = 70  # (the captions on the left may need more: `App._edge`)
+_tick = tick
 
 
 class App:
@@ -72,6 +69,12 @@ class App:
         self.shown = None  # (chip, line, claims): what the last frame showed
         self.edge = (None, MIN_LEFT)  # (kinds, where the line starts for them)
         self.wall = None  # when the chip was where the last step left it (None: it is not moving)
+        self.frame = None  # (kinds, edge, width): what the fixed items were drawn for
+        self.sign = None  # `_signature` of the list on the canvas
+        self.valid = F(0)  # that list holds with the chip before this position
+        self.formula = None  # (ahead, where it stops): what gives the line on it
+        self.when = []  # when the generator runs again, as text
+        self.status_text = None
         self.stopping = False
         self.replaced = False  # a new window asked this one to close (single_window.py)
         self._build()
@@ -120,6 +123,7 @@ class App:
         self.status.pack(fill="x", padx=8)
         self.canvas = tk.Canvas(r, background="white", height=320, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, padx=6)
+        self.view = Retained(self.canvas)
         for wheel in ("<MouseWheel>", "<Button-4>", "<Button-5>"):  # (Button: the wheel on Linux)
             r.bind(wheel, self.on_wheel)  # on the window: Tk may send it to the command box, which has the focus
         bottom = tk.Frame(r)
@@ -399,146 +403,103 @@ class App:
             self.edge = (list(kinds), max([MIN_LEFT] + [font.measure(k) + 14 for k in kinds]))
         return self.edge[1]
 
-    def draw(self, sn: dict) -> None:
-        c = self.canvas
-        c.delete("all")
-        w = max(c.winfo_width(), 300)
-        x, span = sn["x"], self.span
+    def _line(self, sn: dict, p):
+        """The line and the claims at p: from the formula, else as they were shown, up to
+        where the formula that showed them stops, for the step."""
         line, claims = sn["line"], sn["claims"]
+        if sn["wall"] is None or p <= sn["x"] or sn["ahead"] is None:
+            return line, claims
+        try:
+            state = sn["ahead"](Pos(p))  # (the chip has gone through its position too)
+        except Exception:  # (a step going on can stop what it reads)
+            state = None
+        if state is not None:
+            return state.line, state.claims
+        shown = self.shown
+        if shown is not None and shown[0] >= sn["x"]:
+            if self.formula is not None:
+                ahead, until = self.formula
+                try:
+                    state = ahead(until)
+                except Exception:
+                    state = None
+                if state is not None:
+                    return state.line, state.claims
+            return shown[1:]
+        return line, claims
+
+    def _signature(self, sn: dict, w: int) -> tuple:
+        """What the list of what is shown is made from, but for the chip: the line, unless a
+        formula gives it."""
+        ahead = sn["ahead"]
+        key = getattr(ahead, "key", None)
+        line = (key,) if key is not None and sn["wall"] is not None else (id(sn["line"]), id(sn["claims"]))
+        return (line, self.span, self.scrolled, w, self.paused, sn["mode"], sn["speed"], tuple(sn["reruns"]), tuple(sn["other"]),
+                len(sn["past"]), sn["past"][-1:], len(sn["modes"]), tuple(sn["kinds"]), tuple(sn["mode_names"]), sn["selection"], sn["running"])
+
+    def _rebuild(self, sn: dict, p, w: int) -> None:
+        line, claims = self._line(sn, p)
+        self.shown = None if sn["wall"] is None else (p, line, claims)
+        kinds, span = sn["kinds"], self.span
+        edge = self._edge(kinds)
+        if self.frame != (tuple(kinds), edge, w):
+            self.frame = (tuple(kinds), edge, w)
+            fixed_items(self.canvas, kinds, edge, w, self.canvas.winfo_height())
+            self.canvas.tag_raise(TOPMOST)
+        left = p + self.scrolled - span / 4
+        scale = (w - edge - RIGHT) / float(span)
+        a, b = left - span / 2, left + span + span / 2
+        X = lambda at: edge + float(at - left) * scale
+        now = items(sn, line, claims, p, left, span, a, b, scale, w)
+        ahead = sn["ahead"]
+        until = ahead.until(Pos(p)) if sn["wall"] is not None and ahead is not None and hasattr(ahead, "until") else None
+        self.formula, later, delta = None, None, None
+        self.valid = p + span / 2  # where what is listed stops
+        if until is not None and until.x > p:
+            delta = min(span / 8, until.x - p)
+            state = None
+            try:
+                state = ahead(Pos(p + delta))
+            except Exception:
+                pass
+            if state is not None:
+                self.formula = (ahead, until)
+                self.valid = min(self.valid, until.x)
+                left2 = p + delta + self.scrolled - span / 4
+                later = items(sn, state.line, state.claims, p + delta, left2, span, a, b, scale, w)
+        self.view.sync(now, later, delta, p, X, scale)
+        if self.formula is None and sn["wall"] is not None:
+            self.valid = p  # no formula: each frame reads the line
+        self._mode_buttons(sn["mode_names"], sn["mode"], sn["selection"])
+        self.speed_label.configure(text=f"speed: {num(sn['speed'])} per second")
+        self.when = [f"chip at {num(r)}" for r in sn["reruns"]] + sn["other"]
+
+    def draw(self, sn: dict) -> None:
+        """A frame: the list of what is shown only if it can have changed (view.py)."""
+        w = max(self.canvas.winfo_width(), 300)
+        x = sn["x"]
+        p = x
         if sn["wall"] is None:
             self.shown = None
         else:  # one position for the chip and the line, the time passed since the step
-            shown = self.shown
             p = x + sn["speed"] * F(time.time() - sn["wall"]).limit_denominator(1000)
-            if shown is not None and p < shown[0]:
-                p = shown[0]
-            if p > x and sn["ahead"] is not None:
-                try:
-                    state = sn["ahead"](Pos(p))  # (the chip has gone through its position too)
-                except Exception:  # (a step going on can stop what it reads)
-                    state = None
-                if state is not None:
-                    line, claims = state.line, state.claims
-                elif shown is not None and shown[0] >= x:  # the formula stops there: the line stays as shown, for the step
-                    line, claims = shown[1:]
-            self.shown = (p, line, claims)
-            x = p
-        kinds = sn["kinds"]
-        edge = self._edge(kinds)
-        left = x + self.scrolled - span / 4
-        right = left + span
-        X = lambda p: edge + float((p - left) / span) * (w - edge - RIGHT)
-        bottom = TOP + MODE_H + 8 + ROW_H * len(kinds)
-        self._mode_buttons(sn["mode_names"], sn["mode"], sn["selection"])
-        self.speed_label.configure(text=f"speed: {_num(sn['speed'])} per second")
-        when = [f"chip at {_num(p)}" for p in sn["reruns"]] + sn["other"]
-        t = sn["t"] + (x - sn["x"]) / sn["speed"]
-        self.status.configure(text=f"time {float(t):.2f} s    chip at {float(x):.3f}    mode {sn['mode']}    "
-                                   f"generator runs again: {' or '.join(when) if when else 'not planned'}"
-                                   + ("    (a generator run is going on)" if sn["running"] else ""))
-        # the modes: revealed up to the chip, unknown after
-        c.create_text(edge - 6, TOP + MODE_H / 2, text="modes", anchor="e")
-        names = sorted({m for _, _, m in sn["modes"]})
-        for i, (lo, hi, m) in enumerate(sn["modes"]):
-            if i == len(sn["modes"]) - 1:  # the mode at the chip goes on up to where the frame shows it
-                hi = max(hi, x)
-            a, b = max(lo, left), min(hi, right)
-            if a < b:
-                c.create_rectangle(X(a), TOP, X(b), TOP + MODE_H, fill=MODE_COLORS[names.index(m) % len(MODE_COLORS)], outline="#b2bec3")
-                if X(b) - X(a) > 14:
-                    c.create_text((X(a) + X(b)) / 2, TOP + MODE_H / 2, text=m)
-        if x < right:
-            hidden = X(max(x, left))
-            c.create_rectangle(hidden, TOP, X(right), TOP + MODE_H, fill="#f5f6fa", outline="#dcdde1", stipple="gray25")
-            c.create_text((hidden + X(right)) / 2, TOP + MODE_H / 2, text="not revealed yet", fill="#7f8fa6")
-        # one row per kind: its percentages, and under them who placed it
-        for i, k in enumerate(kinds):
-            y = TOP + MODE_H + 8 + i * ROW_H
-            color = COLORS[i % len(COLORS)]
-            c.create_text(edge - 6, y + BAR_H / 2, text=k, anchor="e", font=CAPTION)
-            c.create_line(edge, y + BAR_H / 2, w - RIGHT, y + BAR_H / 2, fill="#ecf0f1")
-            for v, reg in line.vals.get(k, {}).items():
-                fill = _blend(color, float(v) / 100)
-                for a, b in _ivs(reg, left, right):
-                    _bar(c, X(a), y, X(b), y + BAR_H, fill, edge)
-            for (v, owner), reg in claims.pos.get(k, {}).items():
-                for a, b in _ivs(reg, left, right):
-                    _bar(c, X(a), y + BAR_H + 2, X(b), y + BAR_H + 6, OWNERS.get(owner, ("#636e72", owner))[0], edge)
-            for d in (claims.neg.get(k, {}), claims.taken.get(k, {})):
-                for owner, reg in d.items():
-                    for a, b in _ivs(reg, left, right):
-                        c.create_line(X(a), y + BAR_H + 4, max(X(b), X(a) + 2), y + BAR_H + 4, fill="#d63031", width=2, dash=(3, 2))
-        # the axis
-        step = _tick(span)
-        p = (left // step + 1) * step
-        while p < right:
-            c.create_line(X(p), bottom, X(p), bottom + 5, fill="#636e72")
-            c.create_text(X(p), bottom + 14, text=_num(p), fill="#636e72")
-            p += step
-        c.create_line(edge, bottom, w - RIGHT, bottom, fill="#636e72")
-        # where the generator ran, and where it runs again
-        for p in sn["past"]:
-            if left <= p <= right:
-                c.create_polygon(X(p) - 5, bottom + 24, X(p) + 5, bottom + 24, X(p), bottom + 17, fill="#0984e3")
-        for p in sn["reruns"]:
-            if left <= p <= right:
-                c.create_line(X(p), TOP - 4, X(p), bottom, fill="#0984e3", dash=(6, 4), width=2)
-                c.create_text(X(p) + 4, TOP - 12, text="generator runs again", anchor="w", fill="#0984e3")
-            elif p > right:
-                c.create_text(w - RIGHT, TOP - 12, text=f"generator runs again at {_num(p)} →", anchor="e", fill="#0984e3")
-        # the chip
-        if left <= x <= right:
-            c.create_line(X(x), TOP - 2, X(x), bottom, fill="#d63031", width=2)
-            c.create_polygon(X(x) - 7, TOP - 16, X(x) + 7, TOP - 16, X(x), TOP - 4, fill="#d63031")
-        # the legend
-        y = bottom + 40
-        c.create_text(edge, y, anchor="w", fill="#2d3436",
-                      text="bar: lighter = lower percentage   under the bar, who placed it:")
-        xl = edge + 390
-        for color, who in OWNERS.values():
-            c.create_rectangle(xl, y - 3, xl + 18, y + 3, fill=color, outline="")
-            c.create_text(xl + 22, y, anchor="w", text=who)
-            xl += 30 + 7 * len(who)
-        c.create_line(xl, y, xl + 18, y, fill="#d63031", width=2, dash=(3, 2))
-        c.create_text(xl + 22, y, anchor="w", text='"no K" or removed')
-        c.create_polygon(edge, y + 22, edge + 10, y + 22, edge + 5, y + 15, fill="#0984e3")
-        c.create_text(edge + 14, y + 18, anchor="w", text="the generator ran here      dashed blue: where it runs again      red: the chip")
-
-
-def _ivs(reg, a, b):
-    """The (lo, hi) real parts of the intervals of reg, cut to [a, b] (the graph)."""
-    return [(max(iv.lo.x, a), min(iv.hi.x, b)) for iv in reg.on(a - 1, b + 1).intervals if iv.lo.x <= b and iv.hi.x >= a]
-
-
-def _bar(c, x1, y1, x2, y2, fill, edge) -> None:
-    if x2 - x1 < 2:  # a point, or almost
-        x1, x2 = max(x1 - 1, edge), max(x1 + 1, edge + 2)
-    c.create_rectangle(x1, y1, x2, y2, fill=fill, outline="")
-
-
-def _blend(color: str, amount: float) -> str:
-    """The color at this strength (1: itself, toward white below)."""
-    k = 0.25 + 0.75 * amount
-    r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
-    return "#%02x%02x%02x" % tuple(int(255 - (255 - v) * k) for v in (r, g, b))
-
-
-def _tick(span: F) -> F:
-    """A round distance between the axis labels: about 12 of them."""
-    for t in (F(1, 4), F(1, 2)):
-        if span / t <= 14:
-            return t
-    power = F(1)
-    while True:
-        for m in (1, 2, 5):
-            if span / (m * power) <= 14:
-                return m * power
-        power *= 10
-
-
-def _num(x) -> str:
-    x = F(x)
-    return str(x) if x.denominator <= 8 else f"{float(x):.2f}"
+            if self.shown is not None and p < self.shown[0]:
+                p = self.shown[0]
+        sign = self._signature(sn, w)
+        if sign != self.sign or p >= self.valid or self.frame is None:
+            self.sign = sign
+            self._rebuild(sn, p, w)
+        else:
+            self.view.move(p)
+            if self.shown is not None:
+                self.shown = (p, *self.shown[1:])
+        t = sn["t"] + (p - x) / sn["speed"]
+        text = (f"time {float(t):.2f} s    chip at {float(p):.3f}    mode {sn['mode']}    "
+                f"generator runs again: {' or '.join(self.when) if self.when else 'not planned'}"
+                + ("    (a generator run is going on)" if sn["running"] else ""))
+        if text != self.status_text:
+            self.status_text = text
+            self.status.configure(text=text)
 
 
 def run(session) -> None:

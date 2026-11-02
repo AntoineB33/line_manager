@@ -392,6 +392,13 @@ class _Plan:
         s = self.exact(p)
         return s if s is not None else self.mr.with_run(self.state0, self.decision, Region.of(_iv(self.a0, p)))
 
+    def formula_until(self, p: Pos) -> Pos | None:
+        """Where the formula of the line at p stops; None if there is none at p."""
+        for a, b, line, _ in list(self.pieces):
+            if a <= p <= b:
+                return b if line is not None else None
+        return None
+
     def exact(self, p: Pos) -> LineState | None:
         """That state, where the run's formula gives it with nothing to solve; else None."""
         for a, b, line, states in list(self.pieces):

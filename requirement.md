@@ -12,15 +12,15 @@ Example of a state of the line:
 There are several modes, and only one is applied for one position of the chip on the line. Every bounded stretch of the line contains finitely many mode transitions. The mode transitions are given externally.
 
 There are "element rules". In an element rules, there are two sides:
-- the left side is a boolean expression manipulating element types and percentages. An element with 0% is considered absent.
-- the right side is an expression with "and", "or" and intervals of elements with percentages. The position of those intervals are relative to either the position p where the left side is met, or the l left edge (bound or unbound) of the largest interval that meets the left side and includes p.
+- The left side is a boolean expression manipulating element types and percentages. An element with 0% is considered absent.
+- The right side is an expression with "and", "or" and intervals of elements with percentages. The position of those intervals are relative to either the position p where the left side is met, or the l left edge (bound or unbound) of the largest interval that meets the left side and includes p.
 
 Examples:
 - A → B 100%
 - A → B 0%
 - A & B → C 45% 3 units on the left of p
 
-If there is a "or" in the right side of the element rule, the leftmost operand (leftmost in the expression) that can be chosen is chosen. The position that choses first is the closest to 0, and the one to the right if two positions are equally close to 0.
+If there is an "or" on the right side of the element rule, the leftmost operand (leftmost in the expression) that can be chosen is chosen. The position that choses first is the closest to 0, and the one to the right if two positions are equally close to 0.
 
 A position is a real number x or x + kε, with k a non-zero integer and ε an infinitely small positive distance: x + ε is after x and before every real number greater than x. When a rule needs the first position after x, it uses x + ε.
 Example: "A → B or C", "B → E", "B → no E on (0, 1] of l", A on [0, 2]: B is at 0 and at 1 + ε.
@@ -34,8 +34,8 @@ The state of the line can be modified only by the user, the mode rules, and the 
 
 The "rules generator" takes the current state of the line and the chip's position and produces a "generated script" to solve optimization problems and satisfy constraints.
 A generated script must never:
-- change the left side of the chip.
-- remove elements added by the user. It can however remove elements indirectly added by the user through the rules, without removing the user-added elements themselves.
+- Change the left side of the chip.
+- Remove elements added by the user. It can however remove elements indirectly added by the user through the rules, without removing the user-added elements themselves.
 At the absolute start of the program, the generated script is only an instruction to run the rules generator once as soon as possible. The generated script is changed only when the generator finds a new one or the user or the generated script itself edits it. If the generator is called to run again while it is already running, the previous run is cancelled and the new one starts.
 
 The generated script must be an object with a state and those three elements:
@@ -66,7 +66,7 @@ To satisfy this pace, the generator can look at the current generated script.
 
 The "probability finder" program is used to find probability rules in the mode transitions pattern. This helps the rules generator being more performant with a low allocated resources quantity hyperparameter.
 
-Edits from the user (including mode switches) win over what is on the line. Nothing more than necessary is changed from the older elements. If a result cannot be computed in reasonable time, the edit is refused. If the edit leads to a contradiction with the constraints the generated script must satisfy, the edit is refused. For example:
+Edits from the user (including mode switches) win over what is on the line. The fewest elements are changed from the older elements. If a result cannot be computed in reasonable time, the edit is refused. If the edit leads to a contradiction with the constraints the generated script must satisfy, the edit is refused. For example:
 "A → B 100% or C 100%"
 A and B at [1, 2]
 user edit: remove B at 1.5

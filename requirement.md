@@ -57,7 +57,7 @@ if presence ratio of A > g, then…
 else
   …
 
-For different machines, if the same generated script get published at the same time, then at any point, if the chip stops and the user does nothing, the same line state must be found, if adding a few more loop iterations on the scripts.
+For different machines, if the same generated script get published at the same time and the same accepted user edits and mode switches occur at the same time, then at any point, if the chip stops and the user does nothing, the same line state must be found, if adding a few more loop iterations on the scripts.
 
 The "allocated resources quantity" hyperparameter in [0, 1] balances between resource usage economy (0) and optimization problem-solving (1). When the hyperparameter is lower, then a rules generator run will be faster and use less CPU resources to solve the optimization problems, and the current generated script will trigger less frequently a new rules generator run. At 1, the generator uses all the time the pace allows finding the best arrangement, and a run ends only when its script never needs a new run and reaches the best possible score in every scenario; if that cannot be established, the run never ends.
 

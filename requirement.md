@@ -33,8 +33,7 @@ Example:
 The state of the line can be modified only by the user, the mode rules, and the "generated script".
 
 The "rules generator" takes the current state of the line and the chip's position and produces a "generated script" to solve optimization problems and satisfy constraints.
-This generated script is a very concise text showing events and the corresponding triggers for continuous edits of the line or a new run of the rules generator.
-A generated rule must never:
+A generated script must never:
 - change the left side of the chip.
 - remove elements added by the user. It can however remove elements indirectly added by the user through the rules, without removing the user-added elements themselves.
 At the absolute start of the program, the generated script is only an instruction to run the rules generator once as soon as possible. The generated script is changed only when the generator finds a new one or the user edits it. If the generator is called to run again while it is already running, the previous run is cancelled and the new one starts.

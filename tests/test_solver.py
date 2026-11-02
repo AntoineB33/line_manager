@@ -680,6 +680,52 @@ def _three(f, x, have, absent_from):
     return any(_three(p, x, have, absent_from) for p in f.parts)
 
 
+class ClosestToZeroTest(unittest.TestCase):
+    def test_every_lattice_in_its_own_order(self):
+        """Lattices that pose the same problem on both sides of g/2 choose in different
+        orders: x in (1/2, 1) comes after x - 1, x in (0, 1/2) before it."""
+        rs = parse_rules(ALTERNATE)
+        for hi, c in ((1, Interval(F(1, 2), 1, False, True)), (F(9, 10), Interval(F(1, 2), F(9, 10), False, True))):
+            s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(-hi, hi))], USER)
+            self.assertEqual(s.line.presence("B"), Region.of(Interval(F(-1, 2), F(1, 2), False, True)))
+            self.assertEqual(s.line.presence("C"), Region.of(Interval.closed(-hi, F(-1, 2))) | Region.of(c))
+
+
+class OutwardTest(unittest.TestCase):
+    """The sweep from 0 outwards, on both sides of 0."""
+
+    def test_the_example_on_both_sides_of_0(self):
+        """B at 0 and E there forbid E on (0, 1]; no B just before 0, its "no E" would reach 0."""
+        rs = parse_rules(["A → B or C", "B → E", "B → no E on (0, 1] of l"])
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(-2, 2))], USER)
+        self.assertFalse(rules_hold(rs, s.line, s.claims))
+        b = s.line.presence("B")
+        self.assertTrue(b.contains(0) and b.contains(Pos(1, 1)))
+        self.assertFalse(b.contains(F(1, 2)) or b.contains(Pos(0, 1)))
+        for x in (Pos(F(-1, 2)), Pos(0, -1), Pos(F(3, 2))):
+            self.assertTrue(s.line.presence("C").contains(x) or b.contains(x))
+
+    def test_matches_the_lattices(self):
+        """Where both apply, the two solvers give one line, left of 0 too."""
+        rng = random.Random(11)
+        n = 0
+        for _ in range(50):
+            rs = sample_rules(rng, 4)
+            if not rs.or_items or not rs.lattice:
+                continue
+            ops = [Op.put(rng.choice("ABCD"), rand_interval(rng, -3, 3)) for _ in range(rng.randint(1, 3))]
+            try:
+                c = apply_edit(parse_rules([]), LineState.empty(), ops, USER).claims
+                want = solve(rs, c.problem())
+            except (Conflict, Undetermined, Refused):
+                continue
+            got = run_sweep(rs, c.problem())
+            for k in rs.choice_dependent:
+                self.assertEqual({v: r for v, r in got.get(k, {}).items() if r}, {v: r for v, r in want.vals.get(k, {}).items() if r}, ([str(r) for r in rs.rules], [str(o) for o in ops], k))
+            n += 1
+        self.assertGreater(n, 8)
+
+
 class CycleTest(unittest.TestCase):
     """Rules that place each other in a cycle (requirement.md no longer forbids them): the
     line is the least state containing the claims and closed under the rules; through a
@@ -980,6 +1026,25 @@ class ResolutionTest(unittest.TestCase):
         s = apply_edit(rs, s, [Op.put_no("C", Interval.closed(0, 300))], USER)
         self.assertEqual(sorted(s.line.kinds()), ["B"])  # two edits: A, the older, gives way
         self.assertFalse(rules_hold(rs, s.line, s.claims))
+
+    def test_the_fewest_elements_over_all_the_conflicts(self):
+        """Only B has to go; conflict by conflict, each tie would keep B and lose A and C."""
+        rs = parse_rules(["B & A → D", "C & B → E"])
+        p = Interval.point(1)
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", p), Op.put("B", p), Op.put("C", p)], USER)
+        s = apply_edit(rs, s, [Op.put_no("D", p), Op.put_no("E", p)], USER)
+        self.assertEqual(sorted(s.line.kinds()), ["A", "C"])
+
+    def test_each_stretch_of_a_conflict_chooses(self):
+        """At 1 the cheapest is to remove A (B carries 2 consequences there), at 2 to remove
+        B: one choice for both would lose more."""
+        rs = parse_rules(["A & B → C", "B & P → Q", "B & P → S", "A & T → U", "A & T → V"])
+        one, two = Interval.point(1), Interval.point(2)
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", one), Op.put("B", one), Op.put("P", one),
+                                               Op.put("A", two), Op.put("B", two), Op.put("T", two)], USER)
+        s = apply_edit(rs, s, [Op.put_no("C", Interval.closed(1, 2))], USER)
+        self.assertEqual(s.line.presence("B"), Region.of(one))
+        self.assertEqual(s.line.presence("A"), Region.of(two))
 
     def test_no_left_end_is_decided_from_0(self):
         """With both, the "or" acts on an element with no left end: 0 chooses first."""

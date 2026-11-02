@@ -222,10 +222,15 @@ to 0, on the lattices (`test_unbounded_on_the_left`): the window then has 0 in i
 and goes as far on both sides if the data is on both sides of 0, what is beyond it
 being further from 0 than all of it.
 
-**The sweep only goes from left to right.** Its choices are right where they are at
-or right of 0. On the left of 0, if they act on each other (not `RuleSet.pointwise`),
-or on an element with no left end, the edit is refused (`Undetermined`) rather than
-computed in the wrong order (gaps_to_solve_later.md).
+**The sweep goes from left to right, and 0 chooses first.** Its choices are right where
+they are at or right of 0. When they act on each other on the left of 0 (not
+`RuleSet.pointwise`), it only says whether a solution exists: from the closest to 0, each
+cell of positions keeps the first operand of each "or" with which one does, the others
+being barred there (`Sweep._outward`, `OutwardTest`, which compares it with the lattices).
+A cell is a stretch where nothing can change: its ends are the ends of the data moved by
+the rules, on both sides of 0, and d / 2 for each distance d. Each operand given up costs
+a whole search, so the window's time limit can refuse these edits. On an element with no
+left end, the edit is refused (`Undetermined`, gaps_to_solve_later.md).
 
 ### How it is computed exactly
 
@@ -444,8 +449,9 @@ again from all of them:
   kept as edits: what gives way of them is gone, and the generator places again
   what it needs at its next run, which every edit of the user triggers
   (`test_the_scripts_elements_are_not_kept`). Their own edits are resolved against
-  the claims as they are, by the steps below, and refused if a claim of the user
-  would change (N2, §7).
+  the claims as they are, by the steps below. The script's are refused if a claim of
+  the user would change (N2, §7); the mode rules' win over the older edits of the user
+  at the chip (§7).
 
 The requirement's examples (`test_requirement_examples`) all come out as written.
 `HistoryTest.test_matches_brute_force` compares the result of random histories of
@@ -463,8 +469,8 @@ above) is determined as follows:
    the rules do not decide its own result (§5, `Undetermined`). It is never
    refused because of what is on the line: edits from the user win over it.
 3. **The edit wins.** The edit's elements are kept. If older elements conflict
-   with them, parts of older elements are removed, nothing more than necessary,
-   one conflict after the other, from left to right.
+   with them, parts of older elements are removed, the fewest elements over all the
+   conflicts, the leftmost kept on a tie.
    - **What an element is.** An element is a largest interval of one claim
      ("K p%", "no K" or "off K", with one owner). Only the part of it that has to go is
      removed.
@@ -503,14 +509,17 @@ above) is determined as follows:
        leftmost position where two combinations differ, the one that keeps the
        element there. Kinds at the same position are ordered by their first
        appearance in the rules.
-   - **Conflict by conflict.** The choice is made for each conflict in turn,
-     not over all conflicts at once. It tries a few combinations per conflict
-     (2^k for a left side of k terms), however many elements there are, so an
-     edit with thousands of elements in conflict is resolved in seconds. The
-     result is not always the smallest loss over all conflicts together.
-   - **Otherwise: whole elements, to keep the computation fast.** The fallback
-     removes more than necessary, which the requirement allows for a fast
-     computation. It handles four cases:
+   - **Over all the conflicts.** Each stretch of a conflict is a conflict, with its
+     own choice. Stretches that can lose no element in common are decided apart: the
+     losses add up. Those that can are searched together, knowing what each must lose
+     whatever is chosen (`_Resolution.best_of`,
+     `test_the_fewest_elements_over_all_the_conflicts`,
+     `test_each_stretch_of_a_conflict_chooses`). Past `MAX_SEARCH` steps the edit is
+     refused. Past `MAX_SPLIT` stretches they are decided one after the other, and a
+     left side of many terms keeps `MAX_OPTIONS` combinations: there the result is not
+     always the fewest.
+   - **Otherwise: whole elements.** The fewest whole elements near the edit are searched,
+     one, then two, and so on. It handles four cases:
      - conflicts through the "or" choices, which region algebra does not
        compute;
      - conflicts that no combination removes;
@@ -519,12 +528,11 @@ above) is determined as follows:
      - more than 4 × (number of older elements) + 16 conflicts one after the
        other.
 
-     The rest of the older elements are removed whole, one after the other,
-     those within (depth + 1) × reach + 1 of the edit first, then from left to
-     right, until the claims are consistent and decided. The edit alone is
-     consistent and decided (step 2), so this ends. Each element removed that way
-     is then put back as it was if the claims stay consistent and decided with
-     it.
+     Near is within (depth + 1) × reach + 1 of the edit. If none of those works, the
+     rest of the older elements are removed whole, one after the other, until the
+     claims are consistent and decided: the edit alone is (step 2), so this ends. Each
+     element removed that way is then put back if the claims stay so. That last case
+     is not always the fewest.
 4. **Removed, for this computation only.** For the user's edits, the parts removed
    give way only in this computation: the next edit of the user computes the claims
    again from all the edits.
@@ -579,12 +587,23 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
   - For each item of a rule whose left side is met at x: the leftmost operand
     that can be chosen. That is the first that already holds at x, or else the
     first whose edit on {x} is accepted: resolved like any edit, and refused if
-    its result would break either of these:
+    its result would break this:
     - **M1.** It would change the line or the claims on (−∞, x), or the claims
       outside {x}: a mode rule adds or removes elements only at the chip.
-    - **N2.** It would remove or change a claim of the user: edits from the user
-      always win.
   - If no operand is accepted, the item does nothing at x.
+  - **Older edits of the user give way.** A mode rule acts when the chip gets to x, so
+    every edit of the user made before that is older, wherever the mode switch came,
+    and the rule wins over it at x (`test_older_user_edits_give_way`,
+    `test_a_user_removal_gives_way_too`). What it took leaves those edits for good
+    (`resolve.mode_won`): an edit computed later does not bring it back, and only an
+    edit made later comes above it (`test_what_the_mode_rules_won_stays`), and an older
+    edit hidden by a newer one then goes there too
+    (`test_an_edit_hidden_when_the_chip_passed_does_not_come_back`). Away from x,
+    M1 still refuses the operand.
+  - **An edit after the chip got there is newer.** Where the chip stands, a user's edit
+    at x made after it arrived stays (`ModeRules.kept`,
+    `test_an_edit_where_the_chip_stands_is_newer`), unless the mode then changes at x.
+    On a moving chip, the chip is at x at that very instant, and the mode rule wins.
   - **How it is computed exactly.** From a position m, the same decision goes on
     over [m, x) as x moves right (a run). The ends of the claims and the line are
     then fixed, or move with x as x + d, with d a multiple of g (the gcd of the
@@ -634,7 +653,12 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     last), from the same snapshot: frontiers from c + 10 up to c + H, 1 + ⌈q (H − 10) / 10⌉
     of them, so a lower q has fewer stages and a shorter run. A stage only adds an edit
     between the last frontier and its own, so the lines before a frontier never change,
-    whatever the modes: that is "definitive". A run in a process of its own edits nothing
+    whatever the modes: that is "definitive". Such an edit is left out if a rule reaches
+    back before the frontier with it, and it starts `RulesGenerator.margin` after the
+    frontier: as far as the mode rules acting before it can reach through the rules, or
+    nowhere if that has no bound (a cycle that moves, a rule relative to l). The script's
+    own edits are checked the same way when they are put in place (`Simulation._edit`,
+    `frozen`). A run in a process of its own edits nothing
     in the first 10 after c. The first script also puts the kind with the biggest ratio
     target not reached on those 10, if the constraints and the guards allow it
     (`RulesGenerator.first_edits`), and goes on with each kind at the chip that is not
@@ -721,13 +745,13 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     `restore`).
   - `ModeRulesTest` checks:
     - nothing changes beyond the chip;
-    - the user's elements are kept;
+    - the older edits of the user give way at the chip, and only there;
     - no element away from the chip is removed, and the positions that can take
       D still get it;
     - the operand changes inside one stretch when it has to;
     - without the script, the mode rules do nothing.
 
-    `check_log` checks M1 and N2 on every change of the mode rules.
+    `check_log` checks M1 on every change of the mode rules.
 
 `ScriptTest` checks that scripts are refused for:
 
@@ -757,7 +781,8 @@ returns a script: an object (`script.Script`) with a state and three elements.
 
 Everything else of `Script` is its state: the constraints, what it covers, the
 stretches, and what its events have done (`true`, `fired`, `since`). A script changes
-another one with `ChangeAction`, never itself (`script_text` refuses it).
+another one with `ChangeAction`, never itself (`script_text` refuses it, and
+`Simulation._execute` for a script made otherwise: `test_a_script_never_changes_itself`).
 
 **The loops.** The `STEP` loop is the simulation's thread, and it is exact: one iteration
 is one `advance`, which stops at the same instants whatever its steps, so a trigger fires
@@ -877,7 +902,7 @@ call ends it (`test_background_runs`).
 
 | quantity | definition | monotonicity |
 |---|---|---|
-| work of a run | min(B(q), number of candidates), with B(q) = 2 + ⌊36q⌋ | non-decreasing in q |
+| work of a run | min(B(q), number of candidates), with B(q) = 2 + ⌊36q⌋; at q = 1 in a process of its own, what `SEARCH_TIME` allows per stage, finer placements included | non-decreasing in q |
 | rerun distance | D(q) = H(1 − q/2) | strictly decreasing in q |
 | a mode that matters reruns from | c + D(q)(1 − q)/2 | strictly decreasing in q |
 | compiled ahead | q D(q) / 6 | strictly increasing in q |
@@ -887,6 +912,12 @@ With mode rules, a run's text covers them up to c + D(q)/6, it compiles them ahe
 to c + q D(q)/6 (a shortcut: q D(q) grows with q, so a lower q compiles less, and the
 chip computes the rest), and it asks for the next run at c + D(q)/18 instead of
 c + D(q).
+
+**q = 1.** A run in a process of its own (`RulesGenerator.endless`) searches each stage for
+as long as the pace allows, and ends only if its score is 0 and its script asks for a run
+at nothing but the user's edits. Otherwise it goes on until it is
+cancelled by the next call. Past c + H it goes on at the pace, each stage on the window from
+where the frontier got to. A score above 0 is never proved to be the best possible.
 
 **Per run** (`test_per_run`). The candidate list does not depend on q, and a
 run evaluates a prefix of it. So with a lower q:

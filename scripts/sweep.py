@@ -163,6 +163,7 @@ class Sweep:
                     self.op_pos[o.kind].append((ii, oi, o))
         self.none = [[EMPTY] * len(it.ops) for it in self.items]
         self.moving = bool(set(self.kin) & rs.moving)
+        self.barred = None  # `_outward`: for each "or", where each operand cannot be chosen
         self._far = {}
         self.deltas = self._deltas()
         self.R = max((abs(d.x) for d in self.deltas), default=Fraction(0)) + 1
@@ -206,6 +207,8 @@ class Sweep:
         mask = self.edges_after if self.probe is not None else None
         if cut is not None:
             mask = cut if mask is None else mask & cut
+        if check and self.barred is not None and any(r & ch[ii][oi] for ii, row in enumerate(self.barred) for oi, r in enumerate(row)):
+            raise Conflict("an operand barred there")
         extra = {}
         for K in self.kin:
             plain, exact = self.fixed.get(K, (EMPTY, {}))
@@ -262,18 +265,94 @@ class Sweep:
         if P == -INF:
             raise Undetermined("an 'or' acts on an element unbounded on the left: with no first position, nothing decides "
                                "its choices")
-        if P is not None and P < 0 and not self.rs.pointwise:
-            raise Undetermined("choices that act on each other on the left of 0: this solver only goes from left to "
-                               "right, and the closest to 0 must choose first")
         self.memo, self.failed, self.dead, self.stuck, self.first = {}, {}, [], -INF, P
         self._grid()
         if P is None:  # no "or" is met anywhere
             res = self.none if self._valid(self.none, INF) else None
+        elif P < 0 and not self.rs.pointwise and self.probe is None:  # (a probe only asks if a solution exists)
+            res = self._outward(P)
         else:
             res, _ = self.complete(P, self.none, 0)
         if res is None:
             raise Conflict("no choice of the 'or' operands satisfies the rules")
         return self._finish(res)
+
+    # ------------------------------------------------------------------ from 0 outwards
+    def _cells(self, L: Fraction) -> list[tuple]:
+        """The positions of [-L, L] in cells, each (region, a position of it), the closest to
+        0 first and the right one first when two are as close. Inside a cell nothing can
+        change: its ends are the ends of the data moved by the distances of the rules, on
+        both sides of 0, and where a position and one a distance d from it are as close to
+        0 (d / 2)."""
+        ds = {d.x for d in self.deltas} | {Fraction(0)}
+        xs = {e.x for e in self.static_ends} | {Fraction(0), L}
+        cuts = {x + d for x in xs for d in ds} | {d / 2 for d in ds}
+        cuts = sorted({x for c in cuts for x in (c, -c) if -L <= x <= L})
+        J = self.rs.eps_reach
+        out = []
+        for n, x in enumerate(cuts):
+            out += [(Region.point(Pos(x, j)), Pos(x, j)) for j in range(-J, J + 1)]
+            if n + 1 < len(cuts):
+                out.append((Region.of(Interval(Pos(x, J + 1), Pos(cuts[n + 1], -J - 1))), Pos((x + cuts[n + 1]) / 2)))
+
+        def turn(cell):
+            p = cell[1]
+            return abs(p.x), (p.k if p.x > 0 else -p.k if p.x < 0 else abs(p.k)), p.x < 0 or (p.x == 0 and p.k < 0)
+        return sorted(out, key=turn)
+
+    def _outward(self, P) -> list | None:
+        """The choices of the definition when they act on each other on the left of 0. The
+        sweep from left to right finds a solution if there is one. So, from the closest cell
+        to 0, each "or" keeps the first operand with which a solution is still found, the
+        others being barred there (`barred`). Right of the last cell, the order is the
+        sweep's own."""
+        cells = self._cells(abs(P.x))
+        self.static_ends = sorted(set(self.static_ends) | {e for reg, _ in cells for e in _ends(reg, reg.lo, reg.hi) if type(e) is Pos})
+        self._grid()
+        self.barred = [[EMPTY] * len(it.ops) for it in self.items]
+        tries = [0]
+
+        def found():
+            tries[0] += 1
+            if tries[0] > MAX_CALLS:
+                raise Undetermined(f"deciding the choices from 0 takes more than {MAX_CALLS} attempts")
+            checkpoint()
+            self.memo, self.failed, self.dead, self.stuck = {}, {}, [], -INF
+            self.shared["calls"] = 0
+            return self.complete(P, self.none, 0)[0]
+
+        def only(ii, oi, reg):
+            """The bars with this operand of this "or" the only one on reg."""
+            was = list(self.barred[ii])
+            self.barred[ii] = [r if o == oi else r | reg for o, r in enumerate(was)]
+            return was
+        try:
+            best = found()
+            if best is None:
+                return None
+            for reg, p in cells:
+                for ii, it in enumerate(self.items):
+                    if it.anchor == "l" and reg != Region.point(p):
+                        continue  # (a left edge is a position)
+                    took = [oi for oi, r in enumerate(best[ii]) if r.contains(p)]
+                    if not took:
+                        continue
+                    for oi in range(took[0]):
+                        was = only(ii, oi, reg)
+                        sol = found()
+                        if sol is not None:
+                            best, took = sol, [oi]
+                            break
+                        self.barred[ii] = was
+                    else:
+                        only(ii, took[0], reg)
+                        if not reg.issubset(best[ii][took[0]]):
+                            best = found()
+                            if best is None:
+                                raise Undetermined(f"the sweep could not place exactly where a choice changes around {p}")
+            return best
+        finally:
+            self.barred = None
 
     def _greedy(self, P, ch, start=0):
         """From P (the "or"s before `start` at P already decided): each position takes the
@@ -612,6 +691,15 @@ class Sweep:
             if change < end:
                 end = change
         cands = self._candidates(P, end, vals, ch)
+        if self.rs.cyclic:  # a position cannot hold up its own choice: met from what is before it
+            def stops(Q):
+                v = self.closure(with_run(Q - EPS), Q, check=False)
+                return any(ii in running and it.anchor == "p" and not self._active(it, v, Q) for ii, it in enumerate(self.items))
+            bare = self.closure(ch, INF, check=False)  # (the self-support hides the ends of what holds it)
+            cands = sorted(set(cands) | set(self._candidates(P, end, bare, ch)))
+            f = self._first(stops, P, end, cands)
+            if f is not None:
+                end = f
         # the run stays valid up to E (validity only gets lost as the run grows)
         E = self._last(lambda Q: self._valid(with_run(Q), Q), P, end - EPS, cands)
         if E < end - EPS:

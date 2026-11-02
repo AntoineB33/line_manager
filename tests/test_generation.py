@@ -16,7 +16,7 @@ from problems import MinimumLengthProblem, shortfalls
 from region import Region
 from resolve import apply_edit
 from rules import parse_rules
-from script import ChipIn, Edited, EditAction, Event, RerunAction, ScoreBelow, Script, TransitionCount
+from script import STEP, ChangeAction, ChipIn, Edited, EditAction, Event, RerunAction, ScoreBelow, Script, TransitionCount, loop_name
 from script_text import parse_script
 from simulation import Chip, Simulation, UserEdit
 
@@ -143,18 +143,71 @@ class ModeRulesTest(unittest.TestCase):
         self.assertEqual(sim.state.line.presence("D"), Region.of(IntervalSet.of(Interval.closed_open(0, 5), Interval.closed_open(7, 12), Interval.open_closed(15, 20))))  # (mode 2 at the chip, 15)
         self.assertTrue(any(ch.source == "mode" for ch in log.changes))
 
-    def test_users_elements_win(self):
-        """Edits from the user always win: mode 2 does not remove the user's D."""
+    def test_older_user_edits_give_way(self):
+        """The chip gets to a position after the edits made before: mode 2 removes the
+        user's D from where the chip goes in that mode, and nothing ahead of it."""
         rs = parse_rules(self.RULES)
-        sim, log = self.simulate(rs, LineState.empty(), [UserEdit(F(1), [Op.put("D", Interval.closed(0, 20))])])
-        self.assertEqual(sim.state.line.presence("D"), Region.of(Interval.closed(0, 20)))
-        self.assertTrue(any("N2:" in why for r in log.runs for _, why in r[4].refused))
+        sim, _ = self.simulate(rs, LineState.empty(), [UserEdit(F(1), [Op.put("D", Interval.closed(0, 20))])])
+        self.assertEqual(sim.state.line.presence("D"), Region.of(IntervalSet.of(
+            Interval(0, 5, True, False), Interval(7, 12, True, False), Interval(15, 20, False, True))))
+
+    def test_a_user_removal_gives_way_too(self):
+        """The user's "no D" ahead of the chip: mode 1 places D when the chip gets there."""
+        rs = parse_rules(self.RULES)
+        sim, _ = self.simulate(rs, LineState.empty(), [UserEdit(F(1), [Op.put_no("D", Interval.closed(2, 4))])])
+        self.assertEqual(sim.state.line.presence("D"), Region.of(IntervalSet.of(
+            Interval(0, 5, True, False), Interval(7, 12, True, False))))
+
+    def test_what_the_mode_rules_won_stays(self):
+        """A later edit, computed from all the user's edits, does not bring back what the
+        chip took from an older one, and the newest edit wins where it acts."""
+        rs = parse_rules(["mode 2 → no A", "B → C 1 unit on the left"])
+        chip, modes = Chip([(0, 0), (20, 20)]), ModeTimeline(0, "1", [(5, "2")])
+        g = RulesGenerator(rs, PresenceRatioProblem({}, 60), F(1, 2))
+        sim = Simulation(LineState.empty(), g, chip, modes, [
+            UserEdit(F(1), [Op.put("A", Interval.closed(2, 100))]),
+            UserEdit(F(10), [Op.put("B", Interval.point(50))]),
+            UserEdit(F(11), [Op.put("A", Interval.point(7))])])
+        log = sim.run(12)
+        check_log(log, rs)
+        self.assertEqual(sim.state.line.presence("A"), Region.of(IntervalSet.of(
+            Interval(2, 5, True, False), Interval.point(7), Interval(12, 100, False, True))))
+
+    def test_an_edit_hidden_when_the_chip_passed_does_not_come_back(self):
+        """A at 2, hidden by the newer "no A": the chip places D... here no A holds, so take
+        the other way: "no D" (older), D (newer) at 2, then the mode rule and a take of D."""
+        rs = parse_rules(["mode 1 → no D"])
+        chip, modes = Chip([(0, 0), (20, 20)]), ModeTimeline(0, "1")
+        g = RulesGenerator(rs, PresenceRatioProblem({}, 60), F(1, 2))
+        p = Interval.point(F(5))
+        sim = Simulation(LineState.empty(), g, chip, modes, [
+            UserEdit(F(1), [Op.put("D", p, 50)]), UserEdit(F(2), [Op.put("D", p)]), UserEdit(F(8), [Op.take("D", Interval.point(F(6)))])])
+        log = sim.run(10)
+        check_log(log, rs)
+        self.assertFalse(sim.state.line.presence("D"))
+
+    def test_a_script_never_changes_itself(self):
+        """Whatever made it: the event of a part that changes that part does nothing."""
+        rs = parse_rules(self.RULES)
+        e = Event(ChipIn(F(1), INF), (ChangeAction(True, loop_name(STEP), Event(ChipIn(F(2), INF), ())),))
+        sim, log = self.simulate(rs, LineState.empty(), script=Script.of([e]))
+        self.assertTrue(any("does not change itself" in why for _, _, why in log.refused))
+
+    def test_an_edit_where_the_chip_stands_is_newer(self):
+        """The chip stands at 5 in mode 2: A there, put after it arrived, stays; the mode
+        rule acts on what comes after."""
+        rs = parse_rules(["mode 2 → no A"])
+        chip, modes = Chip([(0, 0), (5, 5), (20, 5)]), ModeTimeline(0, "2")
+        g = RulesGenerator(rs, PresenceRatioProblem({}, 60), F(1, 2))
+        sim = Simulation(LineState.empty(), g, chip, modes, [UserEdit(F(10), [Op.put("A", Interval.closed(5, 6))])])
+        log = sim.run(12)
+        check_log(log, rs)
+        self.assertEqual(sim.state.line.presence("A"), Region.of(Interval.closed(5, 6)))
 
     def test_nothing_removed_away_from_the_chip(self):
         """D at the chip conflicts with the generated A on [-3, -2] through C on [-3, 7]:
-        the mode rule is refused rather than removing A, away from the chip (and the user's
-        A, at the chip, is not removed either: test_users_elements_win). Each position is
-        decided on its own: D goes where mode 1 meets no C, (7, 12)."""
+        the mode rule is refused rather than removing A, away from the chip. Each position
+        is decided on its own: D goes where mode 1 meets no C, (7, 12)."""
         rs = parse_rules(["A → C on [0, 10] of l", "D → no C", "mode 1 → D"])
         state = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(-3, -2))], GEN)
         sim, log = self.simulate(rs, state)
@@ -165,9 +218,9 @@ class ModeRulesTest(unittest.TestCase):
 
     def test_each_position_takes_the_first_operand(self):
         """One stretch of the chip, [0, 5) in mode 1, and the operand changes inside it: D
-        cannot go where the user's X is."""
-        rs = parse_rules(["mode 1 → D or E", "D → no X"])
-        state = apply_edit(rs, LineState.empty(), [Op.put("X", Interval.closed(2, 3))], USER)
+        cannot go where X is, which comes from Y, on the left of the chip."""
+        rs = parse_rules(["mode 1 → D or E", "D → no X", "Y → X 10 units on the right"])
+        state = apply_edit(rs, LineState.empty(), [Op.put("Y", Interval.closed(-8, -7))], USER)
         sim, log = self.simulate(rs, state)
         self.assertEqual(sim.state.line.presence("X"), Region.of(Interval.closed(2, 3)))
         self.assertEqual(sim.state.line.presence("E"), Region.of(IntervalSet.of(Interval.closed(2, 3))))
@@ -176,6 +229,14 @@ class ModeRulesTest(unittest.TestCase):
         for ch in log.changes:
             if ch.source == "mode":
                 self.assertGreaterEqual(ch.at.inf(), ch.chip)  # nothing before where the change starts
+
+    def test_the_first_operand_wins_over_the_users_element(self):
+        """D can be chosen by taking the user's older X at the chip: the "or" takes D."""
+        rs = parse_rules(["mode 1 → D or E", "D → no X"])
+        state = apply_edit(rs, LineState.empty(), [Op.put("X", Interval.closed(2, 3))], USER)
+        sim, _ = self.simulate(rs, state)
+        self.assertFalse(sim.state.line.presence("X"))
+        self.assertFalse(sim.state.line.presence("E"))
 
     def test_through_a_cycle(self):
         """D at the chip repeats every 3 units ahead of it (a cycle). The user's "no D" at 13

@@ -500,10 +500,9 @@ class LocalTest(unittest.TestCase):
             checked += 1
         self.assertGreater(checked, 80)
 
-    @unittest.expectedFailure
     def test_a_cycle_over_what_repeats(self):
-        """A known bug of the sweep (older than these shortcuts): A → D or E and E → A hold
-        each other up after the end of A's claim, with nothing placing them there."""
+        """A → D or E and E → A cannot hold each other up after the end of A's claim, with
+        nothing placing them there."""
         rs = parse_rules(["C → no E", "A → D or E", "B & D → E", "E → A", "C → D", "A → B or C"])
         tail = Region(135, 135, IntervalSet(), right=IntervalSet.of(Interval.closed_open(0, 15)), pr=F(135))
         self.assertFalse(solver.solve(rs, solver.Problem({"A": {F(100): tail}}, {})).presence("A").contains(160))

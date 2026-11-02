@@ -304,6 +304,13 @@ class Script:
             (on_edit if isinstance(e.trigger, Edited) else parts[where.get(str(e), STEP)]).append(e)
         return replace(self, loops=[Loop(p, tuple(evs)) for p, evs in parts.items() if evs or p == STEP], on_edit=tuple(on_edit))
 
+    def part_of(self, e: Event) -> str:
+        """The name of the part of the script this event is in."""
+        for name, events in ((ON_EDIT, self.on_edit), (ON_VIEW, self.on_view)):
+            if any(str(x) == str(e) for x in events):
+                return name
+        return next((loop_name(loop.period) for loop in self.loops if any(str(x) == str(e) for x in loop.events)), loop_name(STEP))
+
     def changed(self, a: ChangeAction) -> Script:
         """The script after this action."""
         def edit(events: tuple) -> tuple:

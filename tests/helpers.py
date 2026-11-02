@@ -93,7 +93,7 @@ def holds(o, line, pres) -> Region:
 
 def check_log(log, rs, modes=None) -> int:
     """Every state is consistent and is the line of its claims; every change made by a
-    script respects N1 and N2, every change made by the mode rules M1 and N2. Returns
+    script respects N1 and N2, every change made by the mode rules M1. Returns
     how many script changes were checked."""
     n = 0
     for ch in log.changes:
@@ -105,7 +105,6 @@ def check_log(log, rs, modes=None) -> int:
             assert same_dict(claims_on(ch.before.claims, left), claims_on(ch.after.claims, left)), "M1 claims"
             away = ch.at.complement()  # (the script's own claims may change there: its constraints, kept after the chip)
             assert same_dict(_not_gen(claims_on(ch.before.claims, away)), _not_gen(claims_on(ch.after.claims, away))),                 "M1 away from the chip"
-            assert same_dict(user_claims(ch.before.claims), user_claims(ch.after.claims)), "N2 (mode rules)"
         if ch.source != "script":
             continue
         n += 1

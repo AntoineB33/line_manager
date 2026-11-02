@@ -19,8 +19,11 @@ way, since it contradicts B; A, older, does not count.
 The elements of the generated script and of the mode rules come last, below every
 edit of the user: they give way to them (3.), and what gives way of them is gone.
 
-An edit of the generated script or of a mode rule is resolved against the claims as
-they are, by 1-3 below, and refused if an element of the user would change (N2).
+An edit of the generated script is resolved against the claims as they are, by 1-3
+below, and refused if an element of the user would change (N2). So is an edit of a mode
+rule, but it wins over the user's elements at the chip: the chip's arrival at a position
+is newer than the edits made before it, so what they lost there leaves them for good
+(`mode_won`), and only an edit made later comes above it.
 
 1. Its own operations apply: a put replaces what was claimed of that kind there, a
    take removes the claims of that kind there and requires the kind to be absent.
@@ -28,7 +31,7 @@ they are, by 1-3 below, and refused if an element of the user would change (N2).
    the rules do not decide its own result (solver.py, `Undetermined`).
 3. Otherwise its elements are kept: edits from the user win over what is on the
    line. If older elements conflict with them, parts of older elements are removed,
-   nothing more than necessary, one conflict after the other, from left to right.
+   the fewest elements over all the conflicts (`_Resolution.search`), from left to right.
    An element is a largest interval of one claim ("K p%", "no K" or "off K", one
    owner).
    - A conflict is two requirements that contradict on a region X: K present and
@@ -54,17 +57,18 @@ they are, by 1-3 below, and refused if an element of the user would change (N2).
      appear in the rules.
    - With "A and B → C", A and B at x, then "no C" at x: removing A loses A and C,
      removing B loses B and C; the tie keeps A, so B and C are removed.
-   - The choice is made conflict by conflict, not over all of them at once: that
-     takes a few combinations per conflict, however many elements there are.
-   - Otherwise, more than necessary is removed, to keep the computation fast. That
-     is a conflict these requirements do not explain (through the "or" choices), one
-     that no combination removes, a line with the edit whose "or" choices are not
-     decided or not computed in time (`Undetermined`), or too many conflicts one
-     after the other. The rest of the older elements are removed whole, one after
-     the other, those near the edit first, then from left to right, until the
-     claims are consistent and decided. The edit alone is consistent and decided
-     (step 2), so this ends. Then each element removed that way is put back as it
-     was if the claims stay consistent and decided with it.
+   - Each stretch of a conflict is a conflict. Those that lose no element in common
+     are decided apart; together, those that do, by a search over their combinations,
+     which knows what each must lose whatever is chosen. Past MAX_SEARCH steps the
+     edit is refused. Past MAX_SPLIT stretches, they are decided one after the other
+     instead: that is not always the fewest.
+   - Otherwise, older elements are removed whole. That is a conflict these requirements
+     do not explain (through the "or" choices), one that no combination removes, a line
+     with the edit whose "or" choices are not decided or not computed in time
+     (`Undetermined`), or too many conflicts one after the other. The fewest of those
+     near the edit are searched, one element, then two, and so on, the fewest lost among
+     them. If none works, the elements of the line are removed one after the other until
+     the claims are consistent and decided, and each is put back if they stay so.
 4. The operands of "or" are then chosen as in solver.py.
 
 So an edit is refused only when it has no result on its own (step 2), never because
@@ -81,7 +85,7 @@ from dataclasses import dataclass
 
 from guards import same_dict, user_claims
 from intervals import INF, Interval, IntervalSet
-from line import FLAT, USER, Claims, Edits, LineState, Op
+from line import FLAT, MODE, USER, Claims, Edits, LineState, Op
 from region import ZERO, IncompatiblePeriods, Region
 from rules import And, Atom, Not, Or, RuleSet, is_hidden
 from solver import EMPTY, Conflict, Line, Problem, Undetermined, close, kinds_of, lhs_region, solve, target, union
@@ -89,6 +93,8 @@ from solver import EMPTY, Conflict, Line, Problem, Undetermined, close, kinds_of
 MAX_OPTIONS = 64  # combinations kept per requirement (the smallest first)
 MAX_DEPTH = 400  # rules followed back from one requirement; beyond: whole elements (fast)
 MAX_WINDOWS = 40  # times a window around an edit grows (each time twice as far)
+MAX_SEARCH = 4096  # steps of the search for the fewest elements lost: beyond, the edit is refused
+MAX_SPLIT = 256  # stretches of conflicts searched together: beyond, one after the other
 
 
 class Refused(Exception):
@@ -109,6 +115,8 @@ def initial_state(rs: RuleSet, entries, owner: str = USER) -> LineState:
 
 def apply_edit(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> LineState:
     """The state after the edit; raises Refused."""
+    if owner == MODE:
+        return _apply(rs, state, ops, owner)
     if owner != USER:
         after = _apply(rs, state, ops, owner)
         if not same_dict(user_claims(state.claims), user_claims(after.claims)):
@@ -128,6 +136,48 @@ def apply_edit(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> Line
     if after is not None:
         return after
     return rebuild(rs, _more(state, rec), owned_by_others(state.claims), state.line)
+
+
+def mode_won(before: LineState, after: LineState) -> LineState:
+    """`after`, the result of a change of the mode rules on `before`, with the user's edits
+    of `before`, less what the change took from them: older than it, they never come back."""
+    now, lost = user_claims(after.claims), {}
+    for key, r in user_claims(before.claims).items():
+        if now.get(key) is not r:
+            gone = r - now[key] if key in now else r
+            if gone:
+                lost[key[1]] = lost.get(key[1], EMPTY) | gone
+    for k, d in after.claims.pos.items():  # (an edit hidden by a newer one is older than the chip too)
+        for key, r in d.items():
+            if key[1] == MODE and before.claims.pos.get(k, {}).get(key) is not r:
+                lost[k] = lost.get(k, EMPTY) | (r - before.claims.pos.get(k, {}).get(key, EMPTY))
+    for k, d in after.claims.neg.items():
+        if MODE in d and before.claims.neg.get(k, {}).get(MODE) is not d[MODE]:
+            lost[k] = lost.get(k, EMPTY) | (d[MODE] - before.claims.neg.get(k, {}).get(MODE, EMPTY))
+    lost = {k: r for k, r in lost.items() if r and any(_has(rec, k, r) for rec in _edits(before.history).touching(r))}
+    history = _cut(before.history, lost) if lost else before.history
+    return after if after.history is history else LineState(after.claims, after.line, history)
+
+
+def _edits(history: tuple) -> Edits:
+    return history if isinstance(history, Edits) else Edits(history)
+
+
+def _has(rec: Record, k: str, r: Region) -> bool:
+    return bool((rec.claims.positive(k) | rec.claims.negative(k) | rec.claims.off(k)) & r)
+
+
+def _cut(history: tuple, lost: dict) -> Edits:
+    """The edits without any claim of these kinds on these regions."""
+    out = []
+    for rec in history:
+        c = rec.claims.copy()
+        for k, r in lost.items():
+            c.remove_pos(k, r)
+            c.remove_neg(k, r)
+            c.remove_taken(k, r)
+        out.append(Record(c, rec.clear, rec.footprint))
+    return Edits(out)
 
 
 def _pointwise(rs: RuleSet, state: LineState, rec: Record) -> LineState:
@@ -713,6 +763,12 @@ class _Resolution:
         self.near = footprint.dilate(Interval.closed(-R, R))
         self.max_steps = 4 * len(self.older) + 16  # beyond: whole elements (fast)
         self._lines: dict[frozenset, Line | None] = {}
+        self.steps = 0
+
+    def tick(self) -> None:
+        self.steps += 1
+        if self.steps > MAX_SEARCH:
+            raise Refused("it takes too long to find the fewest elements to change")
 
     def run(self) -> LineState:
         removed: dict[int, Region] = {}
@@ -722,7 +778,7 @@ class _Resolution:
             if steps < self.max_steps:
                 try:
                     lines = _Lines(self.rs, self.claims(removed), self.temp)
-                    step = self.step(lines, removed) if lines.conflicts else None
+                    step = self.search(lines, removed) if lines.conflicts else None
                 except (IncompatiblePeriods, Undetermined):
                     step = None
             if not step:
@@ -760,29 +816,81 @@ class _Resolution:
 
     # ------------------------------------------------------------ one conflict
 
-    def step(self, lines: _Lines, removed: dict) -> frozenset | None:
-        """The removal that resolves the leftmost conflict, or None."""
-        X, a, b = min(lines.conflicts, key=lambda c: c[0].inf())
+    def works(self, lines: _Lines, conflict: tuple, removed: dict) -> list[tuple]:
+        """The combinations that resolve this conflict: (combination, lines after it, what
+        is lost after it)."""
+        X, a, b = conflict
         opts = set(self.give_way(lines, a, X, removed)) | set(self.give_way(lines, b, X, removed))
         opts.discard(frozenset())
-        works = []
+        out = []
         for opt in _cap(opts):
-            if any(_within(w, opt) for w, _ in works):
+            if any(_within(w, opt) for w, _, _ in out):
                 continue  # only what is necessary
+            self.tick()
             try:
                 after = _Lines(self.rs, self.claims(_merge(removed, opt)), self.temp)
             except (IncompatiblePeriods, Undetermined):
                 continue
             if any(w & X and {a2, b2} == {a, b} for w, a2, b2 in after.conflicts):
                 continue
-            works.append((opt, after))
-        best = None
-        for opt, after in works:
-            lost = _lost(self.old_line, after.line(), Region.universe()) + sum(1 for i, _ in opt if _kind(self.older[i][0]) != self.older[i][0])
-            cand = (lost, _dropped([(self.older[i][0], reg) for i, reg in opt]))
-            if best is None or _better(cand, best[0], self.rs):
-                best = (cand, opt)
-        return best[1] if best else None
+            out.append((opt, after, self.lost(after, _merge(removed, opt))))
+        return out
+
+    def lost(self, lines: _Lines, removed: dict) -> set:
+        """The elements lost: of the line, and the "no K" and "off K" that lose a part."""
+        return _lost_ones(self.old_line, lines.line()) | {i for i in removed if _kind(self.older[i][0]) != self.older[i][0]}
+
+    def better(self, a: tuple, b: tuple) -> bool:
+        """a, b = (the elements lost, removed)."""
+        names = lambda removed: _dropped([(self.older[i][0], reg) for i, reg in removed.items()])
+        return _better((len(a[0]), names(a[1])), (len(b[0]), names(b[1])), self.rs)
+
+    def search(self, lines: _Lines, removed: dict) -> frozenset | None:
+        """The removal that resolves the conflicts of these lines with the fewest elements
+        lost, the leftmost kept on a tie, or None."""
+        todo = sorted(_stretches(lines.conflicts), key=lambda c: c[0].inf())
+        if len(todo) > MAX_SPLIT:
+            todo = [min(lines.conflicts, key=lambda c: c[0].inf())]
+        base = self.lost(lines, removed)
+        found = [(c, w) for c, w in ((c, self.works(lines, c, removed)) for c in todo) if w]
+        out = removed
+        for group in _groups(found, base):
+            out = self.best_of(group, out, base)
+        return frozenset(out.items()) if out is not removed else None
+
+    def best_of(self, group: list[tuple], removed: dict, base: set) -> dict:
+        """`removed` with the removal that resolves these conflicts with the fewest lost."""
+        if len(group) == 1:
+            _, w = group[0]
+            return min((_Best((lost, _merge(removed, opt)), self) for opt, _, lost in w)).item[1]
+        must = set(base)  # lost whatever is chosen
+        count: dict = {}
+        for _, w in group:
+            must |= set.intersection(*(lost for _, _, lost in w))
+            for _, _, lost in w:
+                for e in lost - base:
+                    count[e] = count.get(e, 0) + 1
+        best = [None]
+
+        def go(n: int, cur: dict, lines: _Lines | None, lost: set) -> None:
+            while n < len(group) and lines is not None:
+                X, a, b = group[n][0]
+                if any(w & X and {a2, b2} == {a, b} for w, a2, b2 in lines.conflicts):
+                    break
+                n += 1
+            if n == len(group) or lines is None:
+                if best[0] is None or self.better((lost, cur), best[0]):
+                    best[0] = (lost, cur)
+                return
+            opts = self.works(lines, group[n][0], cur)
+            opts.sort(key=lambda t: (len(t[2] - lost), -sum(count.get(e, 0) for e in t[2] - base)))
+            for opt, after, now in opts:
+                if best[0] is None or len(now | must) <= len(best[0][0]):
+                    go(n + 1, _merge(cur, opt), after, now)
+
+        first = _Lines(self.rs, self.claims(removed), self.temp)
+        go(0, removed, first, base)
+        return best[0][1] if best[0] is not None else removed
 
     def give_way(self, lines: _Lines, side: tuple, X: Region, removed: dict) -> list[frozenset]:
         """The combinations of parts of older elements whose removal drops this
@@ -868,6 +976,20 @@ class _Resolution:
         rank = lambda i: self.rs.rank.get(_kind(self.older[i][0]), 10 ** 6)
         order = sorted((i for i in range(len(self.older)) if self.older[i][1] - removed.get(i, EMPTY)),
                        key=lambda i: (not (self.older[i][1] & self.near), self.older[i][1].inf(), rank(i)))
+        near = [i for i in order if self.older[i][1] & self.near]
+        for size in range(1, len(near) + 1):
+            best = None
+            for some in itertools.combinations(near, size):
+                self.tick()
+                cur = dict(removed)
+                for i in some:
+                    cur[i] = self.older[i][1]
+                if self.consistent(cur):
+                    cand = (_lost_ones(self.old_line, self._lines[_key(cur)]), cur)
+                    if best is None or self.better(cand, best):
+                        best = cand
+            if best is not None:
+                return best[1]
         cur, added = dict(removed), []
         for i in order:
             cur[i] = self.older[i][1]
@@ -885,6 +1007,36 @@ class _Resolution:
             if self.consistent(trial):
                 cur = trial
         return cur
+
+
+class _Best:
+    """(the elements lost, removed), ordered by `_Resolution.better`."""
+
+    def __init__(self, item: tuple, res: _Resolution) -> None:
+        self.item, self.res = item, res
+
+    def __lt__(self, other: _Best) -> bool:
+        return self.res.better(self.item, other.item)
+
+
+def _stretches(conflicts: list[tuple]) -> list[tuple]:
+    """Each stretch of each conflict, a conflict; those with no bounds stay whole."""
+    return [(part, a, b) for X, a, b in conflicts for part in (X.components() if X.is_bounded() else [X])]
+
+
+def _groups(found: list[tuple], base: set) -> list[list[tuple]]:
+    """(conflict, its combinations) by groups that can lose an element in common."""
+    groups: list[tuple[set, list]] = []
+    for item in found:
+        lost, members = set().union(*(t[2] for t in item[1])) - base, [item]
+        rest = []
+        for g in groups:
+            if g[0] & lost:
+                lost, members = lost | g[0], g[1] + members
+            else:
+                rest.append(g)
+        groups = rest + [(lost, members)]
+    return [g[1] for g in groups]
 
 
 class _Meets:
@@ -975,18 +1127,17 @@ def _dropped(drop) -> dict[str, Region]:
     return out
 
 
-def _lost(old: Line, new: Line, where: Region):
-    """The elements of the old line (largest intervals of one kind and percentage)
-    that meet `where` and do not stay whole."""
-    n = 0
+def _lost_ones(old: Line, new: Line) -> set:
+    """The elements of the old line that do not stay whole: (kind, percentage, stretch)."""
+    out = set()
     for k, d in old.vals.items():
         if is_hidden(k):
             continue
         for v, reg in d.items():
-            diff = (reg - new.vals.get(k, {}).get(v, EMPTY)) & where
+            diff = reg - new.vals.get(k, {}).get(v, EMPTY)
             if diff:
-                n += reg.components_meeting(diff)
-    return n
+                out.update((k, v, str(c.inf())) for c in reg.components() if c & diff)
+    return out
 
 
 def _better(a, b, rs) -> bool:

@@ -15,7 +15,9 @@ N1 becomes:
 M1  the line and the claims on (-inf, x) are unchanged, and the claims outside {x}
     are unchanged (no older element is removed away from the chip);
 
-and N2 holds as for any edit of the script: edits from the user always win.
+N2 does not apply to them: the chip's arrival at a position is newer than the user's
+edits made before it, and the newest wins (resolve.mode_won). An edit made after the chip
+got to a position is newer: while the chip is still there, it stays (`ModeRules.kept`).
 
 The element rules hold in every state by construction (resolve.py), so an edit can
 never leave a rule unapplied.
@@ -75,14 +77,12 @@ def check_script_edit(before: LineState, after: LineState, chip) -> str | None:
 
 def check_mode_edit(before: LineState, after: LineState, at: Region, chip) -> str | None:
     """None if an edit of the mode rules on `at` (the chip's position {chip}, or the
-    positions a continuous change goes through from chip on) respects M1 and N2, else
-    the reason."""
+    positions a continuous change goes through from chip on) respects M1, else the
+    reason."""
     left = left_side(chip)
     if not before.line.same_on(after.line, left) or not same_dict(claims_on(before.claims, left), claims_on(after.claims, left)):
         return f"M1: would change the line left of the chip ({chip})"
     away = at.complement()
     if not same_dict(claims_on(before.claims, away), claims_on(after.claims, away)):
         return "M1: would change elements away from the chip"
-    if not same_dict(user_claims(before.claims), user_claims(after.claims)):
-        return "N2: would remove or change an element added by the user"
     return None

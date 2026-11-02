@@ -1201,7 +1201,9 @@ class LatticeProblem:
         same: dict[tuple, tuple] = {}  # most lattices pose one of a few problems
         for piece, r in self.pieces():
             lat = Lattice(self, r)
-            key = (lat.kmin, lat.kmax, tuple(lat._pats))
+            # (the order of the choices depends on which side of 0 and g/2 the residue is)
+            half = Pos(g / 2)
+            key = (r == ZERO, (r > half) - (r < half), lat.kmin, lat.kmax, tuple(lat._pats))
             if key not in same:
                 if not lat.solve():
                     raise Conflict(f"no choice of 'or' operands satisfies the rules on the lattice {r} + {g}Z")

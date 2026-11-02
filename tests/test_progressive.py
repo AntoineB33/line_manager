@@ -14,7 +14,9 @@ from helpers import Interval, Region  # noqa: E402
 
 from constraints import FifteenMinuteBreaks  # noqa: E402
 from generator import PACE, RulesGenerator  # noqa: E402
+from intervals import Pos  # noqa: E402
 from line import LineState, Op  # noqa: E402
+from mode_rules import ModeRules  # noqa: E402
 from modes import ModeTimeline  # noqa: E402
 from problems import PresenceRatioProblem  # noqa: E402
 from rules import parse_rules  # noqa: E402
@@ -111,6 +113,61 @@ class StagesTest(unittest.TestCase):
         for seconds in (0, 1, 5):
             at = [next_run(q, seconds) for q in (0, F(1, 10), F(1, 2), F(9, 10), 1)]
             self.assertEqual(at, sorted(at, reverse=True), seconds)
+
+
+class ReachingBackTest(unittest.TestCase):
+    def test_a_rule_that_reaches_before_the_frontier(self):
+        """A stage cannot place what a rule brings back before the last frontier."""
+        rs = parse_rules(["A → B 30 units on the left of p"])
+        g = RulesGenerator(rs, PresenceRatioProblem({"A": F(1, 4), "B": F(1, 4)}, 120), F(9, 10))
+        out = list(g.stages(LineState.empty(), F(0), ModeTimeline(0, "1").known(0)))
+        for (a, st), (b, _) in zip(out, out[1:]):
+            self.assertTrue(a.base.line.same_on(b.base.line, Region.of(Interval(-10 ** 6, st.definitive, True, True))), st.definitive)
+
+
+    def test_what_the_mode_rules_reach_after_the_frontier(self):
+        """D at the chip forbids A 5 further: a later stage cannot place A within 5 of the
+        frontier, or D before it would depend on that stage."""
+        rs = parse_rules(["mode 1 → D", "D → no A 5 units on the right"])
+        g = RulesGenerator(rs, PresenceRatioProblem({"A": F(1, 2)}, 60), F(9, 10))
+        self.assertEqual(g.margin(), 5)
+        out = list(g.stages(LineState.empty(), F(0), ModeTimeline(0, "2").known(0)))
+
+        def through(s, hi):
+            for ev in ModeRules(rs, "1").act(s, Pos(F(0)), Pos(F(hi))):
+                if not isinstance(ev, tuple):
+                    s = ev.after
+            return s
+        self.assertGreater(len(out), 2)
+        for (a, st), (b, _) in zip(out, out[1:]):
+            x = st.definitive - 1
+            self.assertEqual(through(a.base, x).line.presence("D"), through(b.base, x).line.presence("D"), x)
+
+    def test_no_bound_on_what_the_mode_rules_reach(self):
+        rs = parse_rules(["mode 1 → D", "D → D 3 units on the right"])
+        self.assertIsNone(RulesGenerator(rs, PresenceRatioProblem({}, 60), F(1, 2)).margin())
+
+
+class EndlessTest(unittest.TestCase):
+    def endless(self, rules, problem):
+        g = RulesGenerator(parse_rules(rules), problem, 1)
+        g.endless = True
+        with mock.patch("generator.SEARCH_TIME", F(1, 100)):
+            out = list(itertools.islice(g.stages(LineState.empty(), F(0), ModeTimeline(0, "1").known(0)), 40))
+        return out, len(out) < 40
+
+    def test_a_run_that_cannot_prove_it_is_done_goes_on(self):
+        out, ended = self.endless(RULES, PresenceRatioProblem({"A": F(1, 4)}, 60))
+        self.assertFalse(ended)
+        self.assertFalse(any(st.final for _, st in out))
+        xs = [st.definitive for _, st in out]
+        self.assertEqual(xs, sorted(xs))
+        self.assertGreater(xs[-1], 60)  # past the horizon, at the pace
+
+    def test_a_run_that_needs_no_other_ends(self):
+        out, ended = self.endless(["A → B"], PresenceRatioProblem({}, 5))
+        self.assertTrue(ended)
+        self.assertTrue(out[-1][1].final)
 
 
 class PublishTest(unittest.TestCase):

@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 if __name__ == "__main__":
     gen, state, chip, known, previous = pickle.load(sys.stdin.buffer)
     gen.paced = True
+    gen.endless = gen.q == 1
     for out in gen.stages(state, chip, known, previous):
         pickle.dump(out, sys.stdout.buffer)
         sys.stdout.buffer.flush()

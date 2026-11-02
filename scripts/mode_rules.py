@@ -7,9 +7,10 @@ is at that moment:
 - a rule whose left side is not met at x does nothing;
 - for each item, the leftmost operand that can be chosen: one that already holds at x
   (nothing to do), else the first whose edit on {x} is accepted: it is resolved like
-  any edit (resolve.py) and must respect M1 and N2 (guards.py) with the chip at x:
-  only the claims at x change, nothing changes on (-inf, x), the user's elements stay;
-- if no operand is accepted, the item does nothing at x (edits from the user win).
+  any edit (resolve.py) and must respect M1 (guards.py) with the chip at x: only the
+  claims at x change, nothing changes on (-inf, x). The chip gets to x after the user's
+  edits made before, so it wins over them there (resolve.mode_won);
+- if no operand is accepted, the item does nothing at x.
 So what the chip has gone through is decided, and nothing on its right.
 
 How it is computed exactly. Between two positions the chip goes through infinitely
@@ -40,7 +41,7 @@ import math
 from dataclasses import dataclass
 from fractions import Fraction
 
-from guards import check_mode_edit
+from guards import check_mode_edit, same_dict, user_claims
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import GEN, MODE, LineState, Op
 from region import ZERO, IncompatiblePeriods, Region
@@ -112,6 +113,7 @@ class ModeRules:
         # placed at x can go on without end: as far as the ends of the state (`candidates`)
         self.span = None if rs.moving else 2 * (len(rs.order) + 1) * rs.reach
         self.plan: _Plan | None = None  # the run being compiled ahead
+        self.kept: Pos | None = None  # the position where the user edited after the chip got there
 
     # ------------------------------------------------------------ one position
 
@@ -137,6 +139,8 @@ class ModeRules:
                         why.append(f"{r}: {o} at {x}: {e}")
                         continue
                     reason = check_mode_edit(s, after, at, x)
+                    if x == self.kept and not same_dict(user_claims(s.claims), user_claims(after.claims)):
+                        reason = "N2: the user edited this position after the chip got there"
                     if reason:
                         why.append(f"{r}: {o} at {x}: {reason}")
                         continue

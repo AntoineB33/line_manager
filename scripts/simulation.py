@@ -50,7 +50,7 @@ from mode_rules import ModeRules, Run
 from modes import ModeTimeline
 from region import Region
 from solver import Line, Undetermined, limited
-from resolve import Refused, apply_edit, flattened, owned_by_others, rebuild
+from resolve import Refused, apply_edit, flattened, mode_won, owned_by_others, rebuild
 from watch import due, look
 from script import SHOW, ChangeAction, ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, ShowLine, Start, TransitionCount, Uncovered, Edited, score
 
@@ -223,6 +223,8 @@ class Simulation:
         if modes.start != chip.position(Fraction(0)):
             raise ValueError("modes start where the chip starts")
         self._settled = None  # (position, mode, script, the state before, after): see `_settle`
+        self._kept = None  # the position where the mode rules leave the user's elements as they are
+        self._frozen = None  # while a script of a run is put in place: where it is definitive
         self._looks = None  # (script, {the text of an event: its last watch.look or None})
         self.state = state
         self.gen = generator
@@ -287,9 +289,12 @@ class Simulation:
         req = self.request
         if req is None or req.id != request_id:
             return False
+        frozen = self.definitive if req.published else None
         self._set_script(self.t, req.chip, req.why, self._fit(script) if req.published else script, stats, keep=req.published)
         self.request = None
+        self._frozen = frozen
         self._after_edits(self.t, False, False, req.why)
+        self._frozen = None
         return True
 
     def first_script(self) -> None:
@@ -338,7 +343,7 @@ class Simulation:
             self.definitive += PACE
             req.pace_at += LAST_RESORT
             self.script = self._fit(self.script)
-            if self.definitive >= req.chip + getattr(self.gen, "horizon", 0):
+            if self.definitive >= req.chip + getattr(self.gen, "horizon", 0) and getattr(self.gen, "q", 0) != 1:
                 self.request = None
                 self.log.ran((t, req.chip, req.why, self.script, RunStats(chosen="the script in place, as a last resort")))
                 return
@@ -347,7 +352,8 @@ class Simulation:
         """The script with the frontier of the run: its edits that are new after it, and the
         mode rules up to it in any mode."""
         x, now = Pos(self.definitive), {str(e) for e in self.script.events}
-        before = Region.of(Interval(-INF, x, False, True))
+        far = getattr(self.gen, "margin", lambda: Fraction(0))()
+        before = Region.universe() if far is None else Region.of(Interval(-INF, x + far, False, True))
         events = []
         for e in script.events:
             actions = []
@@ -372,13 +378,16 @@ class Simulation:
         if req is None or req.id != request_id:
             return False
         script = self._fit(script)  # (up to the frontier as it was: this script goes further)
+        frozen = self.definitive
         if stats.definitive is not None and stats.definitive > self.definitive:
             self.definitive, req.pace_at = stats.definitive, self.t + LAST_RESORT
             script = replace(script, covered=[(lo, Pos(stats.definitive), m) if m is None else (lo, hi, m) for lo, hi, m in script.covered])
         self._carry(script)
         self.script = script
         self._reset()
+        self._frozen = frozen
         self._after_edits(self.t, False, False, req.why)
+        self._frozen = None
         return True
 
     def _reset(self) -> None:
@@ -435,7 +444,8 @@ class Simulation:
             return score(self.gen.problems, self.state, self.chip.position(t)) < trig.z
         return self.script.since >= trig.k
 
-    def _edit(self, t: Fraction, ops: list[Op], owner: str, source: str) -> bool:
+    def _edit(self, t: Fraction, ops: list[Op], owner: str, source: str, frozen=None) -> bool:
+        """`frozen`: the line up to there is definitive, the edit cannot change it."""
         before = self.state
         c = self.chip.position(t)
         if source == "user":
@@ -453,6 +463,8 @@ class Simulation:
             try:
                 after = apply_edit(self.rules, before, ops, owner)
                 why = check_script_edit(before, after, c)
+                if not why and frozen is not None and not before.line.same_on(after.line, Region.of(Interval(-INF, frozen, False, True))):
+                    why = f"it would change the line where the script is definitive (up to {frozen})"
             except Refused as e:
                 why = str(e)
         if why:
@@ -628,7 +640,7 @@ class Simulation:
                     self._edited = False  # this edit is answered
                 for a in ev.actions:
                     if isinstance(a, EditAction):
-                        self._edit(t, list(a.ops), GEN, "script")
+                        self._edit(t, list(a.ops), GEN, "script", self._frozen)
                     elif isinstance(a, ConstraintEditAction):
                         c = self.chip.position(t)
                         self._edit(t, [o for k in script.constraints for o in k.ops(self.state, c)], GEN, "script")
@@ -638,7 +650,10 @@ class Simulation:
                     elif isinstance(a, ShowLine):
                         self.shown += 1
                     elif isinstance(a, ChangeAction):
-                        self.script, again = self.script.changed(a), True
+                        if a.target == script.part_of(ev):
+                            self.log.refuse((t, "script", f"a script does not change itself: {a.target}"))
+                        else:
+                            self.script, again = self.script.changed(a), True
                 if rerun or again:
                     break
             if rerun:
@@ -665,7 +680,12 @@ class Simulation:
                 self.log.changed(Change(t, x, "mode", self.state, was[3], Region.point(x)))
                 self.state = was[3]
         before = self.state
-        self._through(t, mode, x, x)
+        if was is not None and was[0] == x and was[1] == mode and self.chip.first_time(c) < t:
+            self._kept = x  # the chip stands here: what the user just did here is newer than it
+            self._apply(t, mode, x, x)
+            self._kept = None
+        else:
+            self._through(t, mode, x, x)
         self._settled = (x, mode, self.script, before, self.state)
 
     def _sweep(self, t0: Fraction, t1: Fraction) -> None:
@@ -695,6 +715,7 @@ class Simulation:
             after = _moved(st.state_at(end - d), d, self.state.history)
             if after is not self.state:
                 t = max(t0, self.chip.first_time(x.x))
+                after = mode_won(self.state, after)
                 self.log.changed(Change(t, x, "mode", self.state, after, Region.of(Interval._mk(x, end))))
                 self.state = after
             x = end + EPS
@@ -716,13 +737,18 @@ class Simulation:
 
     def _apply_on(self, t0: Fraction, mode: str, x: Pos, hi: Pos) -> None:
         mr = self._live_rules.get(mode) or self._live_rules.setdefault(mode, ModeRules(self.rules, mode, self.script.constraints))
+        mr.kept = self._kept
+        made = None  # the last state of the run, as the rules made it
         for ev in mr.act(self.state, x, hi):
             if isinstance(ev, Run):
                 t = max(t0, self.chip.first_time(ev.start.x))
-                self.log.changed(Change(t, ev.start, "mode", ev.before, ev.after, ev.at))
-                self.state = ev.after
+                made, after = ev.after, mode_won(self.state, ev.after)
+                self.log.changed(Change(t, ev.start, "mode", self.state, after, ev.at))
+                self.state = after
             else:
                 self.log.refuse((t0, "mode", ev[1]))
+        if made is not None and mr.plan is not None and mr.plan.last is made:
+            mr.plan.last = self.state  # (the same line: the run goes on from it)
 
     def ahead(self):
         """The state as a function of the chip's position p, from where it is, for the

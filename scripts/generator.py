@@ -95,6 +95,7 @@ class RunStats:
 
 PACE = Fraction(10)  # a run makes the script definitive this far further ...
 PACE_TIME = Fraction(10)  # ... every this many seconds (Simulation.keep_pace sees to it)
+SEARCH_TIME = Fraction(6)  # the seconds a stage searches at q = 1: what the pace allows
 
 
 def budget(q: float) -> int:
@@ -123,6 +124,7 @@ class RulesGenerator:
         self.use_probability = use_probability
         self.constraints = tuple(constraints)
         self.paced = False  # in a process of its own: the instant script holds PACE after the chip
+        self.endless = False  # q = 1 in a process of its own: the run goes on until it proves it is done
         self.speed = Fraction(1)  # the chip's, for how far it goes during a run
 
     def kinds_read(self):
@@ -135,6 +137,26 @@ class RulesGenerator:
         for p, _ in self.problems:
             out |= set(getattr(p, "targets", ())) | set(getattr(p, "lengths", ()))
         return out
+
+    def margin(self) -> Fraction | None:
+        """How far after a position the mode rules acting there can reach, through the rules
+        their elements trigger; None if that has no bound. An edit further than that from
+        the frontier cannot change what they do before it, whatever the modes."""
+        reached = {o.kind for r in self.rules.mode_rules for o in r.written_lits()}
+        far, rules = Fraction(0), [r for r in self.rules.rules if not r.is_mode_rule]
+        used, grew = set(), bool(reached)
+        while grew:
+            grew = False
+            for i, r in enumerate(rules):
+                if i not in used and reached & set(r.lhs.kinds()):
+                    used.add(i)
+                    grew = True
+                    reached |= {o.kind for o in r.written_lits()}
+                    ends = [e.x for o in r.lits() for e in (o.where.lo, o.where.hi) if type(e) is Pos]
+                    if any(o.anchor == "l" or type(o.where.lo) is not Pos or type(o.where.hi) is not Pos for o in r.lits()):
+                        return None
+                    far += max(map(abs, ends), default=Fraction(0))
+        return None if used and self.rules.moving else far
 
     def first_edits(self, state: LineState, c: Fraction) -> list[list[Op]]:
         """What the script at the start of a run can do at once, on the PACE after the chip:
@@ -228,16 +250,18 @@ class RulesGenerator:
         began = time.perf_counter()
         for i, hi in enumerate(frontiers):
             ctx.state = current
-            ops, key, label, after = self._stage(ctx, state, current, lo, hi, stats, best_key, len(frontiers) - i)
+            until = time.perf_counter() + float(SEARCH_TIME) if self.endless else None
+            ops, key, label, after = self._stage(ctx, state, current, lo, hi, stats, best_key, len(frontiers) - i, until)
             if ops:
                 best_key, best_label, current = key, label, after
-                edits.append(Event(ChipIn(c, c + H), (EditAction(tuple(ops)),)))
+                edits.append(Event(ChipIn(c, INF), (EditAction(tuple(ops)),)))
             if after_edits is None:
                 next_run = D / 18 if self.rules.mode_rules else D
                 if self.paced:  # after this run, or it would cancel it: twice the time of the longest
                     # run, whatever q is, so that a higher q never asks for its next run later
-                    took = Fraction(time.perf_counter() - began).limit_denominator(1000)
-                    next_run = max(next_run, 2 * took * self.most_stages() * self.speed)
+                    # (per candidate: a stage of a lower q does less, each costs the same)
+                    each = Fraction(time.perf_counter() - began).limit_denominator(1000) / max(1, stats.work)
+                    next_run = max(next_run, 2 * each * budget(1) * self.speed)
                 after_edits = self._reruns(state, current, c, c + next_run, D, known.current_mode(), bool(ops) or len(frontiers) > 1)
                 after_edits.append(Event(Edited(True), (RerunAction(),)))
                 if covered and not live:
@@ -250,28 +274,49 @@ class RulesGenerator:
                 end = c + D / 6 * Fraction(str(self.q))
                 ahead = [(a, min(b, Pos(end)), m) for a, b, m in predicted if a <= end]
                 stretches, stats.refused = compile_runs(self.rules, current, ahead, self.constraints)
-            stats.chosen, stats.key, stats.final, stats.definitive = best_label, best_key, final, hi
+            done = final and (not self.endless or (best_key == (0,) and all(isinstance(e.trigger, Edited) for e in after_edits)))
+            stats.chosen, stats.key, stats.final, stats.definitive = best_label, best_key, done, hi
             events = ([Event(ChipIn(c, INF), (keep,))] if keep is not None else []) + carried + edits + after_edits
             yield Script.of(events, on_view=SHOW, stretches=stretches, covered=covered, origin=c, base=current, live=live,
                             constraints=self.constraints), replace(stats)
             lo = hi
+            if final and not done:  # nothing proves it is the best: requirement.md, the run never ends
+                lo = c + max(H, PACE) if hi is None else hi
+                while True:  # at the pace, each stage on the window as far as the frontier went
+                    hi = lo + PACE
+                    until = time.perf_counter() + float(SEARCH_TIME)
+                    further = _Context(self, current, lo - PACE, known)
+                    ops, key, label, after = self._stage(further, state, current, lo, hi, stats, further.score(current), 1, until)
+                    if ops:
+                        best_label, current = label, after
+                        edits.append(Event(ChipIn(c, INF), (EditAction(tuple(ops)),)))
+                    time.sleep(max(0, until - time.perf_counter()))
+                    stats.chosen, stats.definitive = best_label, hi
+                    events = ([Event(ChipIn(c, INF), (keep,))] if keep is not None else []) + carried + edits + after_edits
+                    yield Script.of(events, on_view=SHOW, stretches=stretches, covered=covered, origin=c, base=current, live=live,
+                                    constraints=self.constraints), replace(stats)
+                    lo = hi
 
-    def _stage(self, ctx: _Context, state: LineState, base: LineState, lo, hi, stats: RunStats, best_key, left: int):
+    def _stage(self, ctx: _Context, state: LineState, base: LineState, lo, hi, stats: RunStats, best_key, left: int, until=None):
         """The best edit on (lo, hi] of the candidates this stage has budget and time for
-        (the budget left, shared with the `left` stages to come): (ops, key, label, state)."""
+        (the budget left, shared with the `left` stages to come; with `until`, all it finds
+        up to that time): (ops, key, label, state)."""
         best = ((), best_key, "no-op", base)
-        where = None if hi is None else Region.of(Interval(lo, hi, False, True))
+        far = self.margin()
+        if lo > ctx.c and self.rules.mode_rules:  # (what the mode rules do before lo stays)
+            lo = hi if far is None or hi is None else min(lo + far, hi)
+        where = None if hi is None else Region.of(Interval(lo, hi, False, True)) if lo < hi else Region.empty()
         limit = stats.work + max(1, (stats.budget - stats.work) // left)
         held = not any(k.ops(base, ctx.c) for k in self.constraints)
         seen = {""}
-        for label, ops in ctx.candidates():
+        for label, ops in ctx.candidates(until is not None):
             if where is not None:
                 ops = tuple(o for o in (Op(o.action, o.kind, o.region & where, o.value) for o in ops) if not o.region.is_empty())
             key = " ; ".join(map(str, ops))
             if key in seen:
                 continue  # the no-op, or an edit already built
             seen.add(key)
-            if stats.work >= min(limit, stats.budget):
+            if (stats.work >= min(limit, stats.budget)) if until is None else time.perf_counter() >= until:
                 break
             stats.work += 1
             try:
@@ -280,6 +325,8 @@ class RulesGenerator:
                 continue
             if check_script_edit(state, after, ctx.c) is not None:
                 continue
+            if lo > ctx.c and not base.line.same_on(after.line, Region.of(Interval(-INF, lo, False, True))):
+                continue  # a rule reaches back: the script is definitive up to lo
             if held and any(k.ops(after, ctx.c) for k in self.constraints):
                 continue  # an edit never breaks a constraint
             stats.valid += 1
@@ -425,16 +472,23 @@ class _Context:
     def score(self, s: LineState) -> tuple:
         return (sum((w * p.error(self, s) for p, w in self.gen.problems if w), Fraction(0)),)
 
-    def candidates(self):
+    def candidates(self, deep: bool = False):
+        """The candidates in their order; `deep`: then finer and finer placements."""
+        yield from self._candidates(STRATEGIES)
+        if deep:
+            yield from self._candidates(tuple(f"spread{2 ** n}" for n in range(5, 21)))
+
+    def _candidates(self, strategies):
         preds = [p for p in PREDICTIONS if p != "scenario" or self.weights_best]
         problems = [p for p, w in self.gen.problems if w]
         for pred in preds:
-            for strategy in STRATEGIES:
+            for strategy in strategies:
                 label = f"prediction={pred}, placement={strategy}"
                 parts = [p.proposals(self, pred, strategy) for p in problems]
                 yield label, tuple(op for ops in parts for op in ops)
                 if len(problems) > 1:
                     for p, ops in zip(problems, parts):
                         yield f"{p.name} alone, {label}", ops
-        for p in problems:
-            yield from p.extra(self)
+        if strategies is STRATEGIES:
+            for p in problems:
+                yield from p.extra(self)

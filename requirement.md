@@ -20,7 +20,9 @@ Examples:
 - A → B 0%
 - A & B → C 45% 3 units on the left of p
 
+The rules must be deterministic.
 If there is an "or" on the right side of the element rule, the leftmost operand (leftmost in the expression) that can be chosen is chosen. The position that choses first is the closest to 0, and the one to the right if two positions are equally close to 0.
+The first rule in the list of rules win over the next ones. Example: with X & not C → B and X & not B → C, then X & not C & not B → B.
 
 A position is a real number x or x + kε, with k a non-zero integer and ε an infinitely small positive distance: x + ε is after x and before every real number greater than x. When a rule needs the first position after x, it uses x + ε.
 Example: "A → B or C", "B → E", "B → no E on (0, 1] of l", A on [0, 2]: B is at 0 and at 1 + ε.
@@ -30,7 +32,9 @@ A "mode rule" is the same as an element rule, but can add or remove elements onl
 Example:
 - mode 1 → D 100% & E 100%
 
-The state of the line can be modified only by the user, the mode rules, and the "generated script".
+A set of rules that is impossible to satisfy is refused.
+
+The state of the line can be modified only by the user, the mode rules, the "generated script" and the memory limit managers.
 
 The "rules generator" takes the current state of the line and the chip's position and produces a "generated script" to solve optimization problems and satisfy constraints.
 A generated script must never:
@@ -66,7 +70,7 @@ To satisfy this pace, the generator can look at the current generated script.
 
 The "probability finder" program is used to find probability rules in the mode transitions pattern. This helps the rules generator being more performant with a low allocated resources quantity hyperparameter.
 
-Edits from the user (including mode switches) win over what is on the line. The fewest elements are changed from the older elements. If a result cannot be computed in reasonable time, the edit is refused. If the edit leads to a contradiction with the constraints the generated script must satisfy, the edit is refused. For example:
+Edits from the user (including mode switches) win over what is on the line. The fewest older elements are changed. If a result cannot be computed in reasonable time, the edit is refused. If the edit leads to a contradiction with the constraints the generated script must satisfy, the edit is refused. For example:
 "A → B 100% or C 100%"
 A and B at [1, 2]
 user edit: remove B at 1.5

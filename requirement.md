@@ -22,18 +22,21 @@ Examples:
 - A or B → C 100% 2 units on the right of l or D 100% 3 units on the left
 
 The rules must not have a cycle dependency.
+
 The rules must be deterministic.
 If there is an "or" on the right side of the element rule, the leftmost operand (leftmost in the expression) that can be chosen is chosen. The position that choses first is the closest to 0, and the one to the right if two positions are equally close to 0.
 
 A position is a rational number x or x + kε, with k a non-zero integer and ε an infinitely small positive distance: x + ε is after x and before every real number greater than x. When a rule needs the first position after x, it uses x + ε.
 Example: "A → B or C", "B → E", "B → no E on (0, 1] of l", A on [0, 2]: B is at 0 and at 1 + ε.
 
+If an interval that stretches to +infinity must be placed at -infinity and vice versa, then it is placed on the whole line.
+
 A "mode rule" is the same as an element rule, but can add or remove elements only at the position of the chip.
 
 Example:
 - mode 1 → D 100% & E 100%
 
-A set of rules that is impossible to satisfy is refused. Some possible sets of rules are refused too, as this problem is undecidable in general.
+A set of rules that is impossible to satisfy is refused. If the rules imply to put something at infinity, it is considered possible. Some possible sets of rules are refused too, as this problem is undecidable in general.
 
 The state of the line can be modified only by the user, the mode rules, the "generated script" and the memory limit managers.
 

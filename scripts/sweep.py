@@ -164,6 +164,7 @@ class Sweep:
                     elif lit.kind in self.op_pos:
                         self.op_pos[lit.kind].append((ii, oi, lit))
         self.none = [[EMPTY] * len(it.ops) for it in self.items]
+        self.cut = [(ii, k) for ii, (i, j) in enumerate(rs.or_items) for k in [rs.element[i].rhs[j].off_line()] if k]
         self.barred = None  # `_outward`: for each "or", where each operand cannot be chosen
         self.deltas = self._deltas()
         self.R = max((abs(d.x) for d in self.deltas), default=Fraction(0)) + 1
@@ -209,6 +210,8 @@ class Sweep:
             mask = cut if mask is None else mask & cut
         if check and self.barred is not None and any(r & ch[ii][oi] for ii, row in enumerate(self.barred) for oi, r in enumerate(row)):
             raise Conflict("an operand barred there")
+        if check and self.cut and any(ch[ii][oi] for ii, k in self.cut for oi in range(k, len(self.items[ii].ops))):
+            self._cut(ch)
         extra = {}
         for K in self.kin:
             plain, exact = self.fixed.get(K, (EMPTY, {}))
@@ -251,6 +254,16 @@ class Sweep:
             if bad:
                 raise Conflict(f"{k} is required to be absent on {bad}")
         return vals
+
+    def _cut(self, ch) -> None:
+        """On a largest interval unbounded on the left, an "or" cannot get to its operand
+        that places something at l + d or l + [a, b] (`Item.off_line`): l is -inf, that is
+        not on the line. Choosing it or an operand after it there: Conflict."""
+        vals = self.closure(ch, INF, check=False)
+        for ii, k in self.cut:
+            far = union(c for c in lhs_region(self.items[ii].lhs, vals).components() if c.inf() == -INF)
+            if far and any(ch[ii][oi] & far for oi in range(k, len(self.items[ii].ops))):
+                raise Conflict(f"{self.items[ii].text}: gets to an operand relative to l with no left edge")
 
     def _from(self, ii: int, o, b: Region) -> Region:
         """What the operand o of this "or" is relative to, when the "or" chose on b: b, or
@@ -303,7 +316,9 @@ class Sweep:
         there alone, whatever the others chose: the order in which the positions choose
         (requirement.md: from the closest to 0) does not matter."""
         kin = set(self.kin)
-        if self.rs.searched or not self.rs.finite or self.probe is not None:
+        # (`RuleSet.searched` does not matter: what makes it, a choice acting on what is
+        # decided, is excluded below)
+        if not self.rs.finite or self.probe is not None:
             return False
         if any(lit.kind in kin for _, _, lit in self.op_neg):
             return False

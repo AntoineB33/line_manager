@@ -241,6 +241,16 @@ class Item:
         """The operands and the elements that go with them."""
         return list(self.options) + [o for more in self.extra for o in more]
 
+    def off_line(self) -> int | None:
+        """The first operand that places an element relative to l at l + d or l + [a, b]
+        (b finite): where l is unbound (-inf), that is not on the line, so if the operands
+        before it cannot be chosen, nothing can be (solver.py). None if there is none."""
+        for oi, o in enumerate(self.options):
+            lits = (o, *(self.extra[oi] if self.extra else ()))
+            if any(not x.negated and x.anchor == "l" and x.where.hi != math.inf for x in lits):
+                return oi
+        return None
+
     def __str__(self) -> str:
         return self.text or " or ".join(map(str, self.options))
 

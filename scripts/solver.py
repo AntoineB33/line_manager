@@ -1013,15 +1013,17 @@ def solve(rs: RuleSet, prob: Problem) -> Line:
 
 
 def _no_left_edge(rs: RuleSet, vals, unknown: set) -> None:
-    """A rule with a location relative to l that ends on the right (l + d, l + [a, b]),
-    met on a largest interval unbounded on the left: l is unbound (-inf, requirement.md),
-    so the location is at -inf, not on the line, and the rule cannot hold: Conflict.
-    l + [a, +inf) is the whole line. Left sides that read `unknown` kinds are not
-    computed yet: checked once they are."""
+    """A rule that places an element relative to l at l + d or l + [a, b] (b finite), met
+    on a largest interval unbounded on the left: l is unbound (-inf, requirement.md), so
+    that location is not on the line, and the rule cannot hold: Conflict. l + [a, +inf)
+    is the whole line, and "no K" where there is no line holds. An "or" fails only if it
+    gets to such an operand: here, its first one (`Item.off_line`; a later one: the
+    sweep, `Sweep._cut`). Left sides that read `unknown` kinds are not computed yet:
+    checked once they are."""
     for r in rs.element:
         if set(r.lhs.kinds()) & unknown:
             continue
-        at_l = [it for it in r.rhs if any(o.anchor == "l" and o.where.hi != INF for o in it.all_lits())]
+        at_l = [it for it in r.rhs if it.off_line() == 0]
         if not at_l:
             continue
         met = lhs_region(r.lhs, vals)

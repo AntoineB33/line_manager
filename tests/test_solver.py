@@ -186,11 +186,19 @@ class OrTest(unittest.TestCase):
         """l does not exist on an element unbounded on the left: an "or" with an operand
         relative to l cannot be decided there, and the edit is refused."""
         left = Interval(-INF, F(0), False, True)
-        for rules in (["A → B on [0, 1] of l or C"], ["A → B at 1 of l or C at 1 of l"], ["A → B or C on [0, 1] of l"]):
+        for rules in (["A → B on [0, 1] of l or C"], ["A → B at 1 of l or C at 1 of l"]):
             with self.assertRaises(Refused, msg=rules):
                 apply_edit(parse_rules(rules), LineState.empty(), [Op.put("A", left)], USER)
         s = apply_edit(parse_rules(["A → B on [0, 1] of l or C"]), LineState.empty(), [Op.put("A", Interval.closed(-3, 0))], USER)
         self.assertEqual(s.line.presence("B"), Region.of(Interval.closed(-3, -2)))
+        # the "or" fails only if it gets to that operand
+        s = apply_edit(parse_rules(["A → B or C on [0, 1] of l"]), LineState.empty(), [Op.put("A", left)], USER)
+        self.assertEqual(s.line.presence("B"), Region.of(left))
+        rs = parse_rules(["A → C or B on [0, 1] of l", "X → no C"])
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", left)], USER)
+        self.assertEqual(s.line.presence("C"), Region.of(left))
+        with self.assertRaises(Refused):  # no C on [-5, -3]: it gets to B there
+            apply_edit(rs, LineState.empty(), [Op.put("A", left), Op.put("X", Interval.closed(-5, -3))], USER)
 
     def test_both_ways_without_an_end(self):
         rs = parse_rules(ALTERNATE)
@@ -272,10 +280,13 @@ class AnchorTest(unittest.TestCase):
         """An interval with no left end: l is unbound, -inf. l + [0, 1] is at -inf, not on
         the line: the edit is refused. l + [0, +inf) is the whole line."""
         left = Interval(-INF, F(2), False, True)
-        for rules in (["A → B on [0, 1] of l"], ["A → no B on [0, 1] of l"],
+        for rules in (["A → B on [0, 1] of l"],
                       ["A → B at 1 of l"], ["X → A", "A → B on [0, 1] of l"]):
             with self.assertRaises(Refused, msg=rules):
                 apply_edit(parse_rules(rules), LineState.empty(), [Op.put("X" if "X → A" in rules else "A", left)], USER)
+        # "no B" at -inf, not on the line: it holds
+        s = apply_edit(parse_rules(["A → no B on [0, 1] of l"]), LineState.empty(), [Op.put("A", left)], USER)
+        self.assertEqual(s.line.kinds(), ["A"])
         rs = parse_rules(["A → B on [0, inf) of l"])
         s = apply_edit(rs, LineState.empty(), [Op.put("A", left)], USER)
         self.assertEqual(s.line.presence("B"), Region.universe())

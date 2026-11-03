@@ -15,7 +15,7 @@ try:
     import gui
 except ImportError:  # (no tkinter)
     gui = None
-from script import ChipIn, Edited, PresenceAbove, ScoreBelow, Uncovered  # noqa: E402
+from script import ChipIn, Edited  # noqa: E402
 
 
 def reruns(name):
@@ -36,13 +36,7 @@ def reruns(name):
 @unittest.skipIf(gui is None, "no tkinter")
 class ExamplesTest(unittest.TestCase):
     def test_every_example_has_its_own_rules(self):
-        watch = {ScoreBelow, PresenceAbove, Edited}
         expected = {
-            "rerun_only_user_edits": {Edited},
-            "rerun_constraint_with_the_chip": {(ChipIn, None), Edited},
-            "rerun_score_watch": watch,
-            "rerun_mode_that_matters": watch | {(ChipIn, None), (ChipIn, "2"), Uncovered},
-            "rerun_mode_through_the_rules": watch | {(ChipIn, None), (ChipIn, "2"), Uncovered},
             "fifteen_minute_break_modes": {(ChipIn, None), Edited},
         }
         names = {f[:-3] for f in os.listdir(os.path.join(UI, "examples")) if f.endswith(".py")}

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from fractions import Fraction
 
-from intervals import INF, EMPTY, Interval, IntervalSet, Num
+from intervals import Interval, IntervalSet, Num
 
 
 class ModeTimeline:

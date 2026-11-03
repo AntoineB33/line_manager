@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "UI"))
 from helpers import Interval, IntervalSet, Region  # noqa: E402
 
 from app import FifteenMinuteBreaks, PresenceRatioProblem, Session  # noqa: E402
-from intervals import EPS, INF, Pos  # noqa: E402
+from intervals import INF, Pos  # noqa: E402
 from line import Op  # noqa: E402
 from region import ONE  # noqa: E402
 from generator import RulesGenerator  # noqa: E402
@@ -19,7 +19,7 @@ from line import USER, LineState  # noqa: E402
 from modes import ModeTimeline  # noqa: E402
 from resolve import apply_edit  # noqa: E402
 from rules import parse_rules  # noqa: E402
-from script import ChipIn, EditAction, Edited, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Start, TransitionCount, score  # noqa: E402
+from script import ChipIn, Edited, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Start, TransitionCount, score  # noqa: E402
 from simulation import Chip, Simulation  # noqa: E402
 from script_text import ScriptError, _op, parse_script, position, region  # noqa: E402
 

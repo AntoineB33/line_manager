@@ -43,8 +43,7 @@ is newer than the edits made before it, so what they lost there leaves them for 
      A on [0, 10] and "no B" at 1/2, A goes on [0, 1/2], the left edge is 1/2+ε and
      B is on (1/2, 3/2]). The combinations are the parts of the elements its terms
      rest on there (a kind that a rule places rests on that rule's left side, and so
-     on; through a cycle, back to what is already going, which then needs nothing
-     more: the line is the least one). A requirement that comes from an older claim
+     on). A requirement that comes from an older claim
      gives way by removing the claim on X ("no K" and "off K" alike). The edit's own
      never gives way.
    - Among the combinations that remove the conflict from X: only what is necessary
@@ -231,7 +230,7 @@ def _near(rs: RuleSet, state: LineState, rec: Record, kinds: set) -> LineState |
 
 def _near_line(rs: RuleSet, before: Claims, claims: Claims, line: Line, where: Region, temp: dict | None = None) -> Line | None:
     """The line from the claims, which changed on `where` only, on a window (`_near`)."""
-    if rs.cyclic or where.left or where.right or not where.core:
+    if where.left or where.right or not where.core:
         return None
     adds = _only_adds(before.on(where), claims.on(where))
     if not adds and not (rs.one_way and _never_stuck(rs, before, claims)):
@@ -254,7 +253,7 @@ def _near_edits(rs: RuleSet, state: LineState, rec: Record, kinds: set) -> LineS
     be the old ones on the zones too. A left edge the window cuts is only seen a chain's
     length away, before the zones. What takes something away goes the long way."""
     where = rec.footprint
-    if rs.cyclic or not rs.finite or where.left or where.right or not where.core:
+    if not rs.finite or where.left or where.right or not where.core:
         return None
     if not _only_adds(state.claims.on(where), _claims_of(state, rec, kinds).on(where)):
         return None
@@ -921,10 +920,8 @@ class _Resolution:
 
     def absent(self, lines: _Lines, K: str, Q: Region, removed: dict, going=None, depth=0) -> list[frozenset]:
         """Combinations that make K absent on Q: its older claims on Q go, and each rule
-        that places K on Q stops applying there. Through a cycle the rules come back to
-        what is already being made absent (`going`, kind -> region): that part needs
-        nothing more (the line is the least one: what only a cycle places goes with the
-        rest)."""
+        that places K on Q stops applying there (`going`, kind -> region: what is already
+        being made absent, which needs nothing more)."""
         if K in lines.kinds_in or any(reg & Q for reg in self.mand_pos.get(K, {}).values()):
             return []
         going = dict(going or {})

@@ -75,7 +75,6 @@ from fractions import Fraction
 
 from intervals import INF, Interval, IntervalSet, Num, _fmt
 from line import Op
-from region import Region
 
 MODE_RULES = "apply the mode rules"
 STEP = Fraction(1, 20)  # the seconds between two iterations of the exact loop

@@ -5,7 +5,7 @@ import random
 import unittest
 from fractions import Fraction as F
 
-from helpers import check_log, rand_interval, rules_hold
+from helpers import check_log, rand_interval
 from constraints import FifteenMinuteBreaks, KeepOn
 from generator import PresenceRatioProblem, RulesGenerator, _Context, budget, rerun_distance
 from intervals import EPS, INF, Interval, IntervalSet, Pos
@@ -238,19 +238,6 @@ class ModeRulesTest(unittest.TestCase):
         self.assertFalse(sim.state.line.presence("X"))
         self.assertFalse(sim.state.line.presence("E"))
 
-    def test_through_a_cycle(self):
-        """D at the chip repeats every 3 units ahead of it (a cycle). The user's "no D" at 13
-        wins: the chip in mode 1 ([0, 5) and [7, 12)) places D everywhere but at 1, 4, 7
-        and 10, whose repeats would reach 13."""
-        rs = parse_rules(["mode 1 → D", "D → D 3 units on the right"])
-        state = apply_edit(rs, LineState.empty(), [Op.put_no("D", Interval.point(13))], USER)
-        sim, log = self.simulate(rs, state)
-        mode1 = Region.of(IntervalSet.of(Interval.closed_open(0, 5), Interval.closed_open(7, 12)))
-        placed = mode1 - Region.of(IntervalSet(Interval.point(x) for x in (1, 4, 7, 10)))
-        self.assertEqual(sim.state.line.presence("D") & mode1, placed)
-        self.assertFalse(sim.state.line.presence("D").contains(13))
-        self.assertTrue(sim.state.line.presence("D").contains(F(1000 * 3 + 1, 2)))  # 0.5 + 3n, far ahead
-
     def test_compiled_by_the_generator(self):
         """The chip in mode 1 drags B (S starts it as early as possible). The generator's
         run compiles it: the script's stretch the chip goes through gives, at each step,
@@ -302,7 +289,7 @@ class ModeRulesTest(unittest.TestCase):
         """STOP set (Pause) while the generator compiles the mode rules: the step raises
         Interrupted, and restore gives back the simulation as it was before it."""
         import solver
-        rs = parse_rules(["T → S or no S", "S → B on [0, 2] of p", "S → no S on (0, 6] of p", "mode 1 → no B"])
+        rs = parse_rules(["T → S or R", "S → B on [0, 2] of p", "R → no B 1 unit on the right", "mode 1 → no B"])
         state = apply_edit(rs, LineState.empty(), [Op.put("T", Interval(0, INF, True, False))], USER)
         sim = Simulation(state, RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5), Chip([(0, 0), (20, 20)]),
                          ModeTimeline(0, "1"))
@@ -318,7 +305,8 @@ class ModeRulesTest(unittest.TestCase):
         self.assertIs(sim.state, before)
         self.assertEqual((sim.t, len(sim.log.changes), len(sim.log.runs), sim.started), (0, changes, 0, False))
         sim.advance(F(3))
-        self.assertEqual(sim.state.line.presence("S") & Region.of(Interval.closed(0, 8)), Region.point(Pos(3) + EPS))
+        self.assertEqual(sim.t, 3)
+        self.assertTrue(Region.of(Interval.closed(0, 8)).issubset(sim.state.line.presence("S") | sim.state.line.presence("R")))
 
     def test_only_at_the_chip_point(self):
         """The generated X on [2, 3] is in D's way: as the chip goes through it, X goes at

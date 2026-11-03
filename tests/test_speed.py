@@ -181,7 +181,7 @@ class NearTest(unittest.TestCase):
     def test_the_same_as_the_whole_line(self):
         rng = random.Random(67)
         checked = 0
-        for _ in range(200):
+        for _ in range(240):
             try:
                 rs = parse_rules(rng.sample(self.POOL, rng.randint(2, 6)))
             except RuleError:
@@ -323,8 +323,7 @@ class NearTest(unittest.TestCase):
         self.assertEqual(state.line.presence("B"), Region.of(Interval.closed(0, 200)))
 
     def test_only_when_no_choice_looks_ahead(self):
-        for rules in (["A → B or C", "B → no C 1 unit on the right", "C → no B 1 unit on the right"],
-                      ["A → B or C", "C → no B 1 unit on the left"],
+        for rules in (["A → B or C", "C → no B 1 unit on the left"],
                       ["A → B or C", "C → D", "X → no D", "X → no B"], ["A → B or C", "C → no B", "X → B"]):
             self.assertFalse(parse_rules(rules).one_way, rules)
         rs = parse_rules(["A → B or C", "C → no B 1 unit on the right"])
@@ -422,7 +421,10 @@ class DeltaTest(unittest.TestCase):
         rng = random.Random(79)
         tail = Region(135, 135, IntervalSet(), right=IntervalSet.of(Interval.closed_open(0, 15)), pr=F(135))
         for _ in range(40):
-            rs = parse_rules(rng.sample(NearTest.POOL, 3))
+            try:
+                rs = parse_rules(rng.sample(NearTest.POOL, 3))
+            except RuleError:
+                continue  # a cycle
             states, state = [LineState.empty()], LineState.empty()
             for k in range(8):
                 a = rng.randint(0, 60)
@@ -474,8 +476,6 @@ class LocalTest(unittest.TestCase):
             self.assertTrue(rs.local)
             history = edits(rng)
             first = rng.choice([[], [Op.put("A", tail)], [Op.put("C", tail)]])
-            if first and rs.cyclic:
-                continue  # the long way is wrong there: test_a_cycle_over_what_repeats
             def go():
                 state, out = LineState.empty(), []
                 if first:
@@ -499,13 +499,6 @@ class LocalTest(unittest.TestCase):
             self.assertEqual(fast, slow, ([str(r) for r in rs.rules], [[str(o) for o in ops] for ops in history]))
             checked += 1
         self.assertGreater(checked, 80)
-
-    def test_a_cycle_over_what_repeats(self):
-        """A → D or E and E → A cannot hold each other up after the end of A's claim, with
-        nothing placing them there."""
-        rs = parse_rules(["C → no E", "A → D or E", "B & D → E", "E → A", "C → D", "A → B or C"])
-        tail = Region(135, 135, IntervalSet(), right=IntervalSet.of(Interval.closed_open(0, 15)), pr=F(135))
-        self.assertFalse(solver.solve(rs, solver.Problem({"A": {F(100): tail}}, {})).presence("A").contains(160))
 
     def test_an_edit_that_comes_back(self):
         """Removing the newer "no K" lets the older K apply again."""

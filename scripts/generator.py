@@ -156,7 +156,7 @@ class RulesGenerator:
                     if any(o.anchor == "l" or type(o.where.lo) is not Pos or type(o.where.hi) is not Pos for o in r.lits()):
                         return None
                     far += max(map(abs, ends), default=Fraction(0))
-        return None if used and self.rules.moving else far
+        return far
 
     def first_edits(self, state: LineState, c: Fraction) -> list[list[Op]]:
         """What the script at the start of a run can do at once, on the PACE after the chip:
@@ -188,10 +188,6 @@ class RulesGenerator:
             return [None]
         more = max(1, math.ceil(Fraction(str(self.q)) * rest / PACE))
         return [first + rest * i / more for i in range(more + 1)]
-
-    def most_stages(self) -> int:
-        """The stages of a run at q = 1, the most a run can have."""
-        return len(RulesGenerator(self.rules, self.problems, 1).frontiers(Fraction(0)))
 
     def run(self, state: LineState, chip, known: ModeKnowledge) -> tuple[Script, RunStats]:
         """The last script of the run."""

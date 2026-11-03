@@ -24,7 +24,7 @@ from modes import ModeTimeline  # noqa: E402
 from resolve import apply_edit  # noqa: E402
 from rules import parse_rules  # noqa: E402
 from session_log import SessionLog  # noqa: E402
-from script import ChipIn, EditAction, RerunAction  # noqa: E402
+from script import ChipIn, RerunAction  # noqa: E402
 from simulation import EDIT_LIMIT, Chip, Simulation  # noqa: E402
 from solver import STOP, Interrupted, checkpoint  # noqa: E402
 

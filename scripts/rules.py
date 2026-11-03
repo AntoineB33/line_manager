@@ -20,12 +20,11 @@ A mode rule is  mode m [& L] → R : the same, met at the chip's position when i
 is m; it can add or remove elements only at the chip's position, so all its locations
 are "at 0 of p".
 
-Kinds may place each other in a cycle (A → A 1 unit on the right). RuleSet groups the
-kinds that do (strongly connected through "a left side reads K, its rule places K'
-present"), each group after the groups it reads: solver.py computes a group with a
-cycle as a fixpoint. A "no K" places nothing, so it makes no cycle; nor does a mode
-rule, which acts once, at the chip, and is not kept true. A cycle "moves" when one of
-its literals is not "at 0 of p": then what it places can go on without end.
+The rules must not have a cycle dependency (requirement.md): RuleSet refuses a set where
+a left side reads a kind and its rule acts on another one, present or absent, in a cycle
+(A → A 1 unit on the right, A → no A). A mode rule makes none: it acts once, at the
+chip, and is not kept true. With no cycle, RuleSet orders the kinds, each after the
+kinds it reads, and solver.py computes them in that order.
 
 Restrictions, checked by RuleSet:
 - the operands of an "or" are all relative to p or all relative to l;
@@ -35,9 +34,7 @@ Restrictions, checked by RuleSet:
   a consequence. Then:
   - if those rules read chosen kinds in a conjunction  K1 & ... & Kn & L'  and place
     single positions relative to p, and the operands of the "or"s are present elements
-    at single positions, the choices are solved on lattices (solver.py, `lattice`),
-    unless chosen kinds place each other in a cycle that moves, or that a left side
-    reads as absent (one choice would then act without end);
+    at single positions, the choices are solved on lattices (solver.py, `lattice`);
   - otherwise they are solved by a sweep from left to right (sweep.py), and a chosen
     kind that a left side reads is only placed at or after the position where it is
     decided (at an offset >= 0 from p or l): what is left of the sweep never changes.
@@ -231,10 +228,17 @@ class Lit:
 class Item:
     options: tuple[Lit, ...]
     text: str = ""  # how it is written, when an operand is a hidden kind
+    # for each operand, its elements relative to l when it is placed relative to p (a hidden
+    # kind at p stands for the others): placed from the left edge of p's largest interval
+    extra: tuple = ()
 
     @property
     def is_or(self) -> bool:
         return len(self.options) > 1
+
+    def all_lits(self) -> list:
+        """The operands and the elements that go with them."""
+        return list(self.options) + [o for more in self.extra for o in more]
 
     def __str__(self) -> str:
         return self.text or " or ".join(map(str, self.options))
@@ -261,7 +265,7 @@ class Rule:
         return self.mode is not None
 
     def lits(self) -> list[Lit]:
-        return [o for it in self.rhs for o in it.options]
+        return [o for it in self.rhs for o in it.all_lits()]
 
     def written_lits(self) -> list[Lit]:
         return list(self.written) or self.lits()
@@ -293,30 +297,23 @@ class RuleSet:
                 raise RuleError(f"{r}: a mode rule can only act at the position of the chip")
             if not r.is_mode_rule and not r.lhs.kinds():
                 raise RuleError(f"{r}: an element rule needs a kind on its left side")
-        # the kinds in groups that place each other (strongly connected through the element
-        # rules: a left side reads K, its rule places K' present), each group after those
-        # it reads; a group with a cycle is computed as a fixpoint (solver.py)
+        # the kinds in order (through the element rules: a left side reads K, its rule acts
+        # on K'), each after those it reads
         edges: dict[str, set[str]] = {k: set() for k in rank}
-        places: dict[str, set[str]] = {k: set() for k in rank}
         for r in self.element:
             for k in r.lhs.kinds():
                 edges[k] |= {o.kind for o in r.lits()}
-                places[k] |= {o.kind for o in r.lits() if not o.negated}
         self.edges = edges
-        self.blocks = _groups(places)
+        self.blocks = _groups(edges)
         self.order = [k for b in self.blocks for k in b]
         self.block_of = {k: n for n, b in enumerate(self.blocks) for k in b}
-        self.cyclic = {k for b in self.blocks for k in b if len(b) > 1 or k in places[k]}
-        # a cycle that moves positions: one of its literals is not "at 0 of p", so what it
-        # places can go on without end (A → A 1 unit on the right)
-        self.moving = set()
-        for r in self.element:
-            for o in r.lits():
-                if not o.negated and o.kind in self.cyclic and (o.anchor != "p" or o.where != Interval.point(0)) \
-                        and any(self.block_of.get(k) == self.block_of[o.kind] for k in r.lhs.kinds()):
-                    self.moving |= set(self.blocks[self.block_of[o.kind]])
+        # requirement.md: the rules must not have a cycle dependency: a left side reads a
+        # kind, its rule acts on another one, present or absent ("no K": A → no A is one)
+        cycles = [b for b in self.blocks if len(b) > 1 or b[0] in edges[b[0]]]
+        if cycles:
+            raise RuleError("the rules depend on each other in a cycle: " + "; ".join(", ".join(b) for b in cycles))
         # chosen kinds: those an "or" choice can change
-        chosen = {o.kind for r in self.element for it in r.rhs if it.is_or for o in it.options if not o.negated}
+        chosen = {o.kind for r in self.element for it in r.rhs if it.is_or for o in it.all_lits() if not o.negated}
         dep, todo = set(), list(chosen)
         while todo:
             k = todo.pop()
@@ -327,7 +324,7 @@ class RuleSet:
         # each element rule's left side as (chosen kinds that must be present, chosen kinds
         # that must be absent, the rest), and which solver the choices need
         lattice = all(not o.negated and o.is_point for r in self.element for it in r.rhs if it.is_or for o in it.options)
-        self.mixed = any(len({o.anchor for o in it.options}) > 1 for r in self.element for it in r.rhs if it.is_or)
+        self.mixed = any(len({o.anchor for o in it.all_lits()}) > 1 for r in self.element for it in r.rhs if it.is_or)
         lattice = lattice and not self.mixed
         self.split: list[tuple[tuple[str, ...], tuple[str, ...], object]] = []
         absent_read = []  # the rules that read a chosen kind as absent: the lattices only
@@ -350,16 +347,13 @@ class RuleSet:
             if read and any(o.anchor != "p" or not o.is_point for o in r.lits()):
                 lattice = False
             self.split.append((tuple(dict.fromkeys(cd)), tuple(dict.fromkeys(ncd)), And(tuple(rest))))
-        # a cycle through chosen kinds: on lattices only if it stays at one position and
-        # reads them as present (a choice then places a fixed set of points); otherwise
-        # what one choice places can go on without end, and the sweep decides
-        if dep & self.cyclic and (dep & self.moving or absent_read):
-            lattice = False
         self.lattice = lattice
         # no method goes from left to right (a choice can take a consequence away, or act on
         # what is decided): the choices are searched (`Sweep._search`)
         self.searched = bool(self.mixed or (absent_read and not lattice))
-        self.settled = not absent_read and not any(o.anchor == "l" for r in self.element for o in r.lits() if o.kind in dep)
+        # (a left edge of a left side that reads no chosen kind cannot move)
+        self.settled = not absent_read and not any(o.anchor == "l" for r in self.element if set(r.lhs.kinds()) & dep
+                                                   for o in r.lits())
         # causal: a chosen kind that a left side reads is placed at or after the position
         # where it is decided (needed by the sweep)
         read_kinds = {k for r in self.element for k in r.lhs.kinds()}
@@ -367,7 +361,7 @@ class RuleSet:
         for r in self.element:
             decided = set(r.lhs.kinds()) & dep
             for it in r.rhs:
-                for o in it.options:
+                for o in it.all_lits():
                     if (it.is_or or decided) and not o.negated and o.kind in dep and o.kind in read_kinds and o.where.lo < 0:
                         self.causal = False
                         self.searched = self.searched or not lattice
@@ -376,7 +370,7 @@ class RuleSet:
         items = [(i, j) for i, r in enumerate(self.element) for j, it in enumerate(r.rhs) if it.is_or]
         below = {}
         for i, j in items:
-            out, todo = set(), [o.kind for o in self.element[i].rhs[j].options]
+            out, todo = set(), [o.kind for o in self.element[i].rhs[j].all_lits()]
             while todo:
                 k = todo.pop()
                 if k not in out:
@@ -386,7 +380,7 @@ class RuleSet:
         self.or_items: list[tuple[int, int]] = []
         while len(self.or_items) < len(items):
             rest = [a for a in items if a not in self.or_items]
-            # "or"s that place what the other reads (a cycle): the first in rule order
+            # none is ready (it cannot happen with no cycle): the first in rule order
             ready = [a for a in rest if not any(b != a and set(self.element[a[0]].lhs.kinds()) & below[b] and
                                                  not set(self.element[b[0]].lhs.kinds()) & below[a] for b in rest)]
             self.or_items.append((ready or rest)[0])
@@ -404,13 +398,9 @@ class RuleSet:
         self.local = self.monotone and self.pointwise
         self._one_way()
         # how far from the ε part of what it starts from a chain of rules can place: an open
-        # end adds ±1, and a chain goes through each kind once (a cycle: `moving`, `drifts`)
+        # end adds ±1, and a chain goes through each kind once
         opened = [1 for r in self.rules for o in r.lits() for e in (o.where.lo, o.where.hi) if e not in (math.inf, -math.inf) and e.k]
         self.eps_reach = 1 + min(max(len(opened), 1), len(self.order) + 1)
-        # a cycle with an open end moves ε parts at each turn: no bound
-        self.drifts = any(o.kind in self.moving and self.block_of.get(k) == self.block_of[o.kind] and
-                          any(e not in (math.inf, -math.inf) and e.k for e in (o.where.lo, o.where.hi))
-                          for r in self.element for o in r.lits() for k in r.lhs.kinds())
         sizes = [e for e in ends if e] + [o.where.length for r in self.rules for o in r.lits() if 0 < o.where.length < math.inf]
         self.smallest_offset = min(sizes, default=None)
 
@@ -440,7 +430,7 @@ class RuleSet:
             return seen
 
         self.free, self.blocked = set(), set()
-        self.one_way = bool(self.monotone) and not self.cyclic and all(
+        self.one_way = bool(self.monotone) and all(
             o.anchor == "p" and o.where.lo >= 0 and o.value in (None, 100) for o in lits)
         sure = {o.kind for r in self.element for it in r.rhs if not it.is_or for o in it.options if not o.negated}
         for r in self.element:
@@ -799,13 +789,24 @@ def parse_rule(text: str) -> Rule:
             items.append(Item((node[1],)))
             continue
         lits = _lits_of(node)
-        if any(len({o.anchor for o in conj}) > 1 for conj in _operands(node)):
-            raise RuleError(f"{text}: the elements of an operand 'and' are all relative to p or all relative to l")
-        opts, hidden = [], False
+        opts, extra, hidden = [], [], False
         for conj in _operands(node):
             if len(conj) == 1:
                 opts.append(conj[0])
+                extra.append(())
                 continue
+            if len({o.anchor for o in conj}) > 1:
+                # the elements relative to p are a hidden kind at p; those relative to l go
+                # with it, from the left edge of p's largest interval
+                at_l = tuple(o for o in conj if o.anchor == "l")
+                conj = tuple(o for o in conj if o.anchor == "p")
+                extra.append(at_l)
+                if len(conj) == 1:
+                    opts.append(conj[0])
+                    hidden = True
+                    continue
+            else:
+                extra.append(())
             # the operand "B & C" is the hidden kind §(B & C), placed where the operand
             # goes, whose rule places B and C (relative to it: at l, it is l itself)
             name = HIDDEN + "(" + " & ".join(map(str, conj)) + ")"
@@ -813,10 +814,16 @@ def parse_rule(text: str) -> Rule:
             inner = tuple(Item((Lit(o.kind, o.where, "p", o.value, o.negated),)) for o in conj)
             internal.append(Rule(Atom(name), None, inner, f"{name} → " + " & ".join(map(str, conj))))
             hidden = True
-        items.append(Item(tuple(opts), _shown(node) if hidden else ""))
+        items.append(Item(tuple(opts), _shown(node) if hidden else "", tuple(extra) if any(extra) else ()))
     written = tuple(_lits_of(tree)) if internal else ()
     return Rule(lhs, p.mode, tuple(items), text, written, tuple(internal))
 
 
 def parse_rules(texts: list[str]) -> RuleSet:
-    return RuleSet([parse_rule(t) for t in texts])
+    """The rules; refused (RuleError) if they have a cycle, or if no line satisfies them."""
+    rs = RuleSet([parse_rule(t) for t in texts])
+    from solver import satisfiable  # (solver.py reads the rules)
+    why = satisfiable(rs)
+    if why:
+        raise RuleError(why)
+    return rs

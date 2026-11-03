@@ -157,8 +157,8 @@ class RulesTest(unittest.TestCase):
         r = parse_rule("A → B or (C & no D 1 unit on the right) & (E or F on (0, 1] of p)")
         self.assertEqual([str(it) for it in r.rhs], ["B or (C & no D 1 unit on the right of p)", "E or F on (0, 1] of p"])
         self.assertEqual(r.rhs[1].options[1].where, Interval.closed(EPS, 1))  # its parentheses stay an interval
-        with self.assertRaises(RuleError):
-            parse_rule("A → (B & C on [0, 1] of l) or D")  # one operand relative to l, another to p
+        r = parse_rule("A → (B & C on [0, 1] of l) or D")  # one operand relative to p and to l: B, and C with it
+        self.assertEqual(([o.kind for o in r.rhs[0].options], [[o.kind for o in e] for e in r.rhs[0].extra]), (["B", "D"], [["C"], []]))
         with self.assertRaises(RuleError):
             parse_rule("A → (B or C")
         rs = parse_rules(["A → (B & C) or D", "E → (B & C) or F"])  # one hidden kind, one rule for it
@@ -183,34 +183,38 @@ class RulesTest(unittest.TestCase):
                 self.assertEqual(region.contains(x), f.holds(v), x)
 
     def test_cycles(self):
-        """Rules may place each other in a cycle: the kinds are grouped (each group after
-        those it reads), and a cycle that moves positions is told apart."""
-        rs = parse_rules(["if A → B 1% 1 unit on the right of l", "if B → A 10%", "B → C", "C & D → E"])
-        self.assertEqual(rs.blocks, [("A", "B"), ("C",), ("D",), ("E",)])
-        self.assertEqual((rs.cyclic, rs.moving), ({"A", "B"}, {"A", "B"}))
-        rs = parse_rules(["A → A 1 unit on the left"])
-        self.assertEqual((rs.cyclic, rs.moving), ({"A"}, {"A"}))
-        rs = parse_rules(["A → B", "B → A", "A → C 1 unit on the right"])  # at one position
-        self.assertEqual((rs.cyclic, rs.moving), ({"A", "B"}, set()))
-        # "no B" places no B: a constraint, no cycle to compute
-        self.assertEqual(parse_rules(["B → no B 1 unit on the right"]).cyclic, set())
-        parse_rules(["not A & C → B", "B → A 1 unit on the right"])
-        # two "or"s that place what the other reads: decided in rule order at one position
-        rs = parse_rules(["A → B or C", "B → A or D 1 unit on the right"])
-        self.assertEqual(rs.or_items, [(0, 0), (1, 0)])
-        # a cycle through what an "or" changes: on lattices if it stays at one position
-        # and reads it as present, else by the sweep, or the search
-        self.assertTrue(parse_rules(["A → B or C", "B → D", "D → B"]).lattice)
-        self.assertFalse(parse_rules(["A → B or C", "B → D 1 unit on the right", "D → B"]).lattice)
-        self.assertTrue(parse_rules(["A → B or C", "B → D", "D & not C → B"]).searched)
+        """The rules must not have a cycle dependency (requirement.md): a left side reads a
+        kind, its rule acts on another one, "no K" included. A mode rule acts once, at the
+        chip: no cycle through it."""
+        for cycle in (["if A → B 1% 1 unit on the right of l", "if B → A 10%"], ["A → A 1 unit on the left"],
+                      ["A → B", "B → A", "A → C 1 unit on the right"], ["not A & C → B", "B → A 1 unit on the right"],
+                      ["A → B or C", "B → D", "D → B"], ["X & not B → B"], ["X & not C → B", "X & not B → C"],
+                      ["A → B or C", "B → A or D 1 unit on the right"], ["mode 1 → D", "D → X", "X → D"],
+                      ["A → no A"], ["B → no B 1 unit on the right"], ["B → no C", "C → no B"]):
+            with self.assertRaises(RuleError, msg=cycle):
+                parse_rules(cycle)
+        rs = parse_rules(["B → C", "C & D → E", "B → no D 1 unit on the right"])
+        self.assertEqual(rs.blocks, [("B",), ("C",), ("D",), ("E",)])
+        parse_rules(["mode 1 & not X → D", "D → X 1 unit on the right"])
+        parse_rules(["A → B or C", "B → E", "B → no E on (0, 1] of l"])
+
+    def test_impossible_sets_of_rules(self):
+        """Refused when they are given: no line satisfies them. A set whose lines alternate,
+        with no constant one, is not."""
+        with self.assertRaises(RuleError):
+            parse_rules(["X → no A", "not X → no A", "not A → B", "not A → no B"])
+        for possible in (["A → B", "A → no B 1 unit on the right", "not A → C", "not A → no C 1 unit on the right"],
+                         ["not A → B", "not A → no B"], ["A → B or C", "B → E", "B → no E on (0, 1] of l"]):
+            parse_rules(possible)
 
     def test_restrictions(self):
         for bad in (["mode 1 → D 1 unit on the right"],  # mode rules act at the chip only
-                    ["A → (B 1 unit on the right of l & C) or D"]):  # one operand: all of p or all of l
+                    ):
             with self.assertRaises(RuleError, msg=bad):
                 parse_rules(bad)
         for searched in (["A → B or C on [0, 1]"], ["A → B 1 unit on the right of l or C"],  # p and l in one "or"
                          ["A → (B 1 unit on the right of l & C 1 unit on the right of l) or D"],
+                         ["A → (B 1 unit on the right of l & C) or D"],  # p and l in one operand
                          ["A → B or C", "not B → E on [0, 1] of p"], ["A → B or C", "B < 50% & A → E"],  # read as absent
                          ["A → B or C", "B → E on [-1, 0] of l", "E → no F on (0, 1] of l"]):  # placed before its decision
             self.assertTrue(parse_rules(searched).searched, searched)
@@ -218,9 +222,6 @@ class RulesTest(unittest.TestCase):
         self.assertTrue(rs.lattice)
         for absent in (["A → B or C", "not B → E"], ["A → B or C", "B 0% → E"], ["A → B or C", "A & not B → no C 1 unit on the right"]):
             self.assertTrue(parse_rules(absent).lattice, absent)
-        # a mode rule acts once, at the chip: no cycle through it
-        self.assertEqual(parse_rules(["mode 1 & not X → D", "D → X 1 unit on the right"]).cyclic, set())
-        self.assertEqual(parse_rules(["mode 1 → D", "D → X", "X → D"]).cyclic, {"D", "X"})
         parse_rules(["A → B on [0, 2] of p"])  # an interval relative to p
         for sweep in (["A → B or no C"], ["A → B or C", "B → E", "B → no E on (0, 1]"], ["A → B or C", "B → E at 1 of l"],
                       ["A → B or C", "B | X → E"], ["A → B or C on [0, 1] of p"], ["A → B or C", "B >= 50% → E on [0, 1)"]):

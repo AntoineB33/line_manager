@@ -12,7 +12,7 @@ from helpers import Interval, Region  # noqa: E402
 
 from constraints import FifteenMinuteBreaks  # noqa: E402
 from generator import RulesGenerator  # noqa: E402
-from intervals import EPS, Pos  # noqa: E402
+from intervals import Pos  # noqa: E402
 from line import LineState  # noqa: E402
 from modes import ModeTimeline  # noqa: E402
 from problems import PresenceRatioProblem  # noqa: E402

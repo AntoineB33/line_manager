@@ -46,10 +46,10 @@ from modes import ModeTimeline  # noqa: E402
 from problems import MinimumLengthProblem, PresenceRatioProblem  # noqa: E402,F401 (for the example scripts)
 from region import Region  # noqa: E402
 from rules import RuleError, is_hidden, parse_rules  # noqa: E402
-from script import ChipIn, RerunAction, Script, TransitionCount  # noqa: E402
+from script import ChipIn, Script, TransitionCount  # noqa: E402
 from script_text import ScriptError, parse_script  # noqa: E402,F401 (ScriptError: for the window)
 from simulation import EDIT_LIMIT, Chip, Simulation  # noqa: E402
-from solver import Interrupted, possible  # noqa: E402
+from solver import Interrupted  # noqa: E402
 from state_delta import changes, patched  # noqa: E402
 
 WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "generator_worker.py")
@@ -155,9 +155,6 @@ class Session:
         self.constraints = [KeepOn(op) for k in constraints if isinstance(k, str) for op in parse_op(f"add {k}")] + \
                            [k for k in constraints if not isinstance(k, str)]
         self.rs = parse_rules(self.texts)
-        why = possible(self.rs)
-        if why:
-            raise RuleError(why)
         self.problems = [(p, F(w)) for p, w in problems]
         self.q = q
         self.speed = F(speed)
@@ -416,9 +413,6 @@ class Session:
     def set_rules(self, texts: list[str]) -> str:
         try:
             rs = parse_rules(texts)
-            why = possible(rs)
-            if why:
-                raise RuleError(why)
         except (RuleError, ValueError) as e:
             return f"refused: {e}"
         try:

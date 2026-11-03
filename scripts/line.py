@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fractions import Fraction
 
-from intervals import Interval, IntervalSet
+from intervals import Interval
 from region import Region
 from solver import EMPTY, Line, Problem, union
 
@@ -176,9 +176,6 @@ class Claims:
 
     def owned(self, kind: str, owner: str) -> Region:
         return union(r for (v, o), r in self.pos.get(kind, {}).items() if o == owner)
-
-    def owned_no(self, kind: str, owner: str) -> Region:
-        return self.neg.get(kind, {}).get(owner, EMPTY)
 
     def by_value(self, kind: str) -> dict[Fraction, Region]:
         out: dict[Fraction, Region] = {}

@@ -20,8 +20,6 @@ line then have fixed ends, and ends that move with x, at x + d (d a sum of rule
 distances along the rules). Whether the decision at x is the same changes only where
 a moving end crosses a fixed one: at e - d + jε, e an end of the state or m, d a
 multiple of g (the gcd of the rule distances) with |d| <= 2 * depth * reach, |j| <= 2.
-With a cycle that moves positions (rules.py), what is placed at x goes on without end:
-d then goes as far as the ends of the state, and a period of its repeating parts.
 The run is checked at each of those positions and at the first, middle and last
 position between two of them; a check that fails between them refuses the rest of
 the positions rather than guessing.
@@ -44,7 +42,7 @@ from fractions import Fraction
 from guards import check_mode_edit, same_dict, user_claims
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import GEN, MODE, LineState, Op
-from region import ZERO, IncompatiblePeriods, Region
+from region import IncompatiblePeriods, Region
 from resolve import Refused, apply_edit
 from rules import RuleSet, _fgcd
 from solver import Conflict, Line, Undetermined, checkpoint, lhs_region, solve
@@ -109,9 +107,8 @@ class ModeRules:
             if d:
                 g = d if g is None else _fgcd(g, d)
         self.g = g
-        # how far a moving end can be from x; with a cycle that moves positions, what is
-        # placed at x can go on without end: as far as the ends of the state (`candidates`)
-        self.span = None if rs.moving else 2 * (len(rs.order) + 1) * rs.reach
+        # how far a moving end can be from x
+        self.span = 2 * (len(rs.order) + 1) * rs.reach
         self.plan: _Plan | None = None  # the run being compiled ahead
         self.kept: Pos | None = None  # the position where the user edited after the chip got there
 
@@ -211,9 +208,6 @@ class ModeRules:
         regions += [r for d in state.claims.taken.values() for r in d.values()]
         regions += [r for d in state.line.vals.values() for r in d.values()]
         span = self.span
-        if span is None:  # every end of the state, and a period of each repeating part
-            far = [abs(e.x) for r in regions if r for e in (r.lo, r.hi)] + [abs(lo.x), abs(hi.x)]
-            span = 2 * max(far) + 2 * max([r.pl.x for r in regions] + [r.pr.x for r in regions] + [Fraction(0)]) + 2 * self.rs.reach
         a, b = lo.x - span - 1, hi.x + span + 1
         ends = {m}
         for reg in regions:
@@ -300,11 +294,6 @@ class ModeRules:
         except _Changes:
             pass  # the chip will refuse there when it gets there
 
-    def prepared(self, state: LineState, x: Pos) -> bool:
-        plan = self.plan
-        return plan is not None and ((plan.last is state and plan.next == x) or
-                                     (plan.pending is not None and plan.before is state and plan.m == x))
-
     def _same(self, state: LineState, decision: tuple, lo: Pos, p: Pos) -> tuple[bool, LineState | None]:
         """With the run on [lo, p), is the decision at p the same? And the state with the
         run on [lo, p]."""
@@ -349,8 +338,6 @@ class _Plan:
 
     def _stretch(self, hi: Pos) -> None:
         cur = self.a0 if self.checked is None else self.checked + EPS
-        if self.mr.rs.drifts:  # the positions where the decision can change have no bound
-            raise _Changes(cur)
         if not self.queue and (self.top is None or self.top < cur):
             # (with no lattice, finding them costs the same however far: the longer the stretch,
             # the fewer are checked, and a run that goes on is what mode rules mostly do)

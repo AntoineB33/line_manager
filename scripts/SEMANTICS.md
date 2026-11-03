@@ -136,44 +136,36 @@ An element rule has the form L → R.
 chip's position, so every location in R must be "at 0 of p"; any other location
 is refused.
 
-### Cycles
+### No cycle
 
-Rules may place each other in a cycle, whatever the distances: `A → A 1 unit on the
-right`, or `A → B 1% 1 unit on the right of l` with `B → A 10%`.
-
-- **Groups.** `RuleSet.blocks` groups the kinds that are strongly connected through
-  "a left side reads K, its rule places K′ present". Each group comes after the
-  groups it reads, and a group has a *cycle* if it has more than one kind, or one kind
-  that places itself (`test_cycles`).
-  - A "no K" places nothing: `B → no B 1 unit on the right` is a constraint and makes
-    no cycle.
-  - A mode rule acts once, at the chip, on the line as it is then; it is not kept
-    true, so it makes no cycle (`mode 1 & not X → D` with `D → X 1 unit on the
-    right`).
-- **Moving cycles.** A cycle *moves* if one of its literals is not "at 0 of p". What
-  it places can then go on without end: A at 0 with `A → A 1 unit on the right` gives
-  A at every n ≥ 0.
-- **Through what an "or" chooses.** A cycle among chosen kinds goes to the lattices
-  only if it does not move and is read as present only. Otherwise one choice would
-  act without end, and the sweep decides, with its conditions below.
-
-### The first rule wins, and impossible sets of rules
-
-- **Deterministic.** Where the rules leave two lines, the first rule of the list that can
-  apply does, and the others follow from it (`_Group.first`): with `X & not C → B` and
-  `X & not B → C`, X gives B and no C. It can apply if the result holds with no help.
-  This chooses between lines where the rules hold: it does not let a rule break another.
-- **Impossible.** A set of rules that has no line, on its own or with the elements a left
-  side asks for (`X & not B → B`, `not B → B`), is refused (`solver.possible`). A plain
-  contradiction with an element, `A → B` with `B → no A`, forbids A: that is a constraint,
-  and the edit that adds A is refused.
+- **Refused.** The rules must not have a cycle dependency (requirement.md): `parse_rules`
+  refuses a set where a left side reads a kind and its rule acts on another one, present
+  or absent, in a cycle (`RuleError`, `test_cycles`): `A → A 1 unit on the right`,
+  `A → no A`, `B → no B 1 unit on the right`, `X & not B → B`, `A → B` with `B → no A`.
+  - A mode rule acts once, at the chip, on the line as it is then; it is not kept true,
+    so it makes no cycle (`mode 1 & not X → D` with `D → X 1 unit on the right`).
+  - What an "or" can choose is not a dependency (line 28's example has none).
+- **Groups.** `RuleSet.blocks` orders the kinds: each after the kinds its rules read.
+  Every element follows from those, one step per kind: the claims have at most one
+  line, and an edit with none is refused.
+- **Impossible sets of rules** are refused when they are given (`solver.satisfiable`,
+  `test_impossible_sets_of_rules`). A set is accepted only on a line found: the empty line,
+  then the kinds that left sides read claimed on repeating patterns of one or two cells per
+  step of the grid of the rules' distances, fewest first, up to 400 lines or 5 seconds. So
+  no impossible set is accepted: `X → no A`, `not X → no A`, `not A → B`, `not A → no B`
+  is refused. Some lines alternate with no constant one (`A → B`, `A → no B 1 unit on the
+  right`, `not A → C`, `not A → no C 1 unit on the right`: A on [0, 1), [2, 3), ...): the
+  patterns find them. A possible set whose every line is beyond those patterns is refused
+  too.
 
 ### What each solver needs (`RuleSet.searched`)
 
 - **Operands of "or"** relative to p and to l in one "or": each position chooses; an
   operand relative to l goes from the left edge of that position's largest interval
-  (`test_p_and_l_in_one_or`). The elements of one operand `(B & C)` are all relative to p
-  or all relative to l (`RuleError`: a hidden kind has one anchor).
+  (`test_p_and_l_in_one_or`). One operand can mix them too, `(B 1 unit on the right of l
+  & C)`: the elements relative to p are a hidden kind at p (or the element itself), and
+  those relative to l go with it, from the left edge of p's largest interval
+  (`Item.extra`, `test_p_and_l_in_one_operand`).
 - **Chosen kinds.** A kind is *chosen* if it is a present operand of an "or", or
   if a rule whose left side reads a chosen kind places it.
   - For the sweep (§5), two more conditions apply. Rules outside them are searched
@@ -203,12 +195,8 @@ The line of a set of claims is defined as follows:
 
 1. It contains every claim.
 2. It is closed under the rules, and contains nothing more: it is the least such
-   state, each element placed by the rules from the claims. With a cycle through a
-   "not" (or `K < p%`, an exact percentage, a left edge: the position before it must
-   be without K), the least state is the well-founded one. If it does not decide every
-   element, the first rule wins (§4): `X & not C → B` with `X & not B → C` gives B. If
-   no rule can, there is no line (`NoLine`): `X & not B → B` needs B exactly where B
-   is absent.
+   state, each element placed by the rules from the claims. With no cycle (§4), it is
+   one, kind after kind.
 3. Each anchor of an "or" takes an operand ("the leftmost operand that can be
    chosen"). The anchors are decided one after the other, the closest to 0 first,
    and the one on the right if two are as close (requirement.md). So where 0 is
@@ -251,34 +239,7 @@ left end, the edit is refused (`Undetermined`, gaps_to_solve_later.md).
 ### How it is computed exactly
 
 - **Region algebra.** Kinds that are not chosen are computed with region algebra,
-  group after group (`solver.close`). A group without a cycle only reads kinds
-  already computed: one step.
-- **A group with a cycle** is a fixpoint, reached step after step from nothing.
-  - **Only present.** If its left sides read its own kinds only as present, the steps
-    only grow, up to the least fixpoint.
-  - **Otherwise** a step reads the absences from a fixed state. The least fixpoint with
-    the absences read from an overestimate gives an underestimate, and the other way
-    round, until both stop changing (the alternating fixpoint). They are equal, or
-    `Undetermined`. A left edge is read in the same way: met there, and not met at the
-    position before (x − ε).
-  - **Without end.** When the steps grow by layers that move by a translation t (over
-    up to 4 steps, kinds taking turns), they are followed to the end: the limit adds
-    each next layer forever, a repeating tail. This is exact (`_Group._jump`): what is
-    read on a half-line near the layer, and what turns a layer into what is read (the
-    claims, the overestimate), are the same one step later translated by t, and a step
-    only reads positions within the reach of the rules. By induction each next layer
-    is placed by the steps. The limit is also checked to be closed.
-    `A → A 1/1000 unit on the right` from A on [0, 1] gives [0, +∞) at once.
-  - **Long but bounded.** When what is read looks the same translated by t only up
-    to some position (`NoScreen & Long → Long on [0, 1] of p` through NoScreen on
-    [0, 3000]), the same induction holds for the layers whose reads stay before it:
-    the steps jump to the state that many layers later, and go on from there
-    (`test_long_but_bounded`).
-  - **Rounds without end.** A "not" read one position before what it places (B at
-    x + 1 where A is and B is not at x) decides one more position per round. A round
-    is a whole fixpoint, not local, so the induction above does not apply to rounds:
-    nothing proves that they go on as they started, and they are not followed to an end.
-  - Beyond 300 steps or 40 rounds the edit is refused (`Undetermined`).
+  kind after kind (`solver.close`): each only reads kinds already computed, one step.
 - **Two solvers for the choices.** When the rules that read chosen kinds read
   them in a conjunction and place single positions relative to p, and the "or"
   operands are present elements at single positions, the choices are solved on
@@ -330,7 +291,7 @@ left end, the edit is refused (`Undetermined`, gaps_to_solve_later.md).
     (and checks a position between two of them, refusing the edit if the check
     fails);
   - beyond the claims everything is invariant by translation, or repeats with a
-    period q (an element a cycle repeats: `Sleep → Sleep 1440 units on the right`).
+    period q (an element that repeats).
     When the choices of the last stretch as long as the rules reach repeat,
     translated (by a multiple of q, with no ε part, if the data repeats), they
     repeat forever, possibly with an ε part in the period
@@ -358,8 +319,7 @@ left end, the edit is refused (`Undetermined`, gaps_to_solve_later.md).
     adds ±1. A chain of rules goes through each kind once, so what it places is within
     `RuleSet.eps_reach` of the ε parts of the nearby ends of the claims, fixed regions
     and choices: 1 + the open ends of the rules (at most the kinds + 1), and 2 at
-    least. A cycle that moves positions with an open end has no such bound
-    (`RuleSet.drifts`): the choices, and the mode rules there, are refused.
+    least.
   - **What makes it fast.** The search remembers each situation it completed or
     failed: what the choices before P placed and forbade, as far as the rules
     reach from P. A failure also rules out every situation with no less placed
@@ -368,55 +328,12 @@ left end, the edit is refused (`Undetermined`, gaps_to_solve_later.md).
     an operand that leaves one of them with nothing, whatever comes next, is
     skipped. Beyond a number of steps (3000), the edit is refused rather than
     guessed.
-  - **Cycles.** With chosen kinds that place each other in a cycle, the line of
-    given choices is a fixpoint (above). If the cycle moves, what a choice places
-    goes on without end, to the right only (offsets ≥ 0). The sweep then looks for
-    moving ends up to every end of the data, and does not use its probe (which takes
-    the past to place nothing far after P). What the past placed after P follows,
-    through the rules, from what it placed within their reach of P, so the
-    situations it remembers stay exact.
-
-  With A on [0, 2], X at 1/2 and `X → no C`, B must be at 1/2. A B on [0, 1/2)
-  would forbid the E it needs there, so the result is C on [0, 1/2), B at 1/2, C
-  until the next B at 3/2+ε (`test_looking_ahead`). If nothing can be chosen
-  whatever the choices, the claims are in conflict.
-
-### Tests
-
-- The requirement's example: "A → B 100% or C 100%" gives B
-  (`test_first_operand`), and "Edits from the user always win": A and B on
-  [1, 2], the user removes B at 1.5, which gives B on [1, 1.5) ∪ (1.5, 2] and C at
-  1.5 (`test_user_edits_win`).
-- The rules "A → B or C", "B → D", "B → no D 1 unit on the right" (`ALTERNATE`)
-  allow no B right after a B. With A added on [1, 2], the result is B on [1, 2)
-  and C at 2 (`test_alternate`). With A on [0, ∞), B and C alternate on unit
-  intervals forever.
-- Left to right, and looking ahead on lattices: `test_left_to_right`.
-- An "or" relative to l: one choice per largest interval (`test_or_relative_to_l`).
-- Comparison with an independent brute-force search, which enumerates every
-  assignment in order: `OrTest.test_matches_brute_force` (lattices) and
-  `EpsilonTest.test_sweep_matches_brute_force` (the sweep, on single points, half
-  the cases needing to look ahead).
 - The sweep gives the lattices' result wherever both apply, looking ahead
   included (`test_sweep_matches_the_lattices`).
 - On intervals, at positions sampled around every change of the sweep's result
   (x − 2ε … x + 2ε, and between them), the operand taken is the first one that the
   choices on its left allow and that leaves a completion
   (`test_each_position_takes_the_first_operand`).
-- Cycles (`CycleTest`):
-  - A at 0 and `A → A 1 unit on the right` gives A at every n ≥ 0, forever; with
-    `A & X → A 1 unit on the right` it stops one unit after X.
-  - The requirement's former example, `A → B 1% 1 unit on the right of l` with
-    `B → A 10%`: A at 0 gives A 10% and B 1% at every n ≥ 1, and A on [0, 1] is in
-    conflict (B 1% at 1 makes A 10% where A is 100%).
-  - Through "not": `not A & C → B` with `B → A 1 unit on the right` is decided; the
-    two undecided examples above are refused.
-  - Through "or": a cycle at one position on lattices, moving cycles by the sweep.
-  - An older edit gives way through a cycle: A on [0, 1/2] repeats every unit, and
-    "no A" at 3, newer, removes A at 0 only.
-  - `test_matches_brute_force` compares with the well-founded fixpoint computed on
-    sets of integers over [−40, 40], on random rules that place each other both
-    ways, under "not" too: lines, conflicts and undecided cases.
 
 ## 6. The result of an edit (`resolve.py`)
 
@@ -505,10 +422,7 @@ above) is determined as follows:
    - **The combinations.** The left side stops being met there when one term or
      more of it stop holding there. That means removing the parts of the
      elements those terms rest on: these are the combinations. A kind that a
-     rule places rests on that rule's left side, and so on. Through a cycle this
-     comes back to what is already being removed, which then needs nothing more:
-     the line is the least one, so what only the cycle places goes with the rest
-     (`test_an_older_edit_gives_way_through_a_cycle`). Beyond 400 rules followed
+     rule places rests on that rule's left side, and so on. Beyond 400 rules followed
      back, the whole elements are removed instead (below). A term that holds where
      a kind is absent (`not`, `K 0%`, `K < p%`)
      cannot be made false by removing. A requirement from an older claim gives
@@ -619,11 +533,7 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
   - **How it is computed exactly.** From a position m, the same decision goes on
     over [m, x) as x moves right (a run). The ends of the claims and the line are
     then fixed, or move with x as x + d, with d a multiple of g (the gcd of the
-    rule distances) and |d| ≤ 2 · depth · reach. With a cycle that moves, what is
-    placed at x goes on without end, and d goes as far as the ends of the state
-    and a period of its repeating parts (`test_through_a_cycle`: D at the chip
-    repeats every 3 units, and the user's "no D" at 13 keeps it from 1, 4, 7 and
-    10). The decision at x can only
+    rule distances) and |d| ≤ 2 · depth · reach. The decision at x can only
     change where a moving end crosses a fixed one, at e − d + jε with |j| ≤ 2.
     A run is checked there and at the first, middle and last positions between
     them. A check that fails between them refuses the rest of the chip's
@@ -668,7 +578,7 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     whatever the modes: that is "definitive". Such an edit is left out if a rule reaches
     back before the frontier with it, and it starts `RulesGenerator.margin` after the
     frontier: as far as the mode rules acting before it can reach through the rules, or
-    nowhere if that has no bound (a cycle that moves, a rule relative to l). The script's
+    nowhere if a rule relative to l is on the way. The script's
     own edits are checked the same way when they are put in place (`Simulation._edit`,
     `frozen`). A run in a process of its own edits nothing
     in the first 10 after c. The first script also puts the kind with the biggest ratio
@@ -717,7 +627,7 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     distances, and states where an older edit gave way, cannot be read from the claims: the
     edits that touch the window are computed again on it, as the long way would, and its
     claims must be the old ones on the zones too (`resolve._near_edits`). What takes
-    something away goes the long way, and so do cycles.
+    something away goes the long way.
   - **The generator's edits** use the same window (`resolve._near_line`).
   - **Nothing is copied one interval at a time.** Interval sets are sorted, so a few
     intervals against many find their place by bisection and the rest is copied as one

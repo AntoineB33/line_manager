@@ -15,7 +15,7 @@ from helpers import Interval, Region  # noqa: E402
 from constraints import FifteenMinuteBreaks  # noqa: E402
 from generator import PACE, RulesGenerator  # noqa: E402
 from intervals import Pos  # noqa: E402
-from line import LineState, Op  # noqa: E402
+from line import LineState  # noqa: E402
 from mode_rules import ModeRules  # noqa: E402
 from modes import ModeTimeline  # noqa: E402
 from problems import PresenceRatioProblem  # noqa: E402
@@ -142,11 +142,6 @@ class ReachingBackTest(unittest.TestCase):
         for (a, st), (b, _) in zip(out, out[1:]):
             x = st.definitive - 1
             self.assertEqual(through(a.base, x).line.presence("D"), through(b.base, x).line.presence("D"), x)
-
-    def test_no_bound_on_what_the_mode_rules_reach(self):
-        rs = parse_rules(["mode 1 → D", "D → D 3 units on the right"])
-        self.assertIsNone(RulesGenerator(rs, PresenceRatioProblem({}, 60), F(1, 2)).margin())
-
 
 class EndlessTest(unittest.TestCase):
     def endless(self, rules, problem):

@@ -49,8 +49,7 @@ from line import GEN, USER, Claims, LineState, Op
 from mode_rules import ModeRules, Run
 from modes import ModeTimeline
 from region import Region
-from rules import RuleError
-from solver import Line, Undetermined, limited, possible
+from solver import Line, Undetermined, limited
 from resolve import Refused, apply_edit, flattened, mode_won, owned_by_others, rebuild
 from watch import due, look
 from script import SHOW, ChangeAction, ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, ShowLine, Start, TransitionCount, Uncovered, Edited, score
@@ -221,9 +220,6 @@ class Ahead:
 
 class Simulation:
     def __init__(self, state: LineState, generator: RulesGenerator, chip: Chip, modes: ModeTimeline, user_edits: list[UserEdit] = ()) -> None:
-        why = possible(generator.rules)
-        if why:
-            raise RuleError(why)
         if modes.start != chip.position(Fraction(0)):
             raise ValueError("modes start where the chip starts")
         self._settled = None  # (position, mode, script, the state before, after): see `_settle`
@@ -541,10 +537,7 @@ class Simulation:
 
     def set_generator(self, generator: RulesGenerator) -> None:
         """New rules or problems: the line is computed again from the user's edits, and the
-        generator runs again. A set of rules impossible to satisfy is refused."""
-        why = possible(generator.rules)
-        if why:
-            raise RuleError(why)
+        generator runs again."""
         self.gen, self.rules = generator, generator.rules
         self._looks = None
         h = self.rules.smallest_offset

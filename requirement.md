@@ -11,6 +11,15 @@ Example of a state of the line:
 
 There are several modes, and only one is applied for one position of the chip on the line. Every bounded stretch of the line contains finitely many mode transitions. The mode transitions are given externally.
 
+There are "percentage rules":
+A is always 100%
+B can be:
+- 100%
+- 20% with other elements that have a total sum of 80%
+C can be:
+- 100%
+- 80% with only B
+
 There are "element rules". In an element rules, there are two sides:
 - The left side is a boolean expression manipulating element types and percentages. An element with 0% is considered absent.
 - The right side is an expression with "and", "or" and intervals of elements with percentages. The position of those intervals are relative to either the position p where the left side is met, or the l left edge (bound or unbound) of the largest continuous interval that meets the left side and includes p.

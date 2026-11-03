@@ -62,8 +62,8 @@ Beyond the elements and claims everything is invariant by translation, or repeat
 with a period q (an element that repeats); when the choices of the last stretch
 (as long as the rules reach) repeat, translated (by a multiple of q, with no ε part,
 if the data repeats), the choices repeat forever, possibly with an ε part in the
-period (1+ε). On the left of
-an element unbounded on the left there is no first position: `Undetermined`.
+period (1+ε). On an element unbounded on the left there is no first position: decided
+only if the choices do not act on each other (`_far_left`), else `Undetermined`.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ from fractions import Fraction
 
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from region import ZERO, Region, _constant, flcm
-from rules import _fgcd
+from rules import Atom, _fgcd, conjuncts
 from solver import EMPTY, Conflict, Undetermined, checkpoint, close, kinds_of, lhs_region, unbound_reach, union
 
 MAX_EVENTS = 3000
@@ -273,12 +273,14 @@ class Sweep:
     # ------------------------------------------------------------------ the sweep
     def solve(self) -> dict:
         P = self._next_active(self.none, None)
+        start = self.none
         if P == -INF:
-            raise Undetermined("an 'or' acts on an element unbounded on the left: with no first position, nothing decides "
-                               "its choices")
+            start, P = self._far_left()
         self.memo, self.failed, self.dead, self.stuck, self.first = {}, {}, [], -INF, P
         self._grid()
-        if self.rs.searched:
+        if start is not self.none:  # the choices do not act on each other: any order gives them
+            res = (start if self._valid(start, INF) else None) if P is None else self.complete(P, start, 0)[0]
+        elif self.rs.searched:
             res = self._search()
         elif P is None:  # no "or" is met anywhere
             res = self.none if self._valid(self.none, INF) else None
@@ -289,6 +291,63 @@ class Sweep:
         if res is None:
             raise Conflict("no choice of the 'or' operands satisfies the rules")
         return self._finish(res)
+
+    # ------------------------------------------------------------------ unbounded on the left
+    def _independent(self) -> bool:
+        """The choice at one position never changes which operands can be chosen at another:
+        the consequences of several choices are the union of the consequences of each.
+        That holds when nothing forbids a chosen kind but the data, each chosen kind gets
+        a single percentage, and a left side that reads a chosen kind reads one, as
+        present, and only with what no choice changes (and K) & X), placing positions
+        relative to p. Each position then takes its first operand that the rules allow
+        there alone, whatever the others chose: the order in which the positions choose
+        (requirement.md: from the closest to 0) does not matter."""
+        kin = set(self.kin)
+        if self.rs.searched or not self.rs.finite or self.probe is not None:
+            return False
+        if any(lit.kind in kin for _, _, lit in self.op_neg):
+            return False
+        values = {k: {lit.value for _, _, lit in self.op_pos[k]} for k in kin}
+        for r in self.rs.element:
+            read = set(r.lhs.kinds()) & kin
+            if not read:
+                continue
+            parts = [f for f in conjuncts(r.lhs) if set(f.kinds()) & kin]
+            if len(read) > 1 or len(parts) != 1 or not (isinstance(parts[0], Atom) and parts[0].op == "present"):
+                return False
+            for lit in r.lits():
+                if lit.negated or lit.anchor != "p":
+                    return False
+                if lit.kind in kin:
+                    values[lit.kind].add(lit.value)
+        return all(len(v) <= 1 for v in values.values())
+
+    def _far_left(self):
+        """An "or" met on an element unbounded on the left: there is no first position for
+        the sweep. If the choices do not act on each other (`_independent`), left of -T
+        every position sees the same data within the reach of the rules (the data is
+        constant beyond its ends), so they all take the same operand: the first one the
+        rules allow there. Returns those choices and the position where the sweep goes on
+        from them. Otherwise `Undetermined`."""
+        if not (self._independent() and all(_constant(reg.left, reg.pl) for reg in self.static_regions)):
+            raise Undetermined("an 'or' acts on an element unbounded on the left, and its choices act on each other: "
+                               "this solver does not decide them")
+        X = Pos(-self.T)
+        far = Region.of(Interval(-INF, X, False, False))
+        ch = self.none
+        vals = self.closure(ch, INF, check=False)
+        for ii, it in enumerate(self.items):
+            where = self._met(it, vals) & far
+            if not where:
+                continue
+            for oi in range(len(it.ops)):
+                c = _with(ch, ii, oi, where)
+                if self._valid(c, INF):
+                    ch = c
+                    break
+            else:
+                raise Conflict(f"{it.text}: no operand can be chosen on {where}")
+        return ch, self._next_active(ch, X - EPS)
 
     # ------------------------------------------------------------------ from 0 outwards
     def _cells(self, L: Fraction) -> list[tuple]:

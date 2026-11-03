@@ -168,6 +168,30 @@ class OrTest(unittest.TestCase):
         self.assertEqual(s.line.presence("C"), Region.of(Interval.closed(-5, -3)))
         self.assertEqual(s.line.presence("B"), Region.of(Interval(-INF, F(0), False, True)) - Region.of(Interval.closed(-5, -3)))
 
+    def test_unbounded_on_the_left_with_intervals(self):
+        """The sweep, with no first position: choices that do not act on each other are the
+        same in any order, so each position takes its first operand the rules allow."""
+        left = Interval(-INF, F(0), False, True)
+        rs = parse_rules(["A → B on [0, 1] or C"])  # of p
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", left)], USER)
+        self.assertEqual(s.line.presence("B"), Region.of(Interval(-INF, F(1), False, True)))
+        self.assertEqual(s.line.presence("C"), Region.empty())
+        rs = parse_rules(["A → B on [0, 1] of p or C", "B → D", "E → no B"])
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", left), Op.put("E", Interval.closed(-20, -10))], USER)
+        self.assertEqual(s.line.presence("C"), Region.of(Interval.closed(-21, -10)))
+        self.assertEqual(s.line.presence("D"), s.line.presence("B"))
+        self.assertEqual(s.line.presence("B"), Region.of(Interval(-INF, F(1), False, True)) - Region.of(Interval.closed(-20, -10)))
+
+    def test_an_or_of_l_with_no_left_edge(self):
+        """l does not exist on an element unbounded on the left: an "or" with an operand
+        relative to l cannot be decided there, and the edit is refused."""
+        left = Interval(-INF, F(0), False, True)
+        for rules in (["A → B on [0, 1] of l or C"], ["A → B at 1 of l or C at 1 of l"], ["A → B or C on [0, 1] of l"]):
+            with self.assertRaises(Refused, msg=rules):
+                apply_edit(parse_rules(rules), LineState.empty(), [Op.put("A", left)], USER)
+        s = apply_edit(parse_rules(["A → B on [0, 1] of l or C"]), LineState.empty(), [Op.put("A", Interval.closed(-3, 0))], USER)
+        self.assertEqual(s.line.presence("B"), Region.of(Interval.closed(-3, -2)))
+
     def test_both_ways_without_an_end(self):
         rs = parse_rules(ALTERNATE)
         s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval(-INF, INF, False, False))], USER)
@@ -294,7 +318,7 @@ class AnchorTest(unittest.TestCase):
 
 EXAMPLE = ["A → B or C", "B → E", "B → no E on (0, 1] of l"]  # each B alone, B more than 1 apart
 DENSE_POOL = ["A → B or C", "B → E", "B → no E on (0, 1] of l", "C → F on [0, 1/2] of l", "B → no F on [-1, 0) of p",
-              "A & C → no E 1 unit on the right", "X → no B", "X → no C on [0, 1] of p", "E → G or H", "G → no H on (0, 1]",
+              "A & C → no E 1 unit on the right", "X → no B", "X → no C on [0, 1] of p", "E → G or H", "G → no H on (0, 1] of l",
               "A → B 1/2 unit on the right of l or C 1/2 unit on the right of l", "B & F → no G"]
 
 
@@ -665,7 +689,7 @@ class SearchTest(unittest.TestCase):
     def test_p_and_l_in_one_or(self):
         """B goes 1 after p while that is free: from 0 to 1, on [1, 2). From p = 1 on it cannot:
         C on [0, 1] of l, from the left edge of A, 0."""
-        line = self.line(["A → B 1 unit on the right of p or C on [0, 1]", "X → no B"],
+        line = self.line(["A → B 1 unit on the right of p or C on [0, 1] of l", "X → no B"],
                          Op.put("A", Interval.closed(0, 2)), Op.put("X", Interval.closed(2, 3)))
         self.assertEqual(line.presence("B"), Region.of(Interval.closed_open(1, 2)))
         self.assertEqual(line.presence("C"), Region.of(Interval.closed(0, 1)))

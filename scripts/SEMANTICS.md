@@ -123,10 +123,13 @@ An element rule has the form L → R.
   - l is the left edge of the largest interval where L is met, the one that
     contains p: its first position. The literal applies at l + d, or on
     l + [a, b), once per largest interval. The left edge of (6, 8) is 6+ε.
-  - Without "of", a single position is relative to p and an interval to l.
+  - Without "of", a location is relative to p (requirement.md: "3 units on the left").
   - On a largest interval that is unbounded on the left, l is −∞ (unbound). Then
     l + d, and l + [a, b] with b finite, are at −∞, which is not on the line, so
     nothing is placed. l + [a, +∞) is the whole line (`test_no_left_edge`).
+  - An "or" with an operand relative to l, met on such an interval, cannot be
+    decided: the claims are in conflict and the edit is refused
+    (`test_an_or_of_l_with_no_left_edge`).
   - `Region.left_edges` and `Region.dilate` compute these sets exactly, tails
     included. `test_left_edges_dilate_components` checks them point by point.
 
@@ -234,7 +237,11 @@ being barred there (`Sweep._outward`, `OutwardTest`, which compares it with the 
 A cell is a stretch where nothing can change: its ends are the ends of the data moved by
 the rules, on both sides of 0, and d / 2 for each distance d. Each operand given up costs
 a whole search, so the window's time limit can refuse these edits. On an element with no
-left end, the edit is refused (`Undetermined`, gaps_to_solve_later.md).
+left end, the sweep has no first position: if the choices do not act on each other
+(`Sweep._independent`: their consequences are the union of each one's), the order does not
+matter and each position takes its first operand the rules allow; left of the data every
+position sees the same thing, so they all take the same one (`Sweep._far_left`). Otherwise
+the edit is refused (`Undetermined`).
 
 ### How it is computed exactly
 
@@ -264,9 +271,7 @@ left end, the edit is refused (`Undetermined`, gaps_to_solve_later.md).
   - When a left side reads a chosen kind as absent, a choice can also remove a
     consequence. Atoms are then true, false or unknown. A missing choice, or an
     anchor out of the window, gives unknown, and only definite violations prune.
-    So pruning stays sound without monotonicity. The left ray is then not shown
-    independent: an "or" acting on an element unbounded on the left is
-    `Undetermined` there.
+    So pruning stays sound without monotonicity.
 - **The rays.** Beyond the window the problem is translation-invariant.
   - A violation involves at most ρ + 1 consecutive points, so the choices form a
     finite automaton whose states are the last ρ + 1 choices.
@@ -276,8 +281,8 @@ left end, the edit is refused (`Undetermined`, gaps_to_solve_later.md).
   - On the right ray, the choices are then a greedy walk through good states.
     That walk repeats with a finite period, so an infinite element gives a result
     that repeats infinitely.
-  - A left ray with choices is decided only if no violation can involve the
-    choices of two positions; otherwise `Undetermined`.
+  - On the left ray, the same walk goes leftwards (the closest to 0 chooses
+    first), on the mirrored rules.
 - **The sweep.** From left to right over the positions x + kε:
   - at a position m, the "or"s met there take, in order, the leftmost operand
     that does not contradict the rules with everything on their left;

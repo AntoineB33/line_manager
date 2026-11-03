@@ -11,8 +11,8 @@ Given claims (elements placed, with percentages; "no K" elements) the line is:
   rules in written order): each position takes the leftmost operand that can be
   chosen, i.e. the first one that still lets all the other positions be placed, given
   the choices on its left. This is the lexicographically smallest feasible choice in
-  that order. On an element unbounded on the left there is no first position: if the
-  choices there act on each other, nothing decides them (`Undetermined`).
+  that order, with the positions closest to 0 first on the left of 0
+  (requirement.md), which also decides an element unbounded on the left.
 If no choice satisfies the rules (an element where it must not be, two different
 percentages required, ...), the claims are in conflict (`Conflict`).
 
@@ -31,8 +31,8 @@ each: the rules have no cycle. For the others, two solvers:
   path leaves it, and the search accepts a decision of the |x| <= T part only if both
   boundary states are good. The choices on the right ray are then the greedy walk
   through good states, which repeats with a finite period: an infinite element gives
-  a result that repeats. A left ray is decided only if its choices do not act on each
-  other (then each position simply takes its first valid operand);
+  a result that repeats. On the left ray, the same walk goes leftwards, on the mirrored
+  rules (the closest to 0 chooses first);
 - the sweep (sweep.py) otherwise: intervals and left edges make every position act
   on the positions near it.
 """
@@ -61,8 +61,9 @@ class Conflict(Exception):
 
 
 class Undetermined(Exception):
-    """The rules do not decide the "or" choices here (no first position), or deciding
-    them would take the sweep's search longer than it is allowed."""
+    """This solver does not decide the "or" choices here (the sweep, on an element unbounded
+    on the left whose choices act on each other), or deciding them would take the sweep's
+    search longer than it is allowed."""
 
 
 class Interrupted(Exception):
@@ -1005,6 +1006,27 @@ def solve(rs: RuleSet, prob: Problem) -> Line:
     vals, fixed, forbid = region_stage(rs, prob, kinds_in)
     if not has_or:
         return Line(vals)
+    _no_left_edge(rs, vals, kinds_in)
+    line = _solve_or(rs, prob, kinds_in, vals, fixed, forbid)
+    _no_left_edge(rs, line.vals, set())
+    return line
+
+
+def _no_left_edge(rs: RuleSet, vals, unknown: set) -> None:
+    """An "or" with an operand relative to l, met on a largest interval unbounded on the
+    left: l does not exist there, so the operand is not a location, and the "or" cannot be
+    decided (requirement.md): Conflict. Left sides that read `unknown` kinds are not
+    computed yet: checked once they are."""
+    for i, j in rs.or_items:
+        r = rs.element[i]
+        if set(r.lhs.kinds()) & unknown or not any(o.anchor == "l" for o in r.rhs[j].all_lits()):
+            continue
+        met = lhs_region(r.lhs, vals)
+        if met and met.inf() == -INF:
+            raise Conflict(f"{r.rhs[j]}: relative to l, met on an element with no left edge")
+
+
+def _solve_or(rs: RuleSet, prob: Problem, kinds_in, vals, fixed, forbid) -> Line:
     if not rs.lattice:
         from sweep import Sweep
         vals.update(Sweep(rs, prob, vals, fixed, forbid, kinds_in).solve())

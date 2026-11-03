@@ -11,8 +11,9 @@ An element rule is  L → R:
   A location is relative to an anchor: "at d", "d units on the left/right" or
   "on [a, b)" (default: at 0), then "of p" or "of l". p is a position where L is met;
   l is the left edge of the largest interval where L is met that contains p (a
-  largest interval unbounded on the left has no left edge: nothing is placed for it).
-  Without "of", a single position is relative to p and an interval to l. "K" requires
+  largest interval unbounded on the left has no left edge: nothing is placed for it, and
+  an "or" with an operand relative to l met there is a contradiction, solver.py).
+  Without "of", a location is relative to p. "K" requires
   K present (a consequence gets 100%), "K p%" requires exactly p, "no K" and "K 0%"
   require K absent. Positions are x + kε (intervals.py): "(0, 1] of l" is [l+ε, l+1].
 
@@ -27,7 +28,6 @@ chip, and is not kept true. With no cycle, RuleSet orders the kinds, each after 
 kinds it reads, and solver.py computes them in that order.
 
 Restrictions, checked by RuleSet:
-- the operands of an "or" are all relative to p or all relative to l;
 - a kind is "chosen" if it is a present operand of an "or" or is placed by a rule whose
   left side reads a chosen kind. A left side reads chosen kinds only as "present"
   (K, K p% with p > 0, K >= p%, K > p%), never under "not": choosing more never removes
@@ -676,8 +676,8 @@ def _lit(text: str) -> Lit:
             where = Interval.point(-d if m3.group(2) == "left" else d)
         else:
             raise RuleError(f"bad location {rest!r}")
-    if anchor is None:
-        anchor = "p" if where.is_point else "l"
+    if anchor is None:  # requirement.md: "3 units on the left" is of p
+        anchor = "p"
     return Lit(kind, where, anchor, value, negated)
 
 

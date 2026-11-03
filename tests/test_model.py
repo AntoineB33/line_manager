@@ -138,9 +138,11 @@ class RulesTest(unittest.TestCase):
         r = parse_rule("A → B 100% or C 100%")
         self.assertEqual([o.kind for o in r.rhs[0].options], ["B", "C"])
         self.assertEqual(parse_rule("A and B → C 100%").lhs, And((Atom("A"), Atom("B"))))
-        r = parse_rule("A → B 50% on [0, 2)")  # an interval: relative to l unless "of p"
-        self.assertEqual((r.rhs[0].options[0].where, r.rhs[0].options[0].anchor), (Interval.closed_open(0, 2), "l"))
-        self.assertEqual(parse_rule("A → B on [0, 2) of p").rhs[0].options[0].anchor, "p")
+        r = parse_rule("A → B 50% on [0, 2)")  # without "of": relative to p (requirement.md)
+        self.assertEqual((r.rhs[0].options[0].where, r.rhs[0].options[0].anchor), (Interval.closed_open(0, 2), "p"))
+        self.assertEqual(parse_rule("A → B on [0, 2) of l").rhs[0].options[0].anchor, "l")
+        r = parse_rule("A or B → C 100% 2 units on the right of l or D 100% 3 units on the left")  # requirement.md
+        self.assertEqual([(o.kind, o.rel, o.anchor) for o in r.rhs[0].options], [("C", 2, "l"), ("D", -3, "p")])
         self.assertEqual(parse_rule("A → B on (0, 1] of l").rhs[0].options[0].where, Interval.closed(EPS, 1))
         r = parse_rule("if element A, then element B 1 unit on the right")
         self.assertEqual((r.lhs, r.rhs[0].options[0].rel), (Atom("A"), 1))
@@ -212,7 +214,7 @@ class RulesTest(unittest.TestCase):
                     ):
             with self.assertRaises(RuleError, msg=bad):
                 parse_rules(bad)
-        for searched in (["A → B or C on [0, 1]"], ["A → B 1 unit on the right of l or C"],  # p and l in one "or"
+        for searched in (["A → B or C on [0, 1] of l"], ["A → B 1 unit on the right of l or C"],  # p and l in one "or"
                          ["A → (B 1 unit on the right of l & C 1 unit on the right of l) or D"],
                          ["A → (B 1 unit on the right of l & C) or D"],  # p and l in one operand
                          ["A → B or C", "not B → E on [0, 1] of p"], ["A → B or C", "B < 50% & A → E"],  # read as absent
@@ -223,8 +225,8 @@ class RulesTest(unittest.TestCase):
         for absent in (["A → B or C", "not B → E"], ["A → B or C", "B 0% → E"], ["A → B or C", "A & not B → no C 1 unit on the right"]):
             self.assertTrue(parse_rules(absent).lattice, absent)
         parse_rules(["A → B on [0, 2] of p"])  # an interval relative to p
-        for sweep in (["A → B or no C"], ["A → B or C", "B → E", "B → no E on (0, 1]"], ["A → B or C", "B → E at 1 of l"],
-                      ["A → B or C", "B | X → E"], ["A → B or C on [0, 1] of p"], ["A → B or C", "B >= 50% → E on [0, 1)"]):
+        for sweep in (["A → B or no C"], ["A → B or C", "B → E", "B → no E on (0, 1] of l"], ["A → B or C", "B → E at 1 of l"],
+                      ["A → B or C", "B | X → E"], ["A → B or C on [0, 1] of p"], ["A → B or C", "B >= 50% → E on [0, 1) of l"]):
             self.assertFalse(parse_rules(sweep).lattice, sweep)
         rs = parse_rules(["A → B", "C & A → D", "A → E or F"])
         self.assertEqual([rs.rank[k] for k in "ABCDEF"], [0, 1, 2, 3, 4, 5])

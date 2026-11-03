@@ -18,7 +18,8 @@ There are "element rules". In an element rules, there are two sides:
 Examples:
 - A → B 100%
 - A → B 0%
-- A & B → C 45% 3 units on the left of p
+- A & B → C 45% 3 units on the left
+- A or B → C 100% 2 units on the right of l or D 100% 3 units on the left
 
 The rules must not have a cycle dependency.
 The rules must be deterministic.

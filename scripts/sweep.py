@@ -82,7 +82,7 @@ from fractions import Fraction
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from region import ZERO, Region, _constant, flcm
 from rules import _fgcd
-from solver import EMPTY, Conflict, Undetermined, checkpoint, close, kinds_of, lhs_region, unbound_reach, union
+from solver import EMPTY, Conflict, NoLine, Undetermined, checkpoint, close, kinds_of, lhs_region, unbound_reach, union
 
 MAX_EVENTS = 3000
 MAX_CALLS = 3000
@@ -120,6 +120,13 @@ def _ends(reg: Region, lo, hi) -> list:
     return [e for iv in reg.on(lo, hi).intervals for e in (iv.lo, iv.hi)]
 
 
+class _Views(dict):
+    """kind -> where it is present, for reading values with `Formula.region2`."""
+
+    def __init__(self, vals: dict) -> None:
+        super().__init__({k: union(d.values()) for k, d in vals.items()})
+
+
 class Sweep:
     def __init__(self, rs, prob, vals, fixed, forbid, kinds_in, probe=None, shared=None) -> None:
         self.rs = rs
@@ -137,7 +144,8 @@ class Sweep:
             for k, v in probe[1]:
                 self.claims[k][v] = self.claims[k].get(v, EMPTY) | Region.point(probe[0] - EPS)
         self.kin = [k for k in kinds_of(rs, prob) if k in kinds_in]
-        self.items = [_Item(i, rs.element[i].lhs, rs.element[i].rhs[j].options[0].anchor, rs.element[i].rhs[j].options,
+        self.items = [_Item(i, rs.element[i].lhs, "p" if len({o.anchor for o in rs.element[i].rhs[j].options}) > 1 else
+                            rs.element[i].rhs[j].options[0].anchor, rs.element[i].rhs[j].options,
                             str(rs.element[i].rhs[j])) for i, j in rs.or_items]
         self.pos_lits = {k: [] for k in self.kin}
         self.neg_lits = []
@@ -216,7 +224,7 @@ class Sweep:
             for ii, oi, o in self.op_pos[K]:
                 b = ch[ii][oi]
                 if b:
-                    t = _target(o, b)
+                    t = _target(o, self._from(ii, o, b))
                     if o.value is None:
                         plain = plain | t
                     else:
@@ -243,7 +251,7 @@ class Sweep:
             forbid[o.kind] = forbid.get(o.kind, EMPTY) | (Region.universe() if unbound_reach(o, anchors[i]) else t)
         for ii, oi, o in self.op_neg:
             if ch[ii][oi]:
-                forbid[o.kind] = forbid.get(o.kind, EMPTY) | _target(o, ch[ii][oi])
+                forbid[o.kind] = forbid.get(o.kind, EMPTY) | _target(o, self._from(ii, o, ch[ii][oi]))
         if forbids:
             return vals, forbid
         for k, f in forbid.items():
@@ -251,6 +259,17 @@ class Sweep:
             if bad:
                 raise Conflict(f"{k} is required to be absent on {bad}")
         return vals
+
+    def _from(self, ii: int, o, b: Region) -> Region:
+        """What the operand o of this "or" is relative to, when the "or" chose on b: b, or
+        (an "or" that mixes p and l) the left edges of the largest intervals of b."""
+        it = self.items[ii]
+        if o.anchor == it.anchor:
+            return b
+        if set(it.lhs.kinds()) & set(self.kin):
+            raise Undetermined(f"{it.text}: operands relative to p and to l, on a left side that an 'or' can change")
+        met = lhs_region(it.lhs, self.vals0)
+        return union(c for c in met.components() if c & b).left_edges()
 
     def _valid(self, ch, horizon) -> bool:
         try:
@@ -267,7 +286,9 @@ class Sweep:
                                "its choices")
         self.memo, self.failed, self.dead, self.stuck, self.first = {}, {}, [], -INF, P
         self._grid()
-        if P is None:  # no "or" is met anywhere
+        if self.rs.searched:
+            res = self._search()
+        elif P is None:  # no "or" is met anywhere
             res = self.none if self._valid(self.none, INF) else None
         elif P < 0 and not self.rs.pointwise and self.probe is None:  # (a probe only asks if a solution exists)
             res = self._outward(P)
@@ -299,6 +320,108 @@ class Sweep:
             p = cell[1]
             return abs(p.x), (p.k if p.x > 0 else -p.k if p.x < 0 else abs(p.k)), p.x < 0 or (p.x == 0 and p.k < 0)
         return sorted(out, key=turn)
+
+    def _search(self) -> list | None:
+        """The choices of the definition with no order to rely on: the cells from the closest
+        to 0, each "or" met there taking its operands in turn, up to a line where the rules
+        hold, every anchor has its choice and every choice its anchor. A contradiction stops
+        an operand at once only if choosing more cannot take it away (`RuleSet.settled`).
+        Past the data the choices are not followed: the edit is refused."""
+        cells = self._cells(self.T)
+        J = self.rs.eps_reach
+        far = _after(Pos(self.T, J)) | Region.of(Interval(-INF, Pos(-self.T, -J), False, False))
+
+        def nxt(ch):
+            vals = self.closure(ch, INF, check=False)
+            for reg, p in cells:
+                for ii, it in enumerate(self.items):
+                    if self._active(it, vals, p) and not any(r.contains(p) for r in ch[ii]):
+                        if it.anchor == "l":
+                            return vals, ii, Region.point(p)
+                        if not reg.issubset(self._met(it, vals)):
+                            raise Undetermined(f"the sweep could not place exactly where a choice changes around {p}")
+                        return vals, ii, reg
+            return vals, None, None
+
+        def good(ch, vals) -> bool:
+            if not self._valid(ch, INF):
+                return False
+            for ii, it in enumerate(self.items):
+                met = self._met(it, vals)
+                if met & far:
+                    raise Undetermined("the choices of these rules are only searched on bounded elements")
+                if not all(r.issubset(met) for r in ch[ii]):
+                    return False  # a choice that took its own anchor away
+            return True
+
+        window = union(reg for reg, _ in cells)
+
+        def doomed(ch) -> bool:
+            """A contradiction no further choice can take away: what is placed for sure, the
+            absences read from the most that can still be placed, against what is forbidden
+            for sure. Rules relative to l are left out: their left edges can still move."""
+            most = [[r | (window - union(row)) for r in row] for row in ch]
+            low, high = self.closure(ch, INF, check=False), self.closure(most, INF, check=False)
+            ph = _Views(high)
+            sure = {k: dict(d) for k, d in low.items() if k not in self.kin}
+
+            def put(k, v, r):
+                d = sure.setdefault(k, {})
+                d[v] = d.get(v, EMPTY) | r
+            for k in self.kin:
+                plain, exact = self.fixed.get(k, (EMPTY, {}))
+                put(k, Fraction(100), plain)
+                for v, r in [*exact.items(), *self.claims.get(k, {}).items()]:
+                    put(k, v, r)
+            for ii, oi, o in (x for k in self.kin for x in self.op_pos[k]):
+                if ch[ii][oi] and o.anchor == self.items[ii].anchor:
+                    put(o.kind, o.value or Fraction(100), _target(o, ch[ii][oi]))
+            forbid = dict(self.forbid0)
+            for ii, oi, o in self.op_neg:
+                if ch[ii][oi] and o.anchor == self.items[ii].anchor:
+                    forbid[o.kind] = forbid.get(o.kind, EMPTY) | _target(o, ch[ii][oi])
+            U = Region.universe()
+            for _ in range(len(self.kin) + 1):
+                ps = _Views(sure)
+                for r in self.rs.element:
+                    if set(r.lhs.kinds()) & set(self.kin):
+                        m = r.lhs.region2((sure, ps), (high, ph), U, EMPTY)
+                        for it in r.rhs:
+                            o = it.options[0]
+                            if it.is_or or o.anchor != "p" or not m:
+                                continue
+                            if o.negated:
+                                forbid[o.kind] = forbid.get(o.kind, EMPTY) | _target(o, m)
+                            elif o.kind in self.kin:
+                                put(o.kind, o.value or Fraction(100), _target(o, m))
+            ps = _Views(sure)
+            return any(ps.get(k, EMPTY) & f for k, f in forbid.items())
+
+        def go(ch):
+            checkpoint()
+            self.shared["calls"] += 1
+            if self.shared["calls"] > self.shared["limit"]:
+                raise Undetermined(f"deciding the choices takes more than {MAX_CALLS} attempts")
+            try:
+                if doomed(ch):
+                    return None
+                vals, ii, where = nxt(ch)
+            except NoLine:
+                return None
+            if ii is None:
+                try:
+                    return ch if good(ch, vals) else None
+                except NoLine:
+                    return None
+            for oi in range(len(self.items[ii].ops)):
+                c = _with(ch, ii, oi, where)
+                if self.rs.settled and not self._valid(c, INF):
+                    continue
+                out = go(c)
+                if out is not None:
+                    return out
+            return None
+        return go(self.none)
 
     def _outward(self, P) -> list | None:
         """The choices of the definition when they act on each other on the left of 0. The

@@ -59,16 +59,14 @@ is newer than the edits made before it, so what they lost there leaves them for 
      removing B loses B and C; the tie keeps A, so B and C are removed.
    - Each stretch of a conflict is a conflict. Those that lose no element in common
      are decided apart; together, those that do, by a search over their combinations,
-     which knows what each must lose whatever is chosen. Past MAX_SEARCH steps the
-     edit is refused. Past MAX_SPLIT stretches, they are decided one after the other
-     instead: that is not always the fewest.
+     which knows what each must lose whatever is chosen. Past MAX_SEARCH steps, MAX_SPLIT
+     stretches or MAX_OPTIONS combinations the edit is refused.
    - Otherwise, older elements are removed whole. That is a conflict these requirements
      do not explain (through the "or" choices), one that no combination removes, a line
      with the edit whose "or" choices are not decided or not computed in time
-     (`Undetermined`), or too many conflicts one after the other. The fewest of those
-     near the edit are searched, one element, then two, and so on, the fewest lost among
-     them. If none works, the elements of the line are removed one after the other until
-     the claims are consistent and decided, and each is put back if they stay so.
+     (`Undetermined`), or too many conflicts one after the other. The fewest are searched,
+     those near the edit first, one element, then two, and so on, the fewest lost among
+     them. Past MAX_SEARCH steps the edit is refused.
 4. The operands of "or" are then chosen as in solver.py.
 
 So an edit is refused only when it has no result on its own (step 2), never because
@@ -90,7 +88,7 @@ from region import ZERO, IncompatiblePeriods, Region
 from rules import And, Atom, Not, Or, RuleSet, is_hidden
 from solver import EMPTY, Conflict, Line, Problem, Undetermined, close, kinds_of, lhs_region, solve, target, union
 
-MAX_OPTIONS = 64  # combinations kept per requirement (the smallest first)
+MAX_OPTIONS = 4096  # combinations of one requirement: beyond, the edit is refused
 MAX_DEPTH = 400  # rules followed back from one requirement; beyond: whole elements (fast)
 MAX_WINDOWS = 40  # times a window around an edit grows (each time twice as far)
 MAX_SEARCH = 4096  # steps of the search for the fewest elements lost: beyond, the edit is refused
@@ -850,7 +848,7 @@ class _Resolution:
         lost, the leftmost kept on a tie, or None."""
         todo = sorted(_stretches(lines.conflicts), key=lambda c: c[0].inf())
         if len(todo) > MAX_SPLIT:
-            todo = [min(lines.conflicts, key=lambda c: c[0].inf())]
+            raise Refused("too many conflicts to find the fewest elements to change")
         base = self.lost(lines, removed)
         found = [(c, w) for c, w in ((c, self.works(lines, c, removed)) for c in todo) if w]
         out = removed
@@ -976,10 +974,9 @@ class _Resolution:
         rank = lambda i: self.rs.rank.get(_kind(self.older[i][0]), 10 ** 6)
         order = sorted((i for i in range(len(self.older)) if self.older[i][1] - removed.get(i, EMPTY)),
                        key=lambda i: (not (self.older[i][1] & self.near), self.older[i][1].inf(), rank(i)))
-        near = [i for i in order if self.older[i][1] & self.near]
-        for size in range(1, len(near) + 1):
+        for size in range(1, len(order) + 1):
             best = None
-            for some in itertools.combinations(near, size):
+            for some in itertools.combinations(order, size):
                 self.tick()
                 cur = dict(removed)
                 for i in some:
@@ -990,23 +987,7 @@ class _Resolution:
                         best = cand
             if best is not None:
                 return best[1]
-        cur, added = dict(removed), []
-        for i in order:
-            cur[i] = self.older[i][1]
-            added.append(i)
-            if self.consistent(cur):
-                break
-        else:
-            raise Refused("no removal of older elements resolves the conflict")
-        for i in reversed(added):
-            trial = dict(cur)
-            if i in removed:
-                trial[i] = removed[i]
-            else:
-                del trial[i]
-            if self.consistent(trial):
-                cur = trial
-        return cur
+        raise Refused("no removal of the fewest older elements resolves the conflict in reasonable time")
 
 
 class _Best:
@@ -1097,8 +1078,10 @@ def _combine(choices: list[list[frozenset]]) -> list[frozenset]:
 
 
 def _cap(opts) -> list[frozenset]:
-    """The combinations, the smallest first, at most MAX_OPTIONS of them."""
-    return sorted(set(opts), key=lambda o: (len(o), sorted(i for i, _ in o)))[:MAX_OPTIONS]
+    """The combinations, the smallest first; more than MAX_OPTIONS: the edit is refused."""
+    if len(set(opts)) > MAX_OPTIONS:
+        raise Refused("too many combinations to find the fewest elements to change")
+    return sorted(set(opts), key=lambda o: (len(o), sorted(i for i, _ in o)))
 
 
 def _without(c1: Claims, drop) -> Claims:

@@ -12,7 +12,7 @@ from line import GEN, USER, LineState, Op
 from region import Region
 from resolve import Refused, apply_edit, initial_state
 from rules import RuleError, parse_rules
-from solver import Conflict, Problem, Undetermined, lhs_region, region_stage, solve
+from solver import Conflict, NoLine, Problem, Undetermined, lhs_region, possible, region_stage, solve
 from sweep import Sweep
 
 # kinds only act on later kinds (A < B < ... < E): no cycle
@@ -691,6 +691,77 @@ class ClosestToZeroTest(unittest.TestCase):
             self.assertEqual(s.line.presence("C"), Region.of(Interval.closed(-hi, F(-1, 2))) | Region.of(c))
 
 
+class EpsilonChainTest(unittest.TestCase):
+    def test_a_line_not_computed_is_not_an_impossible_set(self):
+        """Q goes on at 2 + ε, 3 + 2ε, ... and comes back to 1 + kε for every k: the line
+        exists and is not computed, so the edit is refused, and the set of rules is not."""
+        rules = ["Q → R on (0, 1/2] of l", "R → Q 1 unit on the right of l", "Q & Z → Q 1 unit on the left"]
+        self.assertIsNone(possible(parse_rules(rules)))
+        with self.assertRaises(Refused) as e:
+            apply_edit(parse_rules(rules), LineState.empty(), [Op.put("Q", Interval.point(1)), Op.put("Z", Interval.closed(2, 12))], USER)
+        self.assertNotIn("no line", str(e.exception))
+
+
+class SearchTest(unittest.TestCase):
+    """The rules no order goes through: the choices are searched."""
+
+    def line(self, rules, *ops):
+        return apply_edit(parse_rules(rules), LineState.empty(), list(ops), USER).line
+
+    def test_p_and_l_in_one_or(self):
+        """B goes 1 after p while that is free: from 0 to 1, on [1, 2). From p = 1 on it cannot:
+        C on [0, 1] of l, from the left edge of A, 0."""
+        line = self.line(["A → B 1 unit on the right of p or C on [0, 1]", "X → no B"],
+                         Op.put("A", Interval.closed(0, 2)), Op.put("X", Interval.closed(2, 3)))
+        self.assertEqual(line.presence("B"), Region.of(Interval.closed_open(1, 2)))
+        self.assertEqual(line.presence("C"), Region.of(Interval.closed(0, 1)))
+
+    def test_a_chosen_kind_read_as_absent(self):
+        line = self.line(["A → B or C", "not B & A → E on [0, 1] of p"], Op.put("A", Interval.closed(0, 1)))
+        self.assertEqual(line.presence("B"), Region.of(Interval.closed(0, 1)))
+        self.assertFalse(line.presence("E"))
+
+    def test_the_first_operand_gives_way_to_an_absence(self):
+        """B would need C on its right, which is forbidden, so A takes D."""
+        line = self.line(["A → B or D", "not D & B → C on [0, 1] of p", "X → no C"],
+                         Op.put("A", Interval.closed(0, 1)), Op.put("X", Interval.closed(0, 3)))
+        self.assertEqual(line.presence("D"), Region.of(Interval.closed(0, 1)))
+        self.assertFalse(line.presence("B"))
+
+    def test_placed_before_its_decision(self):
+        line = self.line(["K6 → K0 1 unit on the left of p or no K0", "K0 → X", "A → K0 or Y"], Op.put("K6", Interval.point(1)))
+        self.assertTrue(line.presence("K0").contains(0))
+        self.assertTrue(line.presence("X").contains(0))
+
+    def test_matches_the_lattices(self):
+        """Where both apply, the search gives the lattices' line."""
+        rng = random.Random(5)
+        n = 0
+        for _ in range(60):
+            try:
+                rs = parse_rules(rng.sample(ABSENT_POOL, rng.randint(2, 4)))
+            except RuleError:
+                continue
+            if not rs.or_items or not rs.lattice:
+                continue
+            ops = [Op.put(rng.choice("ABCD"), Interval.point(rng.randint(-3, 3))) for _ in range(rng.randint(1, 3))]
+            try:
+                c = apply_edit(parse_rules([]), LineState.empty(), ops, USER).claims
+                want = solve(rs, c.problem())
+            except (Conflict, Undetermined, Refused):
+                continue
+            rs.searched = True
+            try:
+                got = run_sweep(rs, c.problem())
+            except Undetermined:
+                continue
+            for k in rs.choice_dependent:
+                self.assertEqual({v: r for v, r in got.get(k, {}).items() if r}, {v: r for v, r in want.vals.get(k, {}).items() if r},
+                                 ([str(r) for r in rs.rules], [str(o) for o in ops], k))
+            n += 1
+        self.assertGreater(n, 8)
+
+
 class OutwardTest(unittest.TestCase):
     """The sweep from 0 outwards, on both sides of 0."""
 
@@ -813,16 +884,23 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(line.presence("B"), Region.of(Interval.closed(0, 1)))
 
     def test_through_not(self):
-        """Decided: B where C is and A is not, A one unit after a B. Not decided: B is
-        needed exactly where it is absent, or B and C each need the other absent (two
-        results): the edit is refused."""
+        """Decided: B where C is and A is not, A one unit after a B. B needed exactly where
+        it is absent has no line: the edit is refused, and the set of rules. B and C each
+        needing the other absent have two lines: the first rule wins."""
         line = self.line(["not A & C → B", "B → A 1 unit on the right"], [("C", Interval.closed(0, 3))])
         self.assertEqual(line.presence("B"), Region.of(IntervalSet.of(Interval.closed_open(0, 1), Interval.closed_open(2, 3))))
-        for rules in (["X & not B → B"], ["X & not C → B", "X & not B → C"]):
-            with self.assertRaises(Undetermined, msg=rules):
-                self.line(rules, [("X", Interval.point(0))])
-            with self.assertRaises(Refused, msg=rules):
-                apply_edit(parse_rules(rules), LineState.empty(), [Op.put("X", Interval.point(0))], USER)
+        with self.assertRaises(NoLine):
+            self.line(["X & not B → B"], [("X", Interval.point(0))])
+        with self.assertRaises(Refused):
+            apply_edit(parse_rules(["X & not B → B"]), LineState.empty(), [Op.put("X", Interval.point(0))], USER)
+        self.assertTrue(possible(parse_rules(["X & not B → B"])))
+        self.assertTrue(possible(parse_rules(["not B → B"])))
+        self.assertIsNone(possible(parse_rules(["X & not C → B", "X & not B → C"])))
+        self.assertIsNone(possible(parse_rules(["A → B", "B → no A"])))  # (A is forbidden: a constraint)
+        for rules, kind, other in ((["X & not C → B", "X & not B → C"], "B", "C"), (["X & not B → C", "X & not C → B"], "C", "B")):
+            line = self.line(rules, [("X", Interval.closed(0, 1))])
+            self.assertEqual(line.presence(kind), Region.of(Interval.closed(0, 1)))
+            self.assertFalse(line.presence(other))
         # "no B" is an element of kind B: B → no B 1 unit on the right is a constraint
         line = self.line(["B → no B 1 unit on the right", "A → B"], [("A", Interval.closed(0, F(1, 2)))])
         self.assertEqual(line.presence("B"), Region.of(Interval.closed(0, F(1, 2))))

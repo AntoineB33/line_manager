@@ -289,9 +289,6 @@ class RuleSet:
                 rank.setdefault(k, len(rank))
         self.rank = rank
         for r in self.rules:
-            for it in r.rhs:
-                if it.is_or and len({o.anchor for o in it.options}) > 1:
-                    raise RuleError(f"{r}: the operands of an 'or' are all relative to p or all relative to l")
             if r.is_mode_rule and any(o.anchor != "p" or o.where != Interval.point(0) for o in r.lits() + r.written_lits()):
                 raise RuleError(f"{r}: a mode rule can only act at the position of the chip")
             if not r.is_mode_rule and not r.lhs.kinds():
@@ -330,6 +327,8 @@ class RuleSet:
         # each element rule's left side as (chosen kinds that must be present, chosen kinds
         # that must be absent, the rest), and which solver the choices need
         lattice = all(not o.negated and o.is_point for r in self.element for it in r.rhs if it.is_or for o in it.options)
+        self.mixed = any(len({o.anchor for o in it.options}) > 1 for r in self.element for it in r.rhs if it.is_or)
+        lattice = lattice and not self.mixed
         self.split: list[tuple[tuple[str, ...], tuple[str, ...], object]] = []
         absent_read = []  # the rules that read a chosen kind as absent: the lattices only
         for r in self.element:
@@ -357,11 +356,10 @@ class RuleSet:
         if dep & self.cyclic and (dep & self.moving or absent_read):
             lattice = False
         self.lattice = lattice
-        if absent_read and not lattice:
-            r, read = absent_read[0]
-            raise RuleError(f"{r}: a kind an 'or' can change ({', '.join(sorted(read))}) can only be required present "
-                            "(not under 'not', not below a percentage) when the choices need intervals or left edges, "
-                            "or when those kinds place each other in a cycle")
+        # no method goes from left to right (a choice can take a consequence away, or act on
+        # what is decided): the choices are searched (`Sweep._search`)
+        self.searched = bool(self.mixed or (absent_read and not lattice))
+        self.settled = not absent_read and not any(o.anchor == "l" for r in self.element for o in r.lits() if o.kind in dep)
         # causal: a chosen kind that a left side reads is placed at or after the position
         # where it is decided (needed by the sweep)
         read_kinds = {k for r in self.element for k in r.lhs.kinds()}
@@ -372,9 +370,7 @@ class RuleSet:
                 for o in it.options:
                     if (it.is_or or decided) and not o.negated and o.kind in dep and o.kind in read_kinds and o.where.lo < 0:
                         self.causal = False
-                        if not lattice:
-                            raise RuleError(f"{r}: {o.kind} is read by a left side and an 'or' can change it, so it is placed "
-                                            "at or after the position where it is decided (an offset >= 0)")
+                        self.searched = self.searched or not lattice
         # the "or" items, in the order they are decided at one position: an item whose
         # left side reads what another item can place comes after it, else rule order
         items = [(i, j) for i, r in enumerate(self.element) for j, it in enumerate(r.rhs) if it.is_or]
@@ -803,9 +799,8 @@ def parse_rule(text: str) -> Rule:
             items.append(Item((node[1],)))
             continue
         lits = _lits_of(node)
-        if len({o.anchor for o in lits}) > 1:
-            raise RuleError(f"{text}: the operands of an 'or' are all relative to p or all relative to l")
-        anchor = lits[0].anchor
+        if any(len({o.anchor for o in conj}) > 1 for conj in _operands(node)):
+            raise RuleError(f"{text}: the elements of an operand 'and' are all relative to p or all relative to l")
         opts, hidden = [], False
         for conj in _operands(node):
             if len(conj) == 1:
@@ -814,7 +809,7 @@ def parse_rule(text: str) -> Rule:
             # the operand "B & C" is the hidden kind §(B & C), placed where the operand
             # goes, whose rule places B and C (relative to it: at l, it is l itself)
             name = HIDDEN + "(" + " & ".join(map(str, conj)) + ")"
-            opts.append(Lit(name, Interval.point(0), anchor))
+            opts.append(Lit(name, Interval.point(0), conj[0].anchor))
             inner = tuple(Item((Lit(o.kind, o.where, "p", o.value, o.negated),)) for o in conj)
             internal.append(Rule(Atom(name), None, inner, f"{name} → " + " & ".join(map(str, conj))))
             hidden = True

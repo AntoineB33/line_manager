@@ -55,7 +55,7 @@ from fractions import Fraction
 
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from region import ZERO, IncompatiblePeriods, Region, flcm
-from rules import Atom, Not, RuleSet, is_hidden, lattice_step
+from rules import Atom, Not, RuleSet, conjuncts, is_hidden, lattice_step
 
 sys.setrecursionlimit(20000)
 
@@ -67,6 +67,10 @@ class Conflict(Exception):
 class Undetermined(Exception):
     """The rules do not decide the "or" choices here (no first position), or deciding
     them would take the sweep's search longer than it is allowed."""
+
+
+class NoLine(Undetermined):
+    """The rules have no line here: what a cycle needs is what it reads as absent."""
 
 
 class Interrupted(Exception):
@@ -245,6 +249,26 @@ MAX_ROUNDS = 40  # rounds of the alternating fixpoint
 MAX_LAG = 4  # steps over which what a cycle places is looked at for a translation
 
 
+def possible(rs: RuleSet) -> str | None:
+    """Why this set of rules is impossible to satisfy, if it is: no line on its own, or with
+    the elements a left side asks for."""
+    probes = [{}]
+    for r in rs.element:
+        wanted = {}
+        for f in conjuncts(r.lhs):
+            if isinstance(f, Atom) and f.op in ("present", "=", ">=", ">") and (f.op == "present" or f.value):
+                wanted[f.kind] = Fraction(100) if f.op == "present" or f.op == ">" else f.value
+        probes.append(wanted)
+    for wanted in probes:
+        try:
+            solve(rs, Problem({k: {v: Region.point(Pos(0))} for k, v in wanted.items()}, {}))
+        except NoLine as e:
+            return f"{e}" + (f", with {', '.join(wanted)}" if wanted else "")
+        except (Conflict, Undetermined, IncompatiblePeriods):
+            pass  # a contradiction with these elements forbids them: it is a constraint
+    return None
+
+
 def close(rs: RuleSet, kinds: list[str], lits, claims: dict, base: dict, extra: dict, check: bool = True,
           mask: Region | None = None, met: dict | None = None) -> dict[str, dict[Fraction, Region]]:
     """The values of `kinds` (closed under the rules' groups: rs.blocks): the least state
@@ -261,8 +285,8 @@ def close(rs: RuleSet, kinds: list[str], lits, claims: dict, base: dict, extra: 
     "K < p%", or a left edge, which needs the position before it absent) the alternating
     fixpoint: the least fixpoint with the absences read from an overestimate gives an
     underestimate, and the other way round, until both stop changing. If they then
-    differ, the rules do not decide the line (A & not B → B; or "A & not C → B" with
-    "A & not B → C", which has two results): `Undetermined`. Raises Conflict (if check)."""
+    differ, the first rule wins ("A & not C → B" with "A & not B → C": B, `_Group.first`);
+    if no rule can, there is no line (A & not B → B): `NoLine`. Raises Conflict (if check)."""
     vals = dict(base)
     pres = _Presence(vals)
     by_kind: dict[str, list] = {}
@@ -329,11 +353,40 @@ class _Group:
             if _same(nxt, over):
                 return nxt
             if _same(nxt, under):
-                raise Undetermined("the rules do not decide the line: a cycle reads as absent what it places "
-                                   f"({', '.join(self.block)})")
+                return self.first(under, over)
             under = nxt
             over = self.least(under)
         raise Undetermined(f"a cycle of the rules ({', '.join(self.block)}) is not decided in {MAX_ROUNDS} rounds")
+
+    def first(self, under: dict, over: dict) -> dict:
+        """The rules leave undecided what is between under and over: the first rule that
+        can apply does, with what it places, and the others follow from it. It can if the
+        result holds with no help: the steps from nothing, absences read from it, give it."""
+        lits, extra = self.lits, self.extra
+        try:
+            for lit in sorted(lits, key=lambda x: x[0]):
+                self.lits = [lit]
+                self.extra = extra
+                placed = self.step(over, under)
+                self.extra = dict(extra)
+                for K in self.block:
+                    plain, exact = extra.get(K, (EMPTY, {}))
+                    self.extra[K] = (plain | placed[K][0], {**exact, **{v: exact.get(v, EMPTY) | r for v, r in placed[K][1].items()}})
+                if _same(placed, under) or all(self.extra[K][0].issubset(under[K][0]) and not self.extra[K][1] for K in self.block):
+                    continue
+                self.lits = lits
+                try:
+                    out = self.solve()
+                except NoLine:
+                    continue
+                self.extra = extra
+                if _same(self.least(out), out):
+                    return out
+        finally:
+            self.lits, self.extra = lits, extra
+        if self.rs.drifts:  # its steps do not end: what they left undecided says nothing of the line
+            raise Undetermined(f"a cycle of the rules moves ε parts ({', '.join(self.block)}): its line is not computed")
+        raise NoLine(f"no line satisfies the rules: a cycle reads as absent what it places ({', '.join(self.block)})")
 
     def _keys(self, *states) -> list:
         """(kind, None) for the plain elements of a kind, (kind, value) for its exact ones."""

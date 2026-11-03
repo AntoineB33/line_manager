@@ -199,23 +199,21 @@ class RulesTest(unittest.TestCase):
         rs = parse_rules(["A → B or C", "B → A or D 1 unit on the right"])
         self.assertEqual(rs.or_items, [(0, 0), (1, 0)])
         # a cycle through what an "or" changes: on lattices if it stays at one position
-        # and reads it as present, else by the sweep (with the sweep's conditions)
+        # and reads it as present, else by the sweep, or the search
         self.assertTrue(parse_rules(["A → B or C", "B → D", "D → B"]).lattice)
         self.assertFalse(parse_rules(["A → B or C", "B → D 1 unit on the right", "D → B"]).lattice)
-        with self.assertRaises(RuleError):
-            parse_rules(["A → B or C", "B → D", "D & not C → B"])
+        self.assertTrue(parse_rules(["A → B or C", "B → D", "D & not C → B"]).searched)
 
     def test_restrictions(self):
         for bad in (["mode 1 → D 1 unit on the right"],  # mode rules act at the chip only
-                    ["A → B or C on [0, 1]"],  # C on an interval is relative to l: all of p or all of l
-                    ["A → B 1 unit on the right of l or C"],
-                    # read as absent: on lattices only (single positions relative to p)
-                    ["A → B or C", "not B → E on [0, 1] of p"],
-                    ["A → B or C", "B < 50% & A → E"],
-                    # decided by the sweep: a chosen kind a left side reads is not placed before its decision
-                    ["A → B or C", "B → E on [-1, 0] of l", "E → no F on (0, 1] of l"]):
+                    ["A → (B 1 unit on the right of l & C) or D"]):  # one operand: all of p or all of l
             with self.assertRaises(RuleError, msg=bad):
                 parse_rules(bad)
+        for searched in (["A → B or C on [0, 1]"], ["A → B 1 unit on the right of l or C"],  # p and l in one "or"
+                         ["A → (B 1 unit on the right of l & C 1 unit on the right of l) or D"],
+                         ["A → B or C", "not B → E on [0, 1] of p"], ["A → B or C", "B < 50% & A → E"],  # read as absent
+                         ["A → B or C", "B → E on [-1, 0] of l", "E → no F on (0, 1] of l"]):  # placed before its decision
+            self.assertTrue(parse_rules(searched).searched, searched)
         rs = parse_rules(["A → B or C", "B & not X → E 1 unit on the left", "A → B at 1 of l or C at 1 of l", "X → no B on [0, 2] of l"])
         self.assertTrue(rs.lattice)
         for absent in (["A → B or C", "not B → E"], ["A → B or C", "B 0% → E"], ["A → B or C", "A & not B → no C 1 unit on the right"]):

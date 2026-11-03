@@ -246,8 +246,8 @@ class RulesGenerator:
         best_key, best_label, current = ctx.score(base), "no-op", base
         stats.work, stats.valid = 1, 1
         edits: list[Event] = []  # one for each stage that edits
-        after_edits: list[Event] | None = None
         began = time.perf_counter()
+        after_edits: list[Event] | None = None
         for i, hi in enumerate(frontiers):
             ctx.state = current
             until = time.perf_counter() + float(SEARCH_TIME) if self.endless else None

@@ -157,13 +157,30 @@ right`, or `A → B 1% 1 unit on the right of l` with `B → A 10%`.
   only if it does not move and is read as present only. Otherwise one choice would
   act without end, and the sweep decides, with its conditions below.
 
-### Restrictions (`RuleError`)
+### The first rule wins, and impossible sets of rules
 
-- **Operands of "or"** are all relative to p or all relative to l. Relative to
-  l, one choice is made per largest interval, at its left edge.
+- **Deterministic.** Where the rules leave two lines, the first rule of the list that can
+  apply does, and the others follow from it (`_Group.first`): with `X & not C → B` and
+  `X & not B → C`, X gives B and no C. It can apply if the result holds with no help.
+  This chooses between lines where the rules hold: it does not let a rule break another.
+- **Impossible.** A set of rules that has no line, on its own or with the elements a left
+  side asks for (`X & not B → B`, `not B → B`), is refused (`solver.possible`). A plain
+  contradiction with an element, `A → B` with `B → no A`, forbids A: that is a constraint,
+  and the edit that adds A is refused.
+
+### What each solver needs (`RuleSet.searched`)
+
+- **Operands of "or"** relative to p and to l in one "or": each position chooses; an
+  operand relative to l goes from the left edge of that position's largest interval
+  (`test_p_and_l_in_one_or`). The elements of one operand `(B & C)` are all relative to p
+  or all relative to l (`RuleError`: a hidden kind has one anchor).
 - **Chosen kinds.** A kind is *chosen* if it is a present operand of an "or", or
   if a rule whose left side reads a chosen kind places it.
-  - When the choices need the sweep (§5), two more conditions apply:
+  - For the sweep (§5), two more conditions apply. Rules outside them are searched
+    (`Sweep._search`, `SearchTest`, which compares it with the lattices): the cells from
+    the closest to 0, operand by operand. It stops an operand at once only on a
+    contradiction no further choice can take away, it only follows bounded elements, and
+    past 3000 attempts the edit is refused:
     - A left side reads chosen kinds only as present (`K`, `K p%` with p > 0,
       `K >= p%`, `K > p%`), never under "not" and never as `K < p%` or `K 0%`.
       Then choosing an operand only adds consequences, and a contradiction found
@@ -175,9 +192,8 @@ right`, or `A → B 1% 1 unit on the right of l` with `B → A 10%`.
   - On lattices, a left side may also read chosen kinds as absent (`not K`,
     `K 0%`), and they may be placed before their decision (`AbsentReadTest`).
 
-  These conditions, with the one on the anchors of an "or", are not in the
-  requirement. Without them, the sweep has no exact method for "the leftmost
-  operand that can be chosen" (`test_restrictions`).
+  Without them, the sweep has no exact method for "the leftmost operand that can be
+  chosen" (`test_restrictions`).
 
 ## 5. Consequences: the "or" rules (`solver.py`)
 
@@ -190,9 +206,9 @@ The line of a set of claims is defined as follows:
    state, each element placed by the rules from the claims. With a cycle through a
    "not" (or `K < p%`, an exact percentage, a left edge: the position before it must
    be without K), the least state is the well-founded one. If it does not decide every
-   element, the rules do not decide the line (`Undetermined`): `X & not B → B` needs B
-   exactly where B is absent, and `X & not C → B` with `X & not B → C` has two
-   results.
+   element, the first rule wins (§4): `X & not C → B` with `X & not B → C` gives B. If
+   no rule can, there is no line (`NoLine`): `X & not B → B` needs B exactly where B
+   is absent.
 3. Each anchor of an "or" takes an operand ("the leftmost operand that can be
    chosen"). The anchors are decided one after the other, the closest to 0 first,
    and the one on the right if two are as close (requirement.md). So where 0 is
@@ -514,10 +530,9 @@ above) is determined as follows:
      losses add up. Those that can are searched together, knowing what each must lose
      whatever is chosen (`_Resolution.best_of`,
      `test_the_fewest_elements_over_all_the_conflicts`,
-     `test_each_stretch_of_a_conflict_chooses`). Past `MAX_SEARCH` steps the edit is
-     refused. Past `MAX_SPLIT` stretches they are decided one after the other, and a
-     left side of many terms keeps `MAX_OPTIONS` combinations: there the result is not
-     always the fewest.
+     `test_each_stretch_of_a_conflict_chooses`). Past `MAX_SEARCH` steps, `MAX_SPLIT`
+     stretches or `MAX_OPTIONS` combinations the edit is refused: it cannot be computed
+     in reasonable time.
    - **Otherwise: whole elements.** The fewest whole elements near the edit are searched,
      one, then two, and so on. It handles four cases:
      - conflicts through the "or" choices, which region algebra does not
@@ -528,11 +543,8 @@ above) is determined as follows:
      - more than 4 × (number of older elements) + 16 conflicts one after the
        other.
 
-     Near is within (depth + 1) × reach + 1 of the edit. If none of those works, the
-     rest of the older elements are removed whole, one after the other, until the
-     claims are consistent and decided: the edit alone is (step 2), so this ends. Each
-     element removed that way is then put back if the claims stay so. That last case
-     is not always the fewest.
+     Near is within (depth + 1) × reach + 1 of the edit, and comes first. Past
+     `MAX_SEARCH` steps the edit is refused.
 4. **Removed, for this computation only.** For the user's edits, the parts removed
    give way only in this computation: the next edit of the user computes the claims
    again from all the edits.
@@ -918,6 +930,10 @@ as long as the pace allows, and ends only if its score is 0 and its script asks 
 at nothing but the user's edits. Otherwise it goes on until it is
 cancelled by the next call. Past c + H it goes on at the pace, each stage on the window from
 where the frontier got to. A score above 0 is never proved to be the best possible.
+
+**Asking for the next run.** So that a run does not cancel itself, it asks for the next one
+twice as far as a run takes at q = 1, from the time a candidate took: q does not bias it,
+but it is measured, so two runs differ by the noise of the clock.
 
 **Per run** (`test_per_run`). The candidate list does not depend on q, and a
 run evaluates a prefix of it. So with a lower q:

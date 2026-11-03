@@ -20,11 +20,11 @@ Examples:
 - A → B 0%
 - A & B → C 45% 3 units on the left of p
 
+The rules must not have a cycle dependency.
 The rules must be deterministic.
 If there is an "or" on the right side of the element rule, the leftmost operand (leftmost in the expression) that can be chosen is chosen. The position that choses first is the closest to 0, and the one to the right if two positions are equally close to 0.
-The first rule in the list of rules win over the next ones. Example: with X & not C → B and X & not B → C, then X & not C & not B → B.
 
-A position is a real number x or x + kε, with k a non-zero integer and ε an infinitely small positive distance: x + ε is after x and before every real number greater than x. When a rule needs the first position after x, it uses x + ε.
+A position is a rational number x or x + kε, with k a non-zero integer and ε an infinitely small positive distance: x + ε is after x and before every real number greater than x. When a rule needs the first position after x, it uses x + ε.
 Example: "A → B or C", "B → E", "B → no E on (0, 1] of l", A on [0, 2]: B is at 0 and at 1 + ε.
 
 A "mode rule" is the same as an element rule, but can add or remove elements only at the position of the chip.

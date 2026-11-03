@@ -11,8 +11,9 @@ An element rule is  L → R:
   A location is relative to an anchor: "at d", "d units on the left/right" or
   "on [a, b)" (default: at 0), then "of p" or "of l". p is a position where L is met;
   l is the left edge of the largest interval where L is met that contains p (a
-  largest interval unbounded on the left has no left edge: a rule with a location
-  relative to l met there is a contradiction, solver.py).
+  largest interval unbounded on the left, l is unbound, -inf: a location l + d or
+  l + [a, b] is then not on the line, and a rule with one met there is a contradiction,
+  solver.py; l + [a, +inf) is the whole line).
   Without "of", a location is relative to p. "K" requires
   K present (a consequence gets 100%), "K p%" requires exactly p, "no K" and "K 0%"
   require K absent. Positions are x + kε (intervals.py): "(0, 1] of l" is [l+ε, l+1].

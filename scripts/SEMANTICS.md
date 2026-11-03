@@ -129,10 +129,14 @@ An element rule has the form L → R.
     finite are at −∞: putting something at infinity is possible (requirement.md), and
     nothing is placed on the line. An "or" operand there can be chosen
     (`test_no_left_edge`, `test_an_or_of_l_with_no_left_edge`).
-  - An "or" relative to l chooses once per largest interval, at l. With no left end
-    it chooses at −∞, the furthest from 0, so last: its first operand that fits with
-    all the other choices (`Sweep._at_minf`; if none fits the edit is refused, the
-    others not looking ahead to it).
+  - An "or" whose operands are all relative to l places the same thing from every
+    p of a largest interval: one choice per interval. The position that chooses is p
+    (requirement.md: the closest to 0 first), so the interval chooses at its position
+    closest to 0: 0 if it holds 0, else its end on the side of 0
+    (`Sweep._edge_chosen_at`, `test_an_or_of_l_chooses_closest_to_0`). With no left
+    end, its operand places the whole line or nothing; it is decided before the other
+    choices, each operand in turn while the rest cannot be placed (`Sweep._minf_first`);
+    if another "or" chooses closer to 0 than it, the edit is refused.
   - `Region.left_edges` and `Region.dilate` compute these sets exactly, tails
     included. `test_left_edges_dilate_components` checks them point by point.
 

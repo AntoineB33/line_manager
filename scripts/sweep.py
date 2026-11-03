@@ -68,6 +68,7 @@ only if the choices do not act on each other (`_far_left`), else `Undetermined`.
 
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass
 from fractions import Fraction
@@ -268,23 +269,6 @@ class Sweep:
                 return Region.universe()
         return t
 
-    def _at_minf(self, res) -> None:
-        """An "or" relative to l, met on a largest interval with no left end, chooses at l =
-        -inf, the furthest from 0: last (requirement.md). It takes its first operand that
-        the rules allow with the choices of all the others."""
-        vals = self.closure(res, INF, check=False)
-        for ii, it in enumerate(self.items):
-            if it.anchor != "l" or not any(c.inf() == -INF for c in lhs_region(it.lhs, vals).components()):
-                continue
-            for oi in range(len(it.ops)):
-                self.minf[ii] = oi
-                if self._valid(res, INF):
-                    break
-            else:
-                del self.minf[ii]
-                raise Undetermined(f"{it.text}: no operand fits at l = -inf with the other choices, and this "
-                                   "solver does not look ahead to it")
-
     def _from(self, ii: int, o, b: Region) -> Region:
         """What the operand o of this "or" is relative to, when the "or" chose on b: b, or
         (an "or" that mixes p and l) the left edges of the largest intervals of b."""
@@ -305,6 +289,56 @@ class Sweep:
 
     # ------------------------------------------------------------------ the sweep
     def solve(self) -> dict:
+        """The choices; first those of the "or"s relative to l on a largest interval with
+        no left end (`_minf_first`), then the others."""
+        order = self._minf_first()
+        if not order:
+            return self._finish(self._rest())
+        for combo in itertools.product(*(range(len(self.items[ii].ops)) for ii in order)):
+            self.minf = dict(zip(order, combo))
+            try:
+                return self._finish(self._rest())
+            except Conflict:
+                continue
+        self.minf = {}
+        raise Conflict("no choice of the 'or' operands satisfies the rules")
+
+    def _minf_first(self) -> list:
+        """The "or"s relative to l met on a largest interval with no left end. l is -inf
+        there, but the position that chooses is p (requirement.md: the closest to 0 first),
+        and every p of the interval makes the same choice: the interval chooses at its
+        position closest to 0, k (0 if it reaches 0, else its right end). Its operand
+        places the whole line (l + [a, +inf)) or nothing (at infinity, `_place`). It is
+        decided before the rest, each operand in turn while the rest cannot be placed:
+        exact when no other "or" is met closer to 0 than k (or as close, on the right);
+        otherwise `Undetermined`. Returns those "or"s, the closest to 0 first."""
+        vals = self.closure(self.none, INF, check=False)
+        found = []
+        for ii, it in enumerate(self.items):
+            if it.anchor != "l":
+                continue
+            comps = [c for c in lhs_region(it.lhs, vals).components() if c.inf() == -INF]
+            if not comps:
+                continue
+            if set(it.lhs.kinds()) & set(self.kin):
+                raise Undetermined(f"{it.text}: relative to l, on an element with no left end that an 'or' can change")
+            s = comps[0].sup()
+            found.append((ZERO if s >= ZERO else s, ii))
+        if not found:
+            return []
+        far = max(-k for k, _ in found)  # how close to 0 the last of them chooses
+        if far > ZERO:
+            near = Region.of(Interval(-far, far, False, True))
+            for ii, it in enumerate(self.items):
+                met = lhs_region(it.lhs, vals)
+                if it.anchor == "l":
+                    met = met.left_edges()
+                if met & near:
+                    raise Undetermined(f"{it.text} chooses closer to 0 than an 'or' relative to l on an element with no "
+                                       "left end: this solver does not decide them in that order")
+        return [ii for _, ii in sorted(found, key=lambda f: -f[0])]
+
+    def _rest(self) -> list:
         P = self._next_active(self.none, None)
         start = self.none
         if P == -INF:
@@ -323,8 +357,7 @@ class Sweep:
             res, _ = self.complete(P, self.none, 0)
         if res is None:
             raise Conflict("no choice of the 'or' operands satisfies the rules")
-        self._at_minf(res)
-        return self._finish(res)
+        return res
 
     # ------------------------------------------------------------------ unbounded on the left
     def _independent(self) -> bool:
@@ -547,27 +580,48 @@ class Sweep:
                 return None
             for reg, p in cells:
                 for ii, it in enumerate(self.items):
-                    if it.anchor == "l" and reg != Region.point(p):
-                        continue  # (a left edge is a position)
-                    took = [oi for oi, r in enumerate(best[ii]) if r.contains(p)]
+                    at = reg
+                    if it.anchor == "l":  # chosen by its largest interval's position closest to 0
+                        if reg != Region.point(p):
+                            continue
+                        e = self._edge_chosen_at(ii, best, p)
+                        if e is None:
+                            continue
+                        at = Region.point(e)
+                    took = [oi for oi, r in enumerate(best[ii]) if r & at]
                     if not took:
                         continue
                     for oi in range(took[0]):
-                        was = only(ii, oi, reg)
+                        was = only(ii, oi, at)
                         sol = found()
                         if sol is not None:
                             best, took = sol, [oi]
                             break
                         self.barred[ii] = was
                     else:
-                        only(ii, took[0], reg)
-                        if not reg.issubset(best[ii][took[0]]):
+                        only(ii, took[0], at)
+                        if not at.issubset(best[ii][took[0]]):
                             best = found()
                             if best is None:
                                 raise Undetermined(f"the sweep could not place exactly where a choice changes around {p}")
             return best
         finally:
             self.barred = None
+
+    def _edge_chosen_at(self, ii, ch, p):
+        """For an "or" relative to l: the left edge of the largest interval whose position
+        closest to 0 is p (0 if it holds 0, else its end on the side of 0), or None. Every
+        p of the interval makes the same choice, so that one makes it (requirement.md: the
+        closest to 0 first)."""
+        vals = self.closure(ch, INF, check=False)
+        for c in lhs_region(self.items[ii].lhs, vals).components():
+            if c.inf() == -INF:
+                continue
+            e = c.left_edges().inf()
+            k = ZERO if c.contains(ZERO) else (c.sup() if c.sup() < ZERO else e)
+            if k == p:
+                return e
+        return None
 
     def _greedy(self, P, ch, start=0):
         """From P (the "or"s before `start` at P already decided): each position takes the

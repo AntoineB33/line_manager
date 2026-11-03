@@ -208,6 +208,21 @@ class OrTest(unittest.TestCase):
         s = apply_edit(parse_rules(["A → B on (-inf, 0] or C"]), LineState.empty(), [Op.put("A", Interval.closed(-3, 0))], USER)
         self.assertEqual(s.line.presence("B"), Region.of(Interval(-INF, F(0), False, True)))
 
+    def test_an_or_of_l_chooses_closest_to_0(self):
+        """One choice per largest interval, made by its position closest to 0: A on
+        [-4, -1] chooses at -1, before X at -4, whatever the order of the rules."""
+        for rules in (["X → no B or D", "A → B at 0 of l or C at 0 of l"], ["A → B at 0 of l or C at 0 of l", "X → no B or D"]):
+            s = apply_edit(parse_rules(rules), LineState.empty(), [Op.put("A", Interval.closed(-4, -1)), Op.put("X", Interval.point(-4))], USER)
+            self.assertEqual((s.line.presence("B"), s.line.presence("D")), (Region.point(-4), Region.point(-4)), rules)
+            self.assertFalse(s.line.presence("C"))
+        # with no left end: A on (-inf, -1] chooses at -1, before X at -4
+        rs = parse_rules(["X → no B or D", "A → B on [0, inf) of l or C on [0, inf) of l"])
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval(-INF, F(-1), False, True)), Op.put("X", Interval.point(-4))], USER)
+        self.assertEqual((s.line.presence("B"), s.line.presence("D")), (Region.universe(), Region.point(-4)))
+        rs = parse_rules(["A → B on [0, inf) of l or C on [0, inf) of l", "Y → no B"])
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval(-INF, F(-1), False, True)), Op.put("Y", Interval.point(5))], USER)
+        self.assertEqual((s.line.presence("B"), s.line.presence("C")), (Region.empty(), Region.universe()))
+
     def test_both_ways_without_an_end(self):
         rs = parse_rules(ALTERNATE)
         s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval(-INF, INF, False, False))], USER)

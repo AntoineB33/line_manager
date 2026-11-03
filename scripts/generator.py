@@ -461,8 +461,8 @@ class _Context:
                     if o.negated:
                         for v, reg in s.line.vals.get(kind, {}).items():
                             adj -= w * v / 100 * (reg & met).measure_on(Wset)
-                    else:
-                        adj += w * ((met - pres).measure_on(Wset))
+                    else:  # at the rule's percentage (requirement.md: the ratio uses them)
+                        adj += w * Fraction(100 if o.value is None else o.value) / 100 * (met - pres).measure_on(Wset)
         return base + adj
 
     def score(self, s: LineState) -> tuple:

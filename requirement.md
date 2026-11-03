@@ -32,7 +32,7 @@ A "mode rule" is the same as an element rule, but can add or remove elements onl
 Example:
 - mode 1 → D 100% & E 100%
 
-A set of rules that is impossible to satisfy is refused.
+A set of rules that is impossible to satisfy is refused. Some possible sets of rules are refused too, as this problem is undecidable in general.
 
 The state of the line can be modified only by the user, the mode rules, the "generated script" and the memory limit managers.
 

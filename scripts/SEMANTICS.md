@@ -124,12 +124,10 @@ An element rule has the form L → R.
     contains p: its first position. The literal applies at l + d, or on
     l + [a, b), once per largest interval. The left edge of (6, 8) is 6+ε.
   - Without "of", a location is relative to p (requirement.md: "3 units on the left").
-  - On a largest interval that is unbounded on the left, l is −∞ (unbound). Then
-    l + d, and l + [a, b] with b finite, are at −∞, which is not on the line, so
-    nothing is placed. l + [a, +∞) is the whole line (`test_no_left_edge`).
-  - An "or" with an operand relative to l, met on such an interval, cannot be
-    decided: the claims are in conflict and the edit is refused
-    (`test_an_or_of_l_with_no_left_edge`).
+  - A largest interval that is unbounded on the left has no left edge. A rule with
+    a location relative to l (a literal or an "or" operand, "no K" included), met on
+    such an interval, cannot hold: the claims are in conflict and the edit is refused
+    (`test_no_left_edge`, `test_an_or_of_l_with_no_left_edge`).
   - `Region.left_edges` and `Region.dilate` compute these sets exactly, tails
     included. `test_left_edges_dilate_components` checks them point by point.
 

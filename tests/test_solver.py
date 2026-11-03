@@ -269,20 +269,18 @@ class AnchorTest(unittest.TestCase):
         self.assertEqual(s.line.presence("C"), Region.point(6))
 
     def test_no_left_edge(self):
-        """An interval with no left end: l is -inf (unbound). l + [0, 1] is at -inf, not on
-        the line: nothing. l + [0, +inf) is the whole line."""
+        """An interval with no left end has no l: a rule relative to l met there cannot
+        hold, and the edit is refused, whatever the location."""
         left = Interval(-INF, F(2), False, True)
-        rs = parse_rules(["A → B on [0, 1] of l"])
-        s = apply_edit(rs, LineState.empty(), [Op.put("A", left)], USER)
-        self.assertEqual(s.line.kinds(), ["A"])
+        for rules in (["A → B on [0, 1] of l"], ["A → B on [0, inf) of l"], ["A → no B on [0, 1] of l"],
+                      ["A → B at 1 of l"], ["X → A", "A → B on [0, 1] of l"]):
+            with self.assertRaises(Refused, msg=rules):
+                apply_edit(parse_rules(rules), LineState.empty(), [Op.put("X" if "X → A" in rules else "A", left)], USER)
         rs = parse_rules(["A → B on [0, inf) of l"])
-        s = apply_edit(rs, LineState.empty(), [Op.put("A", left)], USER)
-        self.assertEqual(s.line.presence("B"), Region.universe())
         s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval.closed(3, 4))], USER)
         self.assertEqual(s.line.presence("B"), Region.of(Interval(3, INF, True, False)))
-        # "no B" far right: every part of A would still reach it, so all of A goes
-        s = apply_edit(rs, apply_edit(rs, LineState.empty(), [Op.put("A", left)], USER), [Op.put_no("B", Interval.point(100))], USER)
-        self.assertEqual(s.line.kinds(), [])
+        s = apply_edit(parse_rules(["A → B on [0, 1] of p"]), LineState.empty(), [Op.put("A", left)], USER)
+        self.assertEqual(s.line.presence("B"), Region.of(Interval(-INF, F(3), False, True)))
 
     def test_once_per_largest_interval(self):
         """Relative to l, "no F on (0, 1]" acts once per largest interval of B."""

@@ -1004,26 +1004,28 @@ def solve(rs: RuleSet, prob: Problem) -> Line:
     has_or = bool(rs.or_items)
     kinds_in = set(rs.choice_dependent) if has_or else set()
     vals, fixed, forbid = region_stage(rs, prob, kinds_in)
+    _no_left_edge(rs, vals, kinds_in)
     if not has_or:
         return Line(vals)
-    _no_left_edge(rs, vals, kinds_in)
     line = _solve_or(rs, prob, kinds_in, vals, fixed, forbid)
     _no_left_edge(rs, line.vals, set())
     return line
 
 
 def _no_left_edge(rs: RuleSet, vals, unknown: set) -> None:
-    """An "or" with an operand relative to l, met on a largest interval unbounded on the
-    left: l does not exist there, so the operand is not a location, and the "or" cannot be
-    decided (requirement.md): Conflict. Left sides that read `unknown` kinds are not
-    computed yet: checked once they are."""
-    for i, j in rs.or_items:
-        r = rs.element[i]
-        if set(r.lhs.kinds()) & unknown or not any(o.anchor == "l" for o in r.rhs[j].all_lits()):
+    """A rule with a location relative to l, met on a largest interval unbounded on the
+    left: l does not exist there, so the location is not on the line, and the rule cannot
+    hold: Conflict. Left sides that read `unknown` kinds are not computed yet: checked
+    once they are."""
+    for r in rs.element:
+        if set(r.lhs.kinds()) & unknown:
+            continue
+        at_l = [it for it in r.rhs if any(o.anchor == "l" for o in it.all_lits())]
+        if not at_l:
             continue
         met = lhs_region(r.lhs, vals)
         if met and met.inf() == -INF:
-            raise Conflict(f"{r.rhs[j]}: relative to l, met on an element with no left edge")
+            raise Conflict(f"{at_l[0]}: relative to l, met on an element with no left edge")
 
 
 def _solve_or(rs: RuleSet, prob: Problem, kinds_in, vals, fixed, forbid) -> Line:

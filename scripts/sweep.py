@@ -164,7 +164,7 @@ class Sweep:
                     elif lit.kind in self.op_pos:
                         self.op_pos[lit.kind].append((ii, oi, lit))
         self.none = [[EMPTY] * len(it.ops) for it in self.items]
-        self.cut = [(ii, k) for ii, (i, j) in enumerate(rs.or_items) for k in [rs.element[i].rhs[j].off_line()] if k]
+        self.minf = {}  # the operand an "or" relative to l takes at l = -inf (`_at_minf`)
         self.barred = None  # `_outward`: for each "or", where each operand cannot be chosen
         self.deltas = self._deltas()
         self.R = max((abs(d.x) for d in self.deltas), default=Fraction(0)) + 1
@@ -210,16 +210,13 @@ class Sweep:
             mask = cut if mask is None else mask & cut
         if check and self.barred is not None and any(r & ch[ii][oi] for ii, row in enumerate(self.barred) for oi, r in enumerate(row)):
             raise Conflict("an operand barred there")
-        if check and self.cut and any(ch[ii][oi] for ii, k in self.cut for oi in range(k, len(self.items[ii].ops))):
-            self._cut(ch)
         extra = {}
         for K in self.kin:
             plain, exact = self.fixed.get(K, (EMPTY, {}))
             exact = dict(exact)
             for ii, oi, o in self.op_pos[K]:
-                b = ch[ii][oi]
-                if b:
-                    t = _target(o, self._from(ii, o, b))
+                t = self._place(ii, oi, o, ch[ii][oi])
+                if t:
                     if o.value is None:
                         plain = plain | t
                     else:
@@ -245,8 +242,9 @@ class Sweep:
             t = _target(o, base(i, o))
             forbid[o.kind] = forbid.get(o.kind, EMPTY) | (Region.universe() if unbound_reach(o, anchors[i]) else t)
         for ii, oi, o in self.op_neg:
-            if ch[ii][oi]:
-                forbid[o.kind] = forbid.get(o.kind, EMPTY) | _target(o, self._from(ii, o, ch[ii][oi]))
+            t = self._place(ii, oi, o, ch[ii][oi])
+            if t:
+                forbid[o.kind] = forbid.get(o.kind, EMPTY) | t
         if forbids:
             return vals, forbid
         for k, f in forbid.items():
@@ -255,15 +253,37 @@ class Sweep:
                 raise Conflict(f"{k} is required to be absent on {bad}")
         return vals
 
-    def _cut(self, ch) -> None:
-        """On a largest interval unbounded on the left, an "or" cannot get to its operand
-        that places something at l + d or l + [a, b] (`Item.off_line`): l is -inf, that is
-        not on the line. Choosing it or an operand after it there: Conflict."""
-        vals = self.closure(ch, INF, check=False)
-        for ii, k in self.cut:
-            far = union(c for c in lhs_region(self.items[ii].lhs, vals).components() if c.inf() == -INF)
-            if far and any(ch[ii][oi] & far for oi in range(k, len(self.items[ii].ops))):
-                raise Conflict(f"{self.items[ii].text}: gets to an operand relative to l with no left edge")
+    def _place(self, ii: int, oi: int, o, b: Region) -> Region:
+        """Where the element o of operand oi goes, the "or" ii having chosen it on b. On a
+        largest interval with no left end, l is -inf: l + [a, +inf) is the whole line
+        (requirement.md), l + d and l + [a, b] are at infinity, nothing on the line. An "or"
+        relative to l chooses there once, at -inf (`minf`)."""
+        it = self.items[ii]
+        t = _target(o, self._from(ii, o, b)) if b else EMPTY
+        if o.anchor == "l" and o.where.hi == INF:
+            if it.anchor == "l":
+                if self.minf.get(ii) == oi:
+                    return Region.universe()
+            elif b and any(c.inf() == -INF and c & b for c in lhs_region(it.lhs, self.vals0).components()):
+                return Region.universe()
+        return t
+
+    def _at_minf(self, res) -> None:
+        """An "or" relative to l, met on a largest interval with no left end, chooses at l =
+        -inf, the furthest from 0: last (requirement.md). It takes its first operand that
+        the rules allow with the choices of all the others."""
+        vals = self.closure(res, INF, check=False)
+        for ii, it in enumerate(self.items):
+            if it.anchor != "l" or not any(c.inf() == -INF for c in lhs_region(it.lhs, vals).components()):
+                continue
+            for oi in range(len(it.ops)):
+                self.minf[ii] = oi
+                if self._valid(res, INF):
+                    break
+            else:
+                del self.minf[ii]
+                raise Undetermined(f"{it.text}: no operand fits at l = -inf with the other choices, and this "
+                                   "solver does not look ahead to it")
 
     def _from(self, ii: int, o, b: Region) -> Region:
         """What the operand o of this "or" is relative to, when the "or" chose on b: b, or
@@ -303,6 +323,7 @@ class Sweep:
             res, _ = self.complete(P, self.none, 0)
         if res is None:
             raise Conflict("no choice of the 'or' operands satisfies the rules")
+        self._at_minf(res)
         return self._finish(res)
 
     # ------------------------------------------------------------------ unbounded on the left
@@ -318,7 +339,9 @@ class Sweep:
         kin = set(self.kin)
         # (`RuleSet.searched` does not matter: what makes it, a choice acting on what is
         # decided, is excluded below)
-        if not self.rs.finite or self.probe is not None:
+        # (an interval to infinity is fine: left of -T, whether it meets the data is the
+        # same at every position, the data being constant beyond its ends)
+        if self.probe is not None:
             return False
         if any(lit.kind in kin for _, _, lit in self.op_neg):
             return False
@@ -693,10 +716,10 @@ class Sweep:
         """Where a choice can change: real parts r + n·g (r the real parts of the ends of
         the claims and of the fixed regions modulo g, g the gcd of the distances of the
         rules on chosen kinds), and around the ε parts of the ends seen."""
-        ds = [abs(e.x) for k in self.kin for _, _, o in self.op_pos[k] for e in (o.where.lo, o.where.hi)]
-        ds += [abs(e.x) for _, _, o in self.op_neg for e in (o.where.lo, o.where.hi)]
-        ds += [abs(e.x) for lits in self.pos_lits.values() for _, o in lits for e in (o.where.lo, o.where.hi)]
-        ds += [abs(e.x) for _, o in self.neg_lits for e in (o.where.lo, o.where.hi)]
+        ds = [abs(e.x) for k in self.kin for _, _, o in self.op_pos[k] for e in (o.where.lo, o.where.hi) if type(e) is Pos]
+        ds += [abs(e.x) for _, _, o in self.op_neg for e in (o.where.lo, o.where.hi) if type(e) is Pos]
+        ds += [abs(e.x) for lits in self.pos_lits.values() for _, o in lits for e in (o.where.lo, o.where.hi) if type(e) is Pos]
+        ds += [abs(e.x) for _, o in self.neg_lits for e in (o.where.lo, o.where.hi) if type(e) is Pos]
         g = None
         for d in ds:
             if d:
@@ -914,15 +937,17 @@ class Sweep:
     def _offsets(self, cap) -> set:
         """Offsets from a decided position to the ends of the regions it changes, along
         the rules, up to cap (a path through each kind once stays within the reach of the
-        rules times the number of kinds)."""
+        rules times the number of kinds). An end at infinity is not a position: it never
+        meets another end (an interval to +inf from p only has the end p + a)."""
         off = {k: set() for k in self.kin}
         out = {ZERO}
+        ends = lambda o: {e for e in (o.where.lo, o.where.hi) if type(e) is Pos}
         for ii, oi, o in [(a, b, c) for k in self.kin for a, b, c in self.op_pos[k]]:
-            off[o.kind] |= {o.where.lo, o.where.hi}
+            off[o.kind] |= ends(o)
         for _, _, o in self.op_neg:
-            out |= {o.where.lo, o.where.hi}
+            out |= ends(o)
         n = len(self.kin) + 1
-        keep = lambda x: type(x) is not Pos or (abs(x.x) <= cap and abs(x.k) <= n + 2)
+        keep = lambda x: type(x) is Pos and abs(x.x) <= cap and abs(x.k) <= n + 2
         changed = True
         while changed:
             changed = False
@@ -934,7 +959,7 @@ class Sweep:
                         if it.is_or:
                             continue
                         o = it.options[0]
-                        new = {x for d in off[K] for e in (o.where.lo, o.where.hi) for x in [d + e] if keep(x)}
+                        new = {x for d in off[K] for e in ends(o) for x in [d + e] if keep(x)}
                         if o.negated or o.kind not in off:
                             out |= new
                         elif not new <= off[o.kind]:

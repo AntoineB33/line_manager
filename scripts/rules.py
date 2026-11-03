@@ -11,9 +11,9 @@ An element rule is  L → R:
   A location is relative to an anchor: "at d", "d units on the left/right" or
   "on [a, b)" (default: at 0), then "of p" or "of l". p is a position where L is met;
   l is the left edge of the largest interval where L is met that contains p (a
-  largest interval unbounded on the left, l is unbound, -inf: a location l + d or
-  l + [a, b] is then not on the line, and a rule with one met there is a contradiction,
-  solver.py; l + [a, +inf) is the whole line).
+  largest interval unbounded on the left, l is unbound, -inf: l + d and l + [a, b] are
+  then at infinity, which is possible (requirement.md) and places nothing on the line;
+  l + [a, +inf) is the whole line).
   Without "of", a location is relative to p. "K" requires
   K present (a consequence gets 100%), "K p%" requires exactly p, "no K" and "K 0%"
   require K absent. Positions are x + kε (intervals.py): "(0, 1] of l" is [l+ε, l+1].
@@ -240,16 +240,6 @@ class Item:
     def all_lits(self) -> list:
         """The operands and the elements that go with them."""
         return list(self.options) + [o for more in self.extra for o in more]
-
-    def off_line(self) -> int | None:
-        """The first operand that places an element relative to l at l + d or l + [a, b]
-        (b finite): where l is unbound (-inf), that is not on the line, so if the operands
-        before it cannot be chosen, nothing can be (solver.py). None if there is none."""
-        for oi, o in enumerate(self.options):
-            lits = (o, *(self.extra[oi] if self.extra else ()))
-            if any(not x.negated and x.anchor == "l" and x.where.hi != math.inf for x in lits):
-                return oi
-        return None
 
     def __str__(self) -> str:
         return self.text or " or ".join(map(str, self.options))

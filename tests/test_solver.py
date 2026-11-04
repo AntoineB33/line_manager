@@ -219,6 +219,17 @@ class OrTest(unittest.TestCase):
         rs = parse_rules(["X → no B or D", "A → B on [0, inf) of l or C on [0, inf) of l"])
         s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval(-INF, F(-1), False, True)), Op.put("X", Interval.point(-4))], USER)
         self.assertEqual((s.line.presence("B"), s.line.presence("D")), (Region.universe(), Region.point(-4)))
+        # X at -1/2 is closer to 0: it chooses first ("no B"), so A takes C (as close on the right too)
+        for x in (-F(1, 2), F(1)):
+            s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval(-INF, F(-1), False, True)), Op.put("X", Interval.point(x))], USER)
+            self.assertEqual((s.line.presence("C"), s.line.presence("B"), s.line.presence("D")), (Region.universe(), Region.empty(), Region.empty()), x)
+        # mixing p and l: every p would take the same first operand, so A chooses once, at -1
+        rs = parse_rules(["X → no B or D", "A → B on [0, inf) of l or C"])
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval(-INF, F(-1), False, True)), Op.put("X", Interval.point(-4))], USER)
+        self.assertEqual((s.line.presence("B"), s.line.presence("D")), (Region.universe(), Region.point(-4)))
+        s = apply_edit(parse_rules(["A → B on [0, inf) of l or C", "Y → no B"]), LineState.empty(),
+                       [Op.put("A", Interval(-INF, F(-1), False, True)), Op.put("Y", Interval.point(5))], USER)
+        self.assertEqual((s.line.presence("B"), s.line.presence("C")), (Region.empty(), Region.of(Interval(-INF, F(-1), False, True))))
         rs = parse_rules(["A → B on [0, inf) of l or C on [0, inf) of l", "Y → no B"])
         s = apply_edit(rs, LineState.empty(), [Op.put("A", Interval(-INF, F(-1), False, True)), Op.put("Y", Interval.point(5))], USER)
         self.assertEqual((s.line.presence("B"), s.line.presence("C")), (Region.empty(), Region.universe()))

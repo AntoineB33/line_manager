@@ -165,7 +165,9 @@ class Sweep:
                     elif lit.kind in self.op_pos:
                         self.op_pos[lit.kind].append((ii, oi, lit))
         self.none = [[EMPTY] * len(it.ops) for it in self.items]
-        self.minf = {}  # the operand an "or" relative to l takes at l = -inf (`_at_minf`)
+        # an "or" whose choice is one for a whole largest interval with no left end
+        # (`_minf_first`): that interval, the choice, and those not decided yet (`_outward`)
+        self.comp, self.minf, self.minf_open = {}, {}, []
         self.barred = None  # `_outward`: for each "or", where each operand cannot be chosen
         self.deltas = self._deltas()
         self.R = max((abs(d.x) for d in self.deltas), default=Fraction(0)) + 1
@@ -211,12 +213,14 @@ class Sweep:
             mask = cut if mask is None else mask & cut
         if check and self.barred is not None and any(r & ch[ii][oi] for ii, row in enumerate(self.barred) for oi, r in enumerate(row)):
             raise Conflict("an operand barred there")
+        if check and any(self.items[ii].anchor == "p" and v == 1 and ch[ii][0] & self.comp[ii] for ii, v in self.minf.items()):
+            raise Conflict("a first operand that does not fit on an element with no left end")
         extra = {}
         for K in self.kin:
             plain, exact = self.fixed.get(K, (EMPTY, {}))
             exact = dict(exact)
             for ii, oi, o in self.op_pos[K]:
-                t = self._place(ii, oi, o, ch[ii][oi])
+                t = self._place(ii, oi, o, self._took(ch, ii, oi))
                 if t:
                     if o.value is None:
                         plain = plain | t
@@ -243,7 +247,7 @@ class Sweep:
             t = _target(o, base(i, o))
             forbid[o.kind] = forbid.get(o.kind, EMPTY) | (Region.universe() if unbound_reach(o, anchors[i]) else t)
         for ii, oi, o in self.op_neg:
-            t = self._place(ii, oi, o, ch[ii][oi])
+            t = self._place(ii, oi, o, self._took(ch, ii, oi))
             if t:
                 forbid[o.kind] = forbid.get(o.kind, EMPTY) | t
         if forbids:
@@ -253,6 +257,14 @@ class Sweep:
             if bad:
                 raise Conflict(f"{k} is required to be absent on {bad}")
         return vals
+
+    def _took(self, ch, ii: int, oi: int) -> Region:
+        """Where the "or" took this operand: ch, and the interval with no left end where an
+        "or" mixing p and l took its first operand (`minf` 0)."""
+        b = ch[ii][oi]
+        if oi == 0 and self.items[ii].anchor == "p" and self.minf.get(ii) == 0:
+            b = b | self.comp[ii]
+        return b
 
     def _place(self, ii: int, oi: int, o, b: Region) -> Region:
         """Where the element o of operand oi goes, the "or" ii having chosen it on b. On a
@@ -289,13 +301,18 @@ class Sweep:
 
     # ------------------------------------------------------------------ the sweep
     def solve(self) -> dict:
-        """The choices; first those of the "or"s relative to l on a largest interval with
-        no left end (`_minf_first`), then the others."""
-        order = self._minf_first()
+        """The choices. An "or" on a largest interval with no left end that one choice
+        decides for the whole interval (`_minf_first`) is decided at the interval's
+        position closest to 0: before the rest if nothing chooses closer to 0, else in
+        that order (`_outward`)."""
+        order, near = self._minf_first()
         if not order:
             return self._finish(self._rest())
-        for combo in itertools.product(*(range(len(self.items[ii].ops)) for ii in order)):
-            self.minf = dict(zip(order, combo))
+        if near:
+            self.minf_open = list(order)
+            return self._finish(self._rest(near))
+        for combo in itertools.product(*(range(self._minf_n(ii)) for _, ii in order)):
+            self.minf = dict(zip((ii for _, ii in order), combo))
             try:
                 return self._finish(self._rest())
             except Conflict:
@@ -303,42 +320,57 @@ class Sweep:
         self.minf = {}
         raise Conflict("no choice of the 'or' operands satisfies the rules")
 
-    def _minf_first(self) -> list:
-        """The "or"s relative to l met on a largest interval with no left end. l is -inf
-        there, but the position that chooses is p (requirement.md: the closest to 0 first),
-        and every p of the interval makes the same choice: the interval chooses at its
-        position closest to 0, k (0 if it reaches 0, else its right end). Its operand
-        places the whole line (l + [a, +inf)) or nothing (at infinity, `_place`). It is
-        decided before the rest, each operand in turn while the rest cannot be placed:
-        exact when no other "or" is met closer to 0 than k (or as close, on the right);
-        otherwise `Undetermined`. Returns those "or"s, the closest to 0 first."""
+    def _minf_n(self, ii) -> int:
+        """The values `minf` takes for this "or": its operands (relative to l), or (an "or"
+        that mixes p and l) 0: its first operand on the whole interval, 1: not there."""
+        return len(self.items[ii].ops) if self.items[ii].anchor == "l" else 2
+
+    def _minf_first(self):
+        """The "or"s met on a largest interval with no left end whose choice is one for
+        the whole interval. Relative to l (`anchor` "l"): l is -inf there, an operand places
+        the whole line (l + [a, +inf)) or nothing (at infinity, `_place`), the same from
+        every p. Mixing p and l, with a first operand relative to l only: that operand
+        places the same from every p, so it fits at every p of the interval or at none,
+        and once one p took it every p takes it. The position that chooses is p
+        (requirement.md: the closest to 0 first), so the interval chooses at its position
+        closest to 0, k (0 if it reaches 0, else its right end).
+        Returns ([(k, "or")], the closest to 0 first, how close to 0 another "or" is met,
+        if closer than one of them (or as close, on the right), else None)."""
         vals = self.closure(self.none, INF, check=False)
         found = []
         for ii, it in enumerate(self.items):
-            if it.anchor != "l":
-                continue
+            if it.anchor == "p":
+                extra = self.rs.element[it.rule].rhs[self._item_at[ii]].extra
+                first = (it.ops[0], *(extra[0] if extra else ()))
+                if not all(o.anchor == "l" for o in first):
+                    continue
             comps = [c for c in lhs_region(it.lhs, vals).components() if c.inf() == -INF]
             if not comps:
                 continue
             if set(it.lhs.kinds()) & set(self.kin):
-                raise Undetermined(f"{it.text}: relative to l, on an element with no left end that an 'or' can change")
+                raise Undetermined(f"{it.text}: on an element with no left end that an 'or' can change")
+            self.comp[ii] = comps[0]
             s = comps[0].sup()
             found.append((ZERO if s >= ZERO else s, ii))
         if not found:
-            return []
-        far = max(-k for k, _ in found)  # how close to 0 the last of them chooses
+            return [], None
+        found.sort(key=lambda f: -f[0])
+        far = -found[-1][0]  # how close to 0 the last of them chooses
+        near = None
         if far > ZERO:
-            near = Region.of(Interval(-far, far, False, True))
+            zone = Region.of(Interval(-far, far, False, True))
             for ii, it in enumerate(self.items):
                 met = lhs_region(it.lhs, vals)
                 if it.anchor == "l":
                     met = met.left_edges()
-                if met & near:
-                    raise Undetermined(f"{it.text} chooses closer to 0 than an 'or' relative to l on an element with no "
-                                       "left end: this solver does not decide them in that order")
-        return [ii for _, ii in sorted(found, key=lambda f: -f[0])]
+                elif ii in self.comp:
+                    met = met - self.comp[ii]
+                if met & zone:
+                    near = far
+        return found, near
 
-    def _rest(self) -> list:
+    def _rest(self, near=None) -> list:
+        """The other choices (`minf` given, or with `near`: decided among them, `_outward`)."""
         P = self._next_active(self.none, None)
         start = self.none
         if P == -INF:
@@ -351,6 +383,11 @@ class Sweep:
             res = self._search()
         elif P is None:  # no "or" is met anywhere
             res = self.none if self._valid(self.none, INF) else None
+        elif near is not None:
+            if P is None or P == -INF:
+                raise Undetermined("the choices on an element with no left end act on each other: this solver does not "
+                                   "decide them")
+            res = self._outward(P, max(abs(P.x), near.x))
         elif P < 0 and not self.rs.pointwise and self.probe is None:  # (a probe only asks if a solution exists)
             res = self._outward(P)
         else:
@@ -376,9 +413,14 @@ class Sweep:
         # same at every position, the data being constant beyond its ends)
         if self.probe is not None:
             return False
-        if any(lit.kind in kin for _, _, lit in self.op_neg):
+        # a first operand that fits nowhere it could be chosen (`minf` 1 on all of it) is out
+        out = {(ii, 0) for ii, v in self.minf.items() if self.items[ii].anchor == "p" and v == 1
+               and lhs_region(self.items[ii].lhs, self.vals0).issubset(self.comp[ii])}
+        placed = {lit.kind for k in kin for ii, oi, lit in self.op_pos[k] if (ii, oi) not in out}
+        placed |= {lit.kind for r in self.rs.element if set(r.lhs.kinds()) & kin for lit in r.lits() if not lit.negated}
+        if any(lit.kind in placed for ii, oi, lit in self.op_neg if (ii, oi) not in out):
             return False
-        values = {k: {lit.value for _, _, lit in self.op_pos[k]} for k in kin}
+        values = {k: {lit.value for ii, oi, lit in self.op_pos[k] if (ii, oi) not in out} for k in kin}
         for r in self.rs.element:
             read = set(r.lhs.kinds()) & kin
             if not read:
@@ -548,13 +590,13 @@ class Sweep:
             return None
         return go(self.none)
 
-    def _outward(self, P) -> list | None:
+    def _outward(self, P, L=None) -> list | None:
         """The choices of the definition when they act on each other on the left of 0. The
         sweep from left to right finds a solution if there is one. So, from the closest cell
         to 0, each "or" keeps the first operand with which a solution is still found, the
         others being barred there (`barred`). Right of the last cell, the order is the
         sweep's own."""
-        cells = self._cells(abs(P.x))
+        cells = self._cells(abs(P.x) if L is None else L)
         self.static_ends = sorted(set(self.static_ends) | {e for reg, _ in cells for e in _ends(reg, reg.lo, reg.hi) if type(e) is Pos})
         self._grid()
         self.barred = [[EMPTY] * len(it.ops) for it in self.items]
@@ -565,9 +607,32 @@ class Sweep:
             if tries[0] > MAX_CALLS:
                 raise Undetermined(f"deciding the choices from 0 takes more than {MAX_CALLS} attempts")
             checkpoint()
-            self.memo, self.failed, self.dead, self.stuck = {}, {}, [], -INF
-            self.shared["calls"] = 0
-            return self.complete(P, self.none, 0)[0]
+            fixed = {ii: v for ii, v in self.minf.items() if all(ii != o for _, o in self.minf_open)}
+            for combo in itertools.product(*(range(self._minf_n(ii)) for _, ii in self.minf_open)):
+                self.minf = {**fixed, **dict(zip((ii for _, ii in self.minf_open), combo))}
+                self.memo, self.failed, self.dead, self.stuck = {}, {}, [], -INF
+                self.shared["calls"] = 0
+                r = self.complete(P, self.none, 0)[0]
+                if r is not None:
+                    return r
+            self.minf = fixed
+            return None
+
+        def decide_minf(p):
+            """The "or"s whose interval chooses at p (`_minf_first`): the first value with
+            which a solution is still found."""
+            nonlocal best
+            for k, ii in [f for f in self.minf_open if f[0] == p]:
+                self.minf_open.remove((k, ii))
+                keep = dict(self.minf)
+                for v in range(self._minf_n(ii)):
+                    self.minf = {**keep, ii: v}
+                    sol = found()
+                    if sol is not None:
+                        best = sol
+                        break
+                else:
+                    raise Undetermined(f"the sweep could not decide {self.items[ii].text} at {p}")
 
         def only(ii, oi, reg):
             """The bars with this operand of this "or" the only one on reg."""
@@ -579,6 +644,8 @@ class Sweep:
             if best is None:
                 return None
             for reg, p in cells:
+                if reg == Region.point(p):
+                    decide_minf(p)
                 for ii, it in enumerate(self.items):
                     at = reg
                     if it.anchor == "l":  # chosen by its largest interval's position closest to 0
@@ -604,6 +671,8 @@ class Sweep:
                             best = found()
                             if best is None:
                                 raise Undetermined(f"the sweep could not place exactly where a choice changes around {p}")
+            for k, ii in list(self.minf_open):  # (chosen beyond the cells: as found)
+                self.minf_open.remove((k, ii))
             return best
         finally:
             self.barred = None
@@ -900,6 +969,10 @@ class Sweep:
             a = a.left_edges()
             if self.probe is not None:
                 a = a & self.edges_after
+        elif self.minf:
+            ii = self.items.index(it)
+            if self.minf.get(ii) == 0:
+                a = a - self.comp[ii]
         return a if self.probe is None else a & self.inside
 
     def _active(self, it, vals, m) -> bool:

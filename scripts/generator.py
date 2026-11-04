@@ -58,6 +58,7 @@ The hyperparameter q in [0, 1]:
 from __future__ import annotations
 
 import math
+import random
 import time
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
@@ -70,6 +71,7 @@ from modes import ModeKnowledge
 from probability import ProbabilityFinder, Scenario
 from problems import MinimumLengthProblem, PresenceRatioProblem  # noqa: F401 (the problems, for the callers)
 from region import Region
+from ratio_plan import NoBestScript, Plan  # noqa: F401 (NoBestScript: for the callers)
 from resolve import Refused, apply_edit
 from rules import RuleSet
 from script import SHOW, ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Uncovered, Edited, score
@@ -110,9 +112,11 @@ def rerun_distance(q: float, horizon: Fraction) -> Fraction:
 class RulesGenerator:
     MAX_SCENARIOS = 8
 
-    def __init__(self, rules: RuleSet, problems, q: float, use_probability: bool = True, constraints=()) -> None:
+    def __init__(self, rules: RuleSet, problems, q: float, use_probability: bool = True, constraints=(), seed=None) -> None:
         """problems: a problem, or [(problem, weight)] with weights >= 0; constraints:
-        constraints.py's (anything with `ops(state, chip)`)."""
+        constraints.py's (anything with `ops(state, chip)`); seed: the random choices
+        (ratio_plan.py), drawn once here if None. Raises NoBestScript (a ValueError)
+        when the definitions have no best script."""
         if not 0 <= q <= 1:
             raise ValueError("the allocated resources quantity must be in [0, 1]")
         self.rules = rules
@@ -129,6 +133,8 @@ class RulesGenerator:
         self.paced = False  # in a process of its own: the instant script holds PACE after the chip
         self.endless = False  # q = 1 in a process of its own: the run goes on until it proves it is done
         self.speed = Fraction(1)  # the chip's, for how far it goes during a run
+        self.seed = random.randrange(2 ** 32) if seed is None else seed
+        self.plan = Plan(rules, self.problems, self.constraints, self.seed)
 
     def kinds_read(self):
         """What the rules, the constraints and the problems read; None if that is not known."""
@@ -165,7 +171,11 @@ class RulesGenerator:
         """What the script at the start of a run can do at once, on the PACE after the chip:
         - ratio targets: the kind with the biggest target not reached yet;
         - minimum lengths: each kind at the chip that is not there for its length L on the
-          L before the chip goes on."""
+          L before the chip goes on;
+        - with a perfect script (ratio_plan.py): its whole edit."""
+        plan = self.plan.ops(state, c) if self.plan.ok else None
+        if plan is not None:
+            return [plan]
         best, short = None, []
         cp = Pos(c)
         for p, _ in self.problems:
@@ -208,6 +218,11 @@ class RulesGenerator:
         c + PACE it says what that script says, the mode rules in any mode and the edits of
         `previous` that are still to come, and the stages go on from there."""
         c = Fraction(chip)
+        if self.plan.ok:
+            perfect = self._perfect(state, c)
+            if perfect is not None:
+                yield perfect
+                return
         H = self.horizon
         ctx = _Context(self, state, c, known)
         stats = RunStats(budget=budget(self.q), probability_rules=ctx.probability_rules)
@@ -295,6 +310,23 @@ class RulesGenerator:
                     yield Script.of(events, on_view=SHOW, stretches=stretches, covered=covered, origin=c, base=current, live=live,
                                     constraints=self.constraints), replace(stats)
                     lo = hi
+
+    def _perfect(self, state: LineState, c: Fraction):
+        """The perfect script (ratio_plan.py) and its stats, at once: definitive everywhere,
+        and only the user's edits run the generator again. None if there is none here."""
+        ops = self.plan.ops(state, c)
+        if ops is None:
+            return None
+        try:
+            after = apply_edit(self.rules, state, ops, GEN)
+            why = check_script_edit(state, after, c)
+        except Refused as e:
+            why = str(e)
+        if why:
+            return None
+        events = [Event(ChipIn(c, INF), (EditAction(tuple(ops)),)), Event(Edited(True), (RerunAction(),))]
+        stats = RunStats(work=1, budget=budget(self.q), valid=1, chosen="perfect script", final=True, definitive=INF)
+        return Script.of(events, on_view=SHOW, origin=c, base=after), stats
 
     def _stage(self, ctx: _Context, state: LineState, base: LineState, lo, hi, stats: RunStats, best_key, left: int, until=None):
         """The best edit on (lo, hi] of the candidates this stage has budget and time for

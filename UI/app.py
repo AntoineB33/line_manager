@@ -417,7 +417,11 @@ class Session:
         except (RuleError, ValueError) as e:
             return f"refused: {e}"
         try:
-            self.sim.set_generator(self.generator(rs))
+            g = self.generator(rs)
+        except ValueError as e:  # e.g. no best script (ratio_plan.NoBestScript)
+            return f"refused: {e}"
+        try:
+            self.sim.set_generator(g)
         except Exception as e:  # the edits have no result with these rules
             self.sim.set_generator(self.generator(self.rs))
             return f"refused: with these rules the edits have no result ({e})"

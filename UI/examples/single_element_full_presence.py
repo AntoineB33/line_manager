@@ -1,10 +1,12 @@
 """One element, A, with a presence ratio target of 100%, and nothing else: no rules, no
 constraint, no mode rule, and an empty line.
 
-The generator places A on its whole window, from the chip to the horizon:
-    A on (0, 100]   (the chip at 0, the horizon 100 units ahead)
-and further as the chip goes. Type in the command box:
-    no A on [20, 30]   a hole the generator does not fill back (the user's edit)
+Its perfect generated script (rules_generator_requirements.md) is found at
+once, and the horizon does not limit it:
+    A on (0, inf)   (the chip at 0)
+Only an edit of the user runs the generator again. Type in the command box:
+    no A on [20, 30]   a hole: the generator then searches its window (the horizon,
+                       100 units ahead), as the line has more than its perfect script
 
 Copy this file to make your own session, change the definitions, and run it:
     python UI/examples/single_element_full_presence.py

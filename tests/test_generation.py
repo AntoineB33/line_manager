@@ -626,9 +626,13 @@ class RerunRulesTest(unittest.TestCase):
         self.assertEqual(self.of(self.reruns([], {}, constraints=[keep]), ChipIn), [ChipIn(F(75), INF)])
 
     def test_targets_without_modes_watch_the_score(self):
-        t = self.reruns([], {"A": F(1, 2)})
+        t = self.reruns(["C → D"], {"A": F(1, 2)})  # (a rule: no best line found at once, ratio_plan.py)
         self.assertTrue(self.of(t, ScoreBelow))
         self.assertFalse(self.of(t, ChipIn))
+
+    def test_the_best_line_needs_only_the_user_edits(self):
+        """Found at once (rules_generator_requirements.md): nothing to watch but the user."""
+        self.assertEqual(self.reruns([], {"A": F(1, 2)}), [Edited(True)])
 
     def test_only_the_modes_that_reach_the_target(self):
         rules = ["mode 1 → C", "mode 2 → no A", "mode 3 → B"]
@@ -728,13 +732,23 @@ class ProblemsTest(unittest.TestCase):
 
     def test_weights(self):
         """2 units of A in (0, 20], or none since an interval of A should be 10 long: the
-        heavier problem decides."""
-        rs = parse_rules([])
+        heavier problem decides (in the search: with a rule, ratio_plan.py has no line)."""
+        rs = parse_rules(["C → D"])
         ratio, length = PresenceRatioProblem({"A": F(1, 10)}, 20), MinimumLengthProblem({"A": 10}, 20)
         after, _ = self.run_once(rs, LineState.empty(), [(ratio, 10), (length, 1)])
         self.assertTrue(after.line.presence("A"))
         after, _ = self.run_once(rs, LineState.empty(), [(ratio, 1), (length, 10)])
         self.assertFalse(after.line.presence("A"))
+
+    def test_the_best_line_meets_both_ratio_and_minimum_length(self):
+        """With no rule, A at 10% everywhere after the chip: its ratio, and one interval
+        longer than 10 (rules_generator_requirements.md), whatever the weights."""
+        rs = parse_rules([])
+        ratio, length = PresenceRatioProblem({"A": F(1, 10)}, 20), MinimumLengthProblem({"A": 10}, 20)
+        for weights in ((10, 1), (1, 10)):
+            after, stats = self.run_once(rs, LineState.empty(), [(ratio, weights[0]), (length, weights[1])])
+            self.assertEqual(stats.chosen, "perfect script")
+            self.assertEqual(after.line.vals["A"], {10: Region.of(Interval(0, INF, False, False))})
 
 
 class SameResultTest(unittest.TestCase):

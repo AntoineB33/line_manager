@@ -15,7 +15,8 @@ try:
     import gui
 except ImportError:  # (no tkinter)
     gui = None
-from intervals import Interval as Iv, IntervalSet  # noqa: E402
+from intervals import INF, Interval as Iv  # noqa: E402
+from region import Region  # noqa: E402
 from script import ChipIn, Edited, PresenceAbove, ScoreBelow  # noqa: E402
 
 
@@ -50,8 +51,8 @@ class ExamplesTest(unittest.TestCase):
             # the tasks: their targets are watched, in each mode (all reach VideoGames)
             "screen_breaks_sleep_tasks": {(ChipIn, None), (ChipIn, "1"), (ChipIn, "2"), (ChipIn, "3"), Edited,
                                           ScoreBelow, PresenceAbove},
-            # nothing but its target: no constraint, no mode rule
-            "single_element_full_presence": {ScoreBelow, Edited},
+            # its perfect script: only the user's edits change it
+            "single_element_full_presence": {Edited},
         }
         names = {f[:-3] for f in os.listdir(os.path.join(UI, "examples")) if f.endswith(".py")}
         self.assertEqual(names, set(expected))
@@ -60,11 +61,11 @@ class ExamplesTest(unittest.TestCase):
                 self.assertEqual(reruns(name), rules)
 
     def test_single_element_full_presence_fills_its_window(self):
-        """A at 100% is on the whole window, (chip, chip + horizon], at 100%, and
-        nothing else is on the line."""
+        """A at 100% is everywhere after the chip, at 100% (its perfect script, not limited
+        by the horizon), and nothing else is on the line."""
         line = first_run("single_element_full_presence").state.line
         self.assertEqual(line.kinds(), ["A"])
-        self.assertEqual(line.presence("A").bounded(), IntervalSet([Iv(0, 100, lo_closed=False)]))
+        self.assertEqual(line.presence("A"), Region.of(Iv(0, INF, lo_closed=False, hi_closed=False)))
         self.assertEqual(set(line.vals["A"]), {100})
 
 

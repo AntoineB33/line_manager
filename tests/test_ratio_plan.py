@@ -85,6 +85,22 @@ class PerfectScriptTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             generator(["B → no A"], {"A": HALF, "B": HALF})
 
+    def test_refused_whatever_the_other_rules_and_the_constraints(self):
+        """With the breaks, their rules and mode rules too (screen_break_15_task.py): the
+        check comes before any shortcut."""
+        from constraints import FifteenMinuteBreaks
+        rules = ["Break15 → NoScreen", "mode 1 → no NoScreen", "A → no B"]
+        targets = [(PresenceRatioProblem({"A": HALF, "B": HALF}), 1)]
+        with self.assertRaises(ValueError):
+            RulesGenerator(parse_rules(rules), targets, 0.5, constraints=[FifteenMinuteBreaks()])
+        with self.assertRaises(ValueError):  # the search alone too
+            RulesGenerator(parse_rules(rules), targets, 0.5, constraints=[FifteenMinuteBreaks()], shortcuts=False)
+        RulesGenerator(parse_rules(rules), targets + [(MinimumLengthProblem({"A": 60}), 1)], 0.5,
+                       constraints=[FifteenMinuteBreaks()])  # a minimum length: a best line exists
+
+    def test_exclusive_with_an_element_with_no_target_is_not_refused(self):
+        generator(["B → no C"], {"A": HALF, "B": HALF})
+
     def test_two_exclusive_elements_alternate_by_their_minimum_length(self):
         first = set()
         for seed in range(8):

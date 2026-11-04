@@ -41,21 +41,57 @@ class NoBestScript(ValueError):
     pass
 
 
+def _exclusion(r) -> frozenset | None:
+    """The two kinds of a rule "B → no A" (everywhere B is, no A), else None."""
+    lits = r.lits()
+    if r.is_mode_rule or r.internal or not (type(r.lhs) is Atom and r.lhs.op == "present" and len(r.rhs) == 1 and len(lits) == 1):
+        return None
+    o = lits[0]
+    if not (o.negated and o.anchor == "p" and o.value is None and o.where.is_point and o.where.lo == 0):
+        return None
+    return frozenset((r.lhs.kind, o.kind))
+
+
 def exclusions(rs: RuleSet) -> set[frozenset] | None:
     """The pairs of kinds that exclude each other, if the rules are only "B → no A"; None
     otherwise."""
     if rs.mode_rules or rs.percent:
         return None
-    pairs = set()
+    pairs = {_exclusion(r) for r in rs.rules}
+    return None if None in pairs else pairs
+
+
+def check_best_exists(rs: RuleSet, problems) -> None:
+    """Raises NoBestScript when two kinds with a target exclude each other ("B → no A")
+    and none of the kinds they are linked to that way has a minimum length: every
+    alternation of them is beaten by a faster one, whatever the other rules, the modes
+    and the constraints."""
+    found = _targets(problems)
+    if not found:
+        return
+    targets, lengths = found
+    kinds = {k for k, r in targets.items() if r > 0}
+    near = {k: set() for k in kinds}
     for r in rs.rules:
-        lits = r.lits()
-        if r.internal or not (type(r.lhs) is Atom and r.lhs.op == "present" and len(r.rhs) == 1 and len(lits) == 1):
-            return None
-        o = lits[0]
-        if not (o.negated and o.anchor == "p" and o.value is None and o.where.is_point and o.where.lo == 0):
-            return None
-        pairs.add(frozenset((r.lhs.kind, o.kind)))
-    return pairs
+        pair = _exclusion(r)
+        if pair and len(pair) == 2 and pair <= kinds:
+            a, b = sorted(pair)
+            near[a].add(b)
+            near[b].add(a)
+    seen = set()
+    for k in sorted(kinds):
+        if k in seen or not near[k]:
+            continue
+        g, todo = set(), [k]
+        while todo:
+            a = todo.pop()
+            if a not in g:
+                g.add(a)
+                todo.extend(near[a] - g)
+        seen |= g
+        if not any(lengths.get(a, 0) for a in g):
+            raise NoBestScript(f"{', '.join(sorted(g))} exclude each other and none has a minimum length: every "
+                               "alternation of them is beaten by a faster one, so no script is the best")
 
 
 def _targets(problems) -> tuple[dict, dict] | None:

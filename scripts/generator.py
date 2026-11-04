@@ -74,7 +74,7 @@ from modes import ModeKnowledge
 from probability import ProbabilityFinder, Scenario
 from problems import MinimumLengthProblem, PresenceRatioProblem, check_sum  # noqa: F401 (the problems, for the callers)
 from region import Region
-from ratio_plan import Fill, NoBestScript, Plan  # noqa: F401 (NoBestScript: for the callers)
+from ratio_plan import Fill, NoBestScript, Plan, check_best_exists  # noqa: F401 (NoBestScript: for the callers)
 from resolve import Refused, apply_edit
 from rules import RuleSet
 from script import SHOW, ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Uncovered, Edited, score
@@ -162,6 +162,7 @@ class RulesGenerator:
         self.endless = False  # q = 1 in a process of its own: the run goes on until it proves it is done
         self.speed = Fraction(1)  # the chip's, for how far it goes during a run
         self.seed = random.randrange(2 ** 32) if seed is None else seed
+        check_best_exists(rules, self.problems)  # whatever the rest of the definitions
         self.plan = Plan(rules, self.problems, self.constraints, self.seed)
         self.fill = Fill(self.problems)
         if self.fill.ok and self._modes_that_matter():

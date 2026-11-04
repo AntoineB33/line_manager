@@ -17,7 +17,7 @@ import re
 from dataclasses import replace
 from fractions import Fraction
 
-from constraints import FifteenMinuteBreaks, KeepOn
+from constraints import FifteenMinuteBreaks, KeepOn, ScreenBreaks
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import Op
 from region import ONE, Region
@@ -157,7 +157,35 @@ def _action(text: str):
     return EditAction(tuple(_op(p) for p in re.split(r", (?=put |take )", text)))
 
 
+_SCREEN = re.compile(r"keep (.+) with (\S+), as early as possible(?:; a chain of (.+) is its longest break)?$")
+_SCREEN_KIND = re.compile(r"(\S+) of (\S+) \(none within (\S+) after as much (\S+)\)$")
+
+
+def _screen_breaks(m, rules) -> ScreenBreaks:
+    """keep K of L (none within P after as much NS), ... with NS, as early as possible[; a
+    chain of K, ... is its longest break] (constraints.ScreenBreaks)."""
+    ns = m[2]
+    breaks = []
+    for part in m[1].split("), "):
+        k = _SCREEN_KIND.match(part if part.endswith(")") else part + ")")
+        if not k:
+            raise ValueError(f"a break like 'Break5 of 300 (none within 3600 after as much {ns})' is expected, not {part!r}")
+        if k[4] != ns:
+            raise ValueError(f"the same kind is expected, not {k[4]} and {ns}")
+        breaks.append((k[1], _number(k[2]), _number(k[3])))
+    chain = [c.strip() for c in m[3].split(",")] if m[3] else []
+    for k in [b[0] for b in breaks] + [ns] + chain:
+        if rules is not None and k not in rules.order:
+            raise ValueError(f"{k} is not in the rules")
+    if not set(chain) <= {b[0] for b in breaks}:
+        raise ValueError("a chain is of the breaks kept")
+    return ScreenBreaks(breaks, ns, chain, rules=rules)
+
+
 def _constraint(line: str, rules):
+    m = _SCREEN.match(line)
+    if m and " (none within " in line:
+        return _screen_breaks(m, rules)
     m = _BREAKS.match(line)
     if m:
         kind, length, ns, pause, ns2 = m.groups()

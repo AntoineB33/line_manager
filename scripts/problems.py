@@ -43,6 +43,25 @@ from fractions import Fraction
 from intervals import EMPTY as IEMPTY, Interval, IntervalSet, Pos
 from line import GEN, Op
 from region import Region
+from solver import lhs_region, target
+
+
+def forbidden(ctx, kind: str, vals=None) -> Region:
+    """Where the element rules forbid `kind` on the line (`vals`: its values, the
+    state's by default): their literals "no kind" that are not in an "or", where their
+    left sides are met. A proposal there would be refused, or would remove older
+    elements."""
+    rs = getattr(getattr(ctx, "gen", None), "rules", None)
+    if rs is None:
+        return Region.empty()
+    vals = ctx.state.line.vals if vals is None else vals
+    out = Region.empty()
+    for r in rs.element:
+        for it in r.rhs:
+            o = it.options[0]
+            if not it.is_or and o.negated and o.kind == kind:
+                out = out | target(o, lhs_region(r.lhs, vals))
+    return out
 
 
 def _window(c: Fraction, H: Fraction) -> IntervalSet:
@@ -76,13 +95,17 @@ class PresenceRatioProblem:
         Wset = _window(c, H)
         W = Region.of(Wset)
         ops = []
-        for kind, target in sorted(self.targets.items()):
-            need = target * H - ctx.expected(s, kind, weights, Wset)
+        vals = dict(s.line.vals)  # with what this proposal places: the next kinds avoid it too
+        for kind, goal in sorted(self.targets.items()):
+            need = goal * H - ctx.expected(s, kind, weights, Wset)
             if need > 0:
-                free = (W - s.line.presence(kind)).on(c, c + H + 1) & Wset
+                free = (W - s.line.presence(kind) - forbidden(ctx, kind, vals)).on(c, c + H + 1) & Wset
                 place = _place(free, need, strategy, c, H)
                 if place:
                     ops.append(Op.put(kind, Region.of(place)))
+                    d = dict(vals.get(kind, {}))
+                    d[Fraction(100)] = d.get(Fraction(100), Region.empty()) | Region.of(place)
+                    vals[kind] = d
             elif need < 0:
                 mine = (s.claims.owned(kind, GEN) & W).on(c, c + H + 1) & Wset
                 cut = mine.take(-need, from_right=strategy != "right")
@@ -142,7 +165,7 @@ class MinimumLengthProblem:
         ops = []
         for k, L in sorted(self.lengths.items()):
             pres = s.line.presence(k)
-            blocked = pres | s.claims.off(k) | s.claims.negative(k)
+            blocked = pres | s.claims.off(k) | s.claims.negative(k) | forbidden(ctx, k)
             free = (Region.universe() - blocked).on(c, c + self.horizon + 3 * L) & IntervalSet.after(c)
             grow = IEMPTY
             for iv, d in shortfalls(pres, L, c, self.horizon):

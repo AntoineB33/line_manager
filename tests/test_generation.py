@@ -6,7 +6,7 @@ import unittest
 from fractions import Fraction as F
 
 from helpers import check_log, rand_interval
-from constraints import FifteenMinuteBreaks, KeepOn
+from constraints import FifteenMinuteBreaks, KeepOn, ScreenBreaks
 from generator import PresenceRatioProblem, RulesGenerator, _Context, budget, rerun_distance
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import GEN, MODE, USER, LineState, Op
@@ -427,6 +427,66 @@ class FifteenMinuteBreaksTest(unittest.TestCase):
                                   "mode 1 → no NoScreen", "mode 2 → NoScreen & NoComputerUnlocked & NoPhoneUnlocked",
                                   "mode 3 → NoScreen & (NotOnComputer or NotOnPhone)"])
         self.assertEqual(b, Region.of(IntervalSet.of(Interval.closed_open(130, 140), Interval._mk(Pos(160) + EPS, Pos(175) + EPS))))
+
+
+class ScreenBreaksTest(unittest.TestCase):
+    """Several kinds of screen breaks together (constraints.ScreenBreaks), in seconds."""
+    M = 60
+    BREAKS = [("Break20s", 20, 20 * 60), ("Break5", 5 * 60, 60 * 60), ("Break15", 15 * 60, 120 * 60)]
+
+    def starts(self, regions, kind, a, b):
+        return [iv.lo.x for iv in regions[kind].on(a, b).intervals]
+
+    def test_5_and_15(self):
+        """A 5min break then a 15min one at the chip is one 15min break; then 1 hour to the
+        next 5min one and 2 hours to the next 15min one: every 2h15."""
+        k = ScreenBreaks(self.BREAKS[1:], rules=parse_rules(["Break5 → NoScreen", "Break15 → NoScreen"]))
+        b = k.breaks(LineState.empty(), F(0))
+        self.assertEqual(self.starts(b, "Break15", 0, 30000), [0, 8100, 16200, 24300])
+        self.assertEqual(self.starts(b, "Break5", 0, 30000), [4500, 12600, 20700, 28800])
+        self.assertEqual(b["Break15"].on(0, 1000).intervals[0].hi, Pos(900, 1))  # (0, 900]
+
+    def test_the_three(self):
+        """A 5min or 15min break puts off the 20s ones too."""
+        k = ScreenBreaks(self.BREAKS, rules=parse_rules([f"{b} → NoScreen" for b, _, _ in self.BREAKS]))
+        b = k.breaks(LineState.empty(), F(0))
+        self.assertEqual(self.starts(b, "Break20s", 0, 8100), [2100, 3320, 6000, 7220])
+        self.assertEqual(self.starts(b, "Break5", 0, 8100), [4500])
+        self.assertEqual(self.starts(b, "Break15", 0, 16300), [0, 8100, 16200])
+
+    def sleep(self):
+        rs = parse_rules([f"{b} → NoScreen" for b, _, _ in self.BREAKS] + ["Sleep → NoScreen", "Sleep → NoScreen on [-3600, 0] of l"])
+        night = Region(-3600, 82800, IntervalSet.of(Interval.closed_open(-3600, 25200)), 1, IntervalSet(),
+                       86400, IntervalSet.of(Interval.closed_open(0, 28800)))
+        return rs, apply_edit(rs, LineState.empty(), [Op.put("Sleep", night)], USER)
+
+    def test_sleep(self):
+        """"No screen" from 22:00 to 07:00 every day, read from the rules: every break waits
+        after it; the 15min break that would start at 22:30 starts at 22:00, and the night
+        gets no other break. The same every day."""
+        rs, state = self.sleep()
+        b = ScreenBreaks(self.BREAKS, rules=rs).breaks(state, F(25200))
+        for day in (0, 86400, 2 * 86400):
+            self.assertEqual(self.starts(b, "Break5", 25200 + day, 86400 + day),
+                             [28800 + day, 36900 + day, 45000 + day, 53100 + day, 61200 + day, 69300 + day, 77400 + day])
+            self.assertEqual(self.starts(b, "Break15", 25200 + day, 86400 + day),
+                             [32400 + day, 40500 + day, 48600 + day, 56700 + day, 64800 + day, 72900 + day, 79200 + day])
+            self.assertEqual(self.starts(b, "Break20s", 79200 + day, 112800 + day), [26400 + 86400 + day])
+        unbound = ScreenBreaks(self.BREAKS).breaks(state, F(25200))  # without the rules: no sleep ahead
+        self.assertTrue(self.starts(unbound, "Break15", 82800, 111600))
+
+    def test_put_it_holds(self):
+        """Once its edits are made, it asks for none: the breaks it reads are not its own."""
+        rs, state = self.sleep()
+        k = ScreenBreaks(self.BREAKS, rules=rs)
+        after = apply_edit(rs, state, k.ops(state, F(25200)), GEN)
+        self.assertEqual(k.ops(after, F(25200)), [])
+        self.assertEqual(k.ops(after, F(30000)), [])
+
+    def test_script_text(self):
+        """Its text in the script is read back."""
+        k = ScreenBreaks(self.BREAKS)
+        self.assertEqual(str(parse_script("keep " + str(k)[5:], Script()).constraints[0]), str(k))
 
 
 class ResourcesTest(unittest.TestCase):

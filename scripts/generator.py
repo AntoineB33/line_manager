@@ -123,6 +123,9 @@ class RulesGenerator:
         self.q = q
         self.use_probability = use_probability
         self.constraints = tuple(constraints)
+        for k in self.constraints:  # (ScreenBreaks reads what the rules put)
+            if hasattr(k, "bind"):
+                k.bind(rules)
         self.paced = False  # in a process of its own: the instant script holds PACE after the chip
         self.endless = False  # q = 1 in a process of its own: the run goes on until it proves it is done
         self.speed = Fraction(1)  # the chip's, for how far it goes during a run

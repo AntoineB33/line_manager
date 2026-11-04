@@ -38,7 +38,7 @@ from fractions import Fraction as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 
-from constraints import FifteenMinuteBreaks, KeepOn  # noqa: E402,F401 (FifteenMinuteBreaks: for the example scripts)
+from constraints import FifteenMinuteBreaks, KeepOn, ScreenBreaks  # noqa: E402,F401 (the breaks: for the example scripts)
 from generator import RulesGenerator  # noqa: E402
 from intervals import INF, Interval, IntervalSet  # noqa: E402
 from line import LineState, Op  # noqa: E402
@@ -72,6 +72,7 @@ Edits of the user (several in one edit: separate them with ";")
   <where> is "at x", "on <interval>", "on <interval> U <interval> ...", or
   "everywhere"; an interval is [a, b], (a, b), [a, b) or (a, b], with fractions,
   decimals, -inf and inf, e.g.  on [0, 1/2) U (3, inf)
+  "<where> every P" repeats it every P from there on, e.g.  add Sleep on [-3600, 25200) every 86400
 The modes (given externally: by MODES in the script, or by you)
   mode <name>              the mode is <name> from the chip on (the mode buttons or the
                            selectors do it too), until the next transition MODES plans
@@ -86,7 +87,7 @@ KIND = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
 # the commands that change the line, the mode or the rules: refused while the chip is paused
 EDITS = {"add", "no", "remove", "mode", "rule", "unrule"}
 PAUSED = "the chip is paused: press Play to edit"
-RESERVED = {"no", "at", "on", "everywhere", "mode"}
+RESERVED = {"no", "at", "on", "everywhere", "every", "mode"}
 
 
 class Calculator:
@@ -537,8 +538,13 @@ def parse_op(text: str) -> list[Op]:
 
 
 def parse_where(text: str) -> Region:
-    """at x | on <interval> [U <interval>]... | everywhere."""
+    """at x | on <interval> [U <interval>]... | everywhere, then optionally "every P":
+    repeated every P from there on, forever (what is given must be bounded and shorter
+    than P)."""
     t = text.strip()
+    m = re.match(r"(.*\S)\s+every\s+(\S+)$", t)
+    if m:
+        return every(parse_where(m.group(1)), number(m.group(2)))
     if t == "everywhere":
         return Region.universe()
     if t.startswith("at "):
@@ -547,6 +553,21 @@ def parse_where(text: str) -> Region:
         ivs = [interval(p) for p in re.split(r"\s+[Uu]\s+", t[3:].strip())]
         return Region.of(IntervalSet(ivs))
     raise ValueError(f"where? {t!r} (at x, on [a, b], everywhere)")
+
+
+def every(where: Region, period) -> Region:
+    """`where` repeated every `period` from there on, forever. Not to the left: an "or"
+    of the rules on an element with no left end is not always decided (rules.py)."""
+    if period <= 0:
+        raise ValueError("a period > 0")
+    if not where.is_bounded() or where.is_empty():
+        raise ValueError("what repeats must be bounded and not empty")
+    s = where.bounded()
+    lo = s.inf()
+    if not s.sup() < lo + period:
+        raise ValueError("what repeats must be shorter than its period")
+    pattern = s.shift(-lo)
+    return Region(lo, lo + period, s, 1, IntervalSet(), period, pattern)
 
 
 def interval(text: str) -> Interval:

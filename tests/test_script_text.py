@@ -64,6 +64,23 @@ class RegionsTest(unittest.TestCase):
             self.assertEqual(str(_op(str(op))), str(op))
 
 
+class EveryTest(unittest.TestCase):
+    """An edit that repeats: "<where> every P" (UI/app.py)."""
+
+    def test_every_day_from_there_on(self):
+        from app import parse_where
+        r = parse_where("on [-3600, 25200) every 86400")
+        for x, inside in ((-3600, True), (25199, True), (25200, False), (82800, True), (86400 * 30 + 1000, True),
+                          (86400 * 30 + 30000, False), (-3601, False), (-86400 - 3600, False)):
+            self.assertEqual(r.contains(x), inside, x)
+
+    def test_refused(self):
+        from app import parse_where
+        for text in ("on [0, 2] every 1", "on [0, inf) every 5", "on [0, 1] every 0"):
+            with self.assertRaises(ValueError, msg=text):
+                parse_where(text)
+
+
 class ParseTest(unittest.TestCase):
     def test_the_same_text_is_the_same_script(self):
         s = session()

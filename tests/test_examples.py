@@ -15,7 +15,7 @@ try:
     import gui
 except ImportError:  # (no tkinter)
     gui = None
-from script import ChipIn, Edited  # noqa: E402
+from script import ChipIn, Edited, PresenceAbove, ScoreBelow  # noqa: E402
 
 
 def reruns(name):
@@ -38,6 +38,12 @@ class ExamplesTest(unittest.TestCase):
     def test_every_example_has_its_own_rules(self):
         expected = {
             "fifteen_minute_break_modes": {(ChipIn, None), Edited},
+            "screen_breaks_5_15": {(ChipIn, None), Edited},
+            "screen_breaks": {(ChipIn, None), Edited},
+            "screen_breaks_sleep": {(ChipIn, None), Edited},
+            # the tasks: their targets are watched, in each mode (all reach VideoGames)
+            "screen_breaks_sleep_tasks": {(ChipIn, None), (ChipIn, "1"), (ChipIn, "2"), (ChipIn, "3"), Edited,
+                                          ScoreBelow, PresenceAbove},
         }
         names = {f[:-3] for f in os.listdir(os.path.join(UI, "examples")) if f.endswith(".py")}
         self.assertEqual(names, set(expected))

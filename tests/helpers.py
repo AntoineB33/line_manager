@@ -21,7 +21,7 @@ def summing_to_1(targets: dict, rest: str = "Rest") -> dict:
     else reads (the targets sum to 1, problems.check_sum)."""
     out = {k: F(r) for k, r in targets.items()}
     left = 1 - sum(out.values(), F(0))
-    if left:
+    if out and left:  # (no target at all: no ratio problem)
         out[rest] = out.get(rest, F(0)) + left
     return out
 

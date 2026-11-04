@@ -733,12 +733,14 @@ class ProblemsTest(unittest.TestCase):
 
     def test_weights(self):
         """2 units of A in (0, 20], or none since an interval of A should be 10 long: the
-        heavier problem decides (in the search: with a rule, ratio_plan.py has no line)."""
-        rs = parse_rules(["C → D"])
+        heavier problem decides (in the search: A forbidden at 50, ratio_plan.py has no
+        line at once)."""
+        rs = parse_rules(["C → no A"])
+        state = apply_edit(rs, LineState.empty(), [Op.put("C", Interval.closed(50, 51))], USER)
         ratio, length = PresenceRatioProblem(summing_to_1({"A": F(1, 10)})).with_window(20), MinimumLengthProblem({"A": 10}).with_window(20)
-        after, _ = self.run_once(rs, LineState.empty(), [(ratio, 10), (length, 1)])
+        after, _ = self.run_once(rs, state, [(ratio, 10), (length, 1)])
         self.assertTrue(after.line.presence("A"))
-        after, _ = self.run_once(rs, LineState.empty(), [(ratio, 1), (length, 10)])
+        after, _ = self.run_once(rs, state, [(ratio, 1), (length, 10)])
         self.assertFalse(after.line.presence("A"))
 
     def test_the_best_line_meets_both_ratio_and_minimum_length(self):

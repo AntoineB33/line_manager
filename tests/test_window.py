@@ -42,7 +42,7 @@ BREAKS = ["Break15 → NoScreen", "mode 1 → no NoScreen", "mode 2 → NoScreen
 
 
 def background(rules, problem, constraints=(), q=F(1, 2)):
-    g = RulesGenerator(parse_rules(rules), problem, q, constraints=constraints)
+    g = RulesGenerator(parse_rules(rules), problem, q, constraints=constraints, shortcuts=False)  # the search's pace
     g.paced = True
     chip = Chip([(0, 0)])
     sim = Simulation(LineState.empty(), g, chip, ModeTimeline(0, "1"))
@@ -69,7 +69,7 @@ class FirstScriptTest(unittest.TestCase):
         rest = sim.gen.first_edits(sim.state, F(0))
         self.assertEqual(rest[0][0].kind, "Y")
         state = sim.state
-        for kind in ("Y", "X"):
+        for kind in ("Y", "X", "Rest"):
             state = apply_edit(sim.rules, state, [Op.put(kind, Region.of(Interval(0, 120, False, True)))], "user")
         self.assertEqual(sim.gen.first_edits(state, F(0)), [])
         self.assertTrue(y)
@@ -99,7 +99,7 @@ class FirstScriptTest(unittest.TestCase):
         self.assertFalse(sim.state.line.presence("Y").contains(25))
 
     def test_it_stays_in_the_next_scripts(self):
-        sim, _ = background(["A → B"], PresenceRatioProblem(summing_to_1({"Y": F(1, 2)})).with_window(120))
+        sim, _ = background(["A → B"], PresenceRatioProblem(summing_to_1({"Y": F(1, 2), "X": F(1, 4)})).with_window(120))
         req = sim.request
         line = "put Y 100% on (0, 10]"
         self.assertIn(line, sim.script.text())

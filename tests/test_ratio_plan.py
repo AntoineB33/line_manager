@@ -145,10 +145,10 @@ class FillTest(unittest.TestCase):
     """Every target at ratio 1 (ratio_plan.Fill): wherever it can be after the chip, at
     once, whatever the other rules, the modes and the constraints."""
 
-    def breaks(self, rules, q=0.5):
+    def breaks(self, rules, q=0.5, targets=None):
         from constraints import FifteenMinuteBreaks
         g = RulesGenerator(parse_rules(["Break15 → NoScreen", "mode 1 → no NoScreen"] + rules),
-                           [(PresenceRatioProblem({"Task": 1}), 1), (MinimumLengthProblem({"Task": 1}), 1)], q,
+                           [(PresenceRatioProblem(targets or {"Task": 1}), 1), (MinimumLengthProblem({"Task": 1}), 1)], q,
                            constraints=[FifteenMinuteBreaks(length=2, pause=3)])
         began = time.perf_counter()
         stages = list(g.stages(LineState.empty(), F(0), ModeTimeline(0, "1").known(0)))
@@ -172,6 +172,29 @@ class FillTest(unittest.TestCase):
                 for x in (F(5, 2), 4, F(101, 2), 1000, 10 ** 6 + F(1, 2)):  # breaks every 5: (0, 2], (5, 7], ...
                     self.assertNotEqual(task.contains(x), brk.contains(x), x)
                 self.assertLess(took, 5)
+
+    def test_below_1_and_forbidden_nowhere_it_is_at_its_ratio_everywhere(self):
+        stages, took = self.breaks([], targets={"Task": HALF, "B": HALF})
+        self.assertEqual(len(stages), 1)
+        line = stages[-1][0].base.line
+        self.assertEqual(line.vals["Task"], {50: after_from(0)})
+        self.assertEqual(line.vals["B"], {50: after_from(0)})
+        self.assertLess(took, 5)
+
+    def test_below_1_and_forbidden_somewhere_or_refused_the_search_decides(self):
+        for rules in (["Break15 → no B"], ["Task → no B"]):
+            with self.subTest(rules=rules):
+                stages, _ = self.breaks(rules, targets={"Task": HALF, "B": HALF})
+                self.assertNotEqual(stages[-1][1].chosen, "the targets at once: each where it can be")
+                line = stages[-1][0].base.line
+                self.assertNotEqual(line.vals.get("B"), {50: after_from(0)})
+
+    def test_a_mode_rule_that_reaches_a_target_leaves_it_to_the_search(self):
+        """"mode 1 → D": what the mode adds at the chip changes D's share."""
+        g = RulesGenerator(parse_rules(["mode 1 → D"]), [(PresenceRatioProblem({"D": F(3, 4), "E": F(1, 4)}), 1)], 0.5)
+        self.assertFalse(g.fill.ok)
+        g = RulesGenerator(parse_rules(["mode 1 → C"]), [(PresenceRatioProblem({"D": F(3, 4), "E": F(1, 4)}), 1)], 0.5)
+        self.assertTrue(g.fill.ok)
 
 
 def after_from(x):

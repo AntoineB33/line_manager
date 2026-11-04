@@ -28,7 +28,7 @@ RULES = ["mode 1 → D"]
 
 
 def gen(q=F(1, 2), H=60, rules=RULES, **k):
-    return RulesGenerator(parse_rules(rules), PresenceRatioProblem(summing_to_1({"A": F(1, 4)})).with_window(H), q, **k)
+    return RulesGenerator(parse_rules(rules), PresenceRatioProblem(summing_to_1({"A": F(1, 4)})).with_window(H), q, shortcuts=False, **k)
 
 
 def stages(g, c=0):
@@ -120,7 +120,7 @@ class ReachingBackTest(unittest.TestCase):
     def test_a_rule_that_reaches_before_the_frontier(self):
         """A stage cannot place what a rule brings back before the last frontier."""
         rs = parse_rules(["A → B 30 units on the left of p"])
-        g = RulesGenerator(rs, PresenceRatioProblem(summing_to_1({"A": F(1, 4), "B": F(1, 4)})).with_window(120), F(9, 10))
+        g = RulesGenerator(rs, PresenceRatioProblem(summing_to_1({"A": F(1, 4), "B": F(1, 4)})).with_window(120), F(9, 10), shortcuts=False)
         out = list(g.stages(LineState.empty(), F(0), ModeTimeline(0, "1").known(0)))
         for (a, st), (b, _) in zip(out, out[1:]):
             self.assertTrue(a.base.line.same_on(b.base.line, Region.of(Interval(-10 ** 6, st.definitive, True, True))), st.definitive)
@@ -130,7 +130,7 @@ class ReachingBackTest(unittest.TestCase):
         """D at the chip forbids A 5 further: a later stage cannot place A within 5 of the
         frontier, or D before it would depend on that stage."""
         rs = parse_rules(["mode 1 → D", "D → no A 5 units on the right"])
-        g = RulesGenerator(rs, PresenceRatioProblem(summing_to_1({"A": F(1, 2)})).with_window(60), F(9, 10))
+        g = RulesGenerator(rs, PresenceRatioProblem(summing_to_1({"A": F(1, 2)})).with_window(60), F(9, 10), shortcuts=False)
         self.assertEqual(g.margin(), 5)
         out = list(g.stages(LineState.empty(), F(0), ModeTimeline(0, "2").known(0)))
 
@@ -146,7 +146,7 @@ class ReachingBackTest(unittest.TestCase):
 
 class EndlessTest(unittest.TestCase):
     def endless(self, rules, problem):
-        g = RulesGenerator(parse_rules(rules), problem, 1)
+        g = RulesGenerator(parse_rules(rules), problem, 1, shortcuts=False)
         g.endless = True
         with mock.patch("generator.SEARCH_TIME", F(1, 100)):
             out = list(itertools.islice(g.stages(LineState.empty(), F(0), ModeTimeline(0, "1").known(0)), 40))

@@ -326,9 +326,9 @@ class EventsOfTheRequirementTest(unittest.TestCase):
     def test_score(self):
         rs = parse_rules([])
         problems = [(PresenceRatioProblem(summing_to_1({"A": F(1, 2)})).with_window(10), F(1))]
-        self.assertEqual(score(problems, LineState.empty(), F(0)), F(2, 3))  # the error is 1/2
+        self.assertEqual(score(problems, LineState.empty(), F(0)), F(1, 2))  # the error is 1/2 for A, 1/2 for Rest
         st = apply_edit(rs, LineState.empty(), [Op.put("A", Region.of(Interval.open_closed(0, 5)))], USER)
-        self.assertEqual(score(problems, st, F(0)), 1)
+        self.assertEqual(score(problems, st, F(0)), F(2, 3))  # Rest still missing
 
 
 class ConstraintsRefuseTest(unittest.TestCase):

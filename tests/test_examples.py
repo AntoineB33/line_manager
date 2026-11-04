@@ -1,10 +1,8 @@
 """The scripts of UI/examples/, with no window: each one starts, and its generated script
 has the rerun rules its context asks for."""
 
-import io
 import os
 import runpy
-from contextlib import redirect_stdout
 import sys
 import unittest
 from unittest import mock
@@ -20,8 +18,6 @@ except ImportError:  # (no tkinter)
 from intervals import INF, Interval as Iv  # noqa: E402
 from region import Region  # noqa: E402
 from script import ChipIn, Edited, PresenceAbove, ScoreBelow  # noqa: E402
-
-REFUSED = {"screen_break_15_task"}  # examples whose definitions are refused
 
 
 def first_run(name):
@@ -49,6 +45,8 @@ class ExamplesTest(unittest.TestCase):
     def test_every_example_has_its_own_rules(self):
         expected = {
             "screen_break_15": {(ChipIn, None), Edited},
+            # its tasks: the score and their ratios are watched
+            "screen_break_15_task": {(ChipIn, None), Edited, ScoreBelow, PresenceAbove},
             "screen_breaks_5_15": {(ChipIn, None), Edited},
             "screen_breaks": {(ChipIn, None), Edited},
             "screen_breaks_sleep": {(ChipIn, None), Edited},
@@ -59,7 +57,7 @@ class ExamplesTest(unittest.TestCase):
             "single_element_full_presence": {Edited},
         }
         names = {f[:-3] for f in os.listdir(os.path.join(UI, "examples")) if f.endswith(".py")}
-        self.assertEqual(names, set(expected) | REFUSED)
+        self.assertEqual(names, set(expected))
         for name, rules in expected.items():
             with self.subTest(name):
                 self.assertEqual(reruns(name), rules)
@@ -72,17 +70,13 @@ class ExamplesTest(unittest.TestCase):
         self.assertEqual(line.presence("A"), Region.of(Iv(0, INF, lo_closed=False, hi_closed=False)))
         self.assertEqual(set(line.vals["A"]), {100})
 
-    def test_the_refused_examples_open_no_window(self):
-        """Their definitions are refused (A 1 and B 1/2: the presence ratio targets sum to
-        3/2, not 1): the window says why, does not open, and no generator runs (none asks
-        for a run at 675)."""
-        for name in sorted(REFUSED):
-            with self.subTest(name):
-                out = io.StringIO()
-                with mock.patch.object(gui, "run") as run, redirect_stdout(out):
-                    runpy.run_path(os.path.join(UI, "examples", f"{name}.py"), run_name="__main__")
-                self.assertFalse(run.called)
-                self.assertIn("the definitions are refused: the presence ratio targets sum to 3/2, not 1", out.getvalue())
+    def test_the_tasks_are_at_their_ratio_everywhere_at_once(self):
+        """A and B at 0.5, related to nothing: A 50% and B 50% on (0, inf) after the first
+        run, in one stage (the search used to put them at 100%, a few minutes ahead only)."""
+        sim = first_run("screen_break_15_task")
+        everywhere = Region.of(Iv(0, INF, lo_closed=False, hi_closed=False))
+        self.assertEqual(sim.state.line.vals["A"], {50: everywhere})
+        self.assertEqual(sim.state.line.vals["B"], {50: everywhere})
 
 
 if __name__ == "__main__":

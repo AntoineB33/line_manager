@@ -184,39 +184,55 @@ class _Rules:
 
 
 class Fill:
-    """Every kind with a target has the ratio 1 (and a minimum length only for those):
-    the best line has each of them wherever it can be after the chip, whatever the other
-    rules, the modes and the constraints, so the generator offers that edit first, on the
-    whole line, instead of building it a stage at a time (`ok`). E.g. Task, ratio 1, with
-    the 15min breaks: Task on (x, inf); with "Break15 → no Task", Task on every position
-    after the chip but the breaks."""
+    """The best line of targets that nothing makes compete, whatever the other rules, the
+    modes and the constraints: the generator offers it first, on the whole line, instead
+    of building it a stage at a time (`ok`; a minimum length only for a kind with a
+    target).
+    - A kind with the ratio 1: wherever it can be after the chip. E.g. Task with the 15min
+      breaks: Task on (x, inf); with "Break15 → no Task", on every position after the chip
+      but the breaks.
+    - A kind with a ratio r < 1 that nothing forbids after the chip: at r everywhere after
+      it, e.g. A and B at 0.5: A 50% and B 50% on (x, inf). Forbidden somewhere, there is
+      no such edit (the search decides).
+    The rules can still refuse the whole edit (e.g. "A → no B"): the generator checks it.
+    No fill when a mode rule reaches a target (e.g. "mode 1 → D", D a target): what it adds
+    at the chip changes the share (the generator turns `ok` off)."""
 
     def __init__(self, problems) -> None:
         found = _targets(problems)
         self.ok = False
         if not found:
             return
-        targets, self.lengths = found
-        self.kinds = sorted(k for k, r in targets.items() if r > 0)
-        self.ok = bool(self.kinds) and all(targets[k] == 1 for k in self.kinds) and all(k in self.kinds for k in self.lengths)
+        self.targets, self.lengths = found
+        self.kinds = sorted(k for k, r in self.targets.items() if r > 0)
+        self.ok = bool(self.kinds) and all(k in self.kinds for k in self.lengths)
 
     def ops(self, rules, state: LineState, chip, window) -> list[Op] | None:
-        """The edit on this line (the constraints' elements already on it): each kind on
-        what is free of it and not forbidden after the chip; None if a free stretch shorter
-        than its minimum length would have to be filled (the search decides then)."""
+        """The edit on this line (the constraints' elements already on it); None if there
+        is none: a kind below 1 forbidden somewhere after the chip, or there and not put by
+        the generator, or a free stretch shorter than a minimum length to fill."""
         c = Fraction(chip)
         after = Region.of(Interval(c, INF, False, False))
         from problems import forbidden  # (problems imports nothing of this module)
         ops = []
         for k in self.kinds:
-            free = after - state.line.presence(k) - forbidden(_Lines(rules, state), k)
+            pres = state.line.presence(k)
+            no = forbidden(_Lines(rules, state), k) & after
+            if self.targets[k] < 1:
+                there = pres & after
+                if not no.is_empty() or not (there - state.claims.owned(k, GEN)).is_empty():
+                    return None
+                if not there.is_empty():
+                    ops.append(Op.take(k, after))
+                ops.append(Op.put(k, after, 100 * self.targets[k]))
+                continue
+            free = after - pres - no
             if free.is_empty():
                 continue
             L = self.lengths.get(k, Fraction(0))
             if L:
                 for iv in free.on(c, c + window).intervals:
-                    touches = iv.hi.x >= c + window or state.line.presence(k).contains(iv.lo) or \
-                        state.line.presence(k).contains(iv.hi + Pos(0, 1))
+                    touches = iv.hi.x >= c + window or pres.contains(iv.lo) or pres.contains(iv.hi + Pos(0, 1))
                     if iv.length < L and not touches:
                         return None
             ops.append(Op.put(k, free))

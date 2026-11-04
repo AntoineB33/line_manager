@@ -132,11 +132,12 @@ class RulesGenerator:
     MAX_SCENARIOS = 8
 
     def __init__(self, rules: RuleSet, problems, q: float, use_probability: bool = True, constraints=(), seed=None,
-                 window=None) -> None:
+                 window=None, shortcuts: bool = True) -> None:
         """problems: a problem, or [(problem, weight)] with weights >= 0; constraints:
         constraints.py's (anything with `ops(state, chip)`); seed: the random choices
         (ratio_plan.py), drawn once here if None; window: the search's (`search_window`
-        if None, or the largest window of problems already bound to one). Raises
+        if None, or the largest window of problems already bound to one); shortcuts: the
+        best line at once where ratio_plan.py finds it (False: the search alone). Raises
         NoBestScript (a ValueError) when the definitions have no best script."""
         if not 0 <= q <= 1:
             raise ValueError("the allocated resources quantity must be in [0, 1]")
@@ -163,6 +164,10 @@ class RulesGenerator:
         self.seed = random.randrange(2 ** 32) if seed is None else seed
         self.plan = Plan(rules, self.problems, self.constraints, self.seed)
         self.fill = Fill(self.problems)
+        if self.fill.ok and self._modes_that_matter():
+            self.fill.ok = False  # the mode rules change the targets' share: the search predicts them
+        if not shortcuts:  # the search alone, whatever the definitions (its tests)
+            self.plan.ok = self.fill.ok = False
 
     def kinds_read(self):
         """What the rules, the constraints and the problems read; None if that is not known."""
@@ -272,8 +277,12 @@ class RulesGenerator:
         ctx.forced = []
         if self.fill.ok:  # the best line at once, on the whole line: one stage
             fill = self.fill.ops(self.rules, base, c, H)
-            if fill:
-                ctx.forced, frontiers = [("ratio 1: wherever it can be", tuple(fill))], [None]
+            try:
+                valid = bool(fill) and check_script_edit(state, apply_edit(self.rules, base, fill, GEN), c) is None
+            except Refused:
+                valid = False
+            if valid:
+                ctx.forced, frontiers = [("the targets at once: each where it can be", tuple(fill))], [None]
         D = rerun_distance(self.q, H)
         predicted = self.predicted(ctx, c + D / 6) if self.rules.mode_rules else []
         covered, carried = predicted, []
@@ -558,7 +567,9 @@ class _Context:
         """The candidates in their order; `deep`: then finer and finer placements."""
         yield from self._candidates(STRATEGIES)
         if deep:
-            yield from self._candidates(tuple(f"spread{2 ** n}" for n in range(5, 21)))
+            # up to 1024 parts: a placement spread over more costs too much to build (it is
+            # built before the run's time is checked) for parts 1/1024 of the window wide
+            yield from self._candidates(tuple(f"spread{2 ** n}" for n in range(5, 11)))
 
     def _candidates(self, strategies):
         preds = [p for p in PREDICTIONS if p != "scenario" or self.weights_best]

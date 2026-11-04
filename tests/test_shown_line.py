@@ -27,7 +27,7 @@ RULES = ["Break15 → NoScreen",
 
 
 def simulation(modes) -> Simulation:
-    sim = Simulation(LineState.empty(), RulesGenerator(parse_rules(RULES), PresenceRatioProblem({}, 240), 0.5, constraints=[FifteenMinuteBreaks()]),
+    sim = Simulation(LineState.empty(), RulesGenerator(parse_rules(RULES), PresenceRatioProblem({}).with_window(240), 0.5, constraints=[FifteenMinuteBreaks()]),
                      Chip([(0, 0)]), modes)
     sim.start()
     return sim

@@ -10,7 +10,7 @@ The tasks are elements, one at a time (rules), that the generator places (PROBLE
     Reading      30%     15min     allowed
 None during "sleep", a 20s break, or the first minute of a 5min break. The shares are
 of the time a task can be at: the presence ratios of PresenceRatioProblem are of the
-whole window, so they are the shares times the part of it that is not a break or
+whole line, so they are the shares times the part of it that is not a break or
 "sleep" (about 9/10 of a day awake). The minimum lengths weigh 1/10000 of the ratios:
 a run makes its edits a few seconds at a time (its stages), and a piece of a few
 seconds falls short of 15 or 30 minutes by more than its presence brings, so with the
@@ -54,8 +54,9 @@ Not expressed: as screen_breaks.py, and:
   the devices at the chip.
 - the resilience of a task to a period, when it is neither 0 nor 1 (Homework 0.5 to
   "no screen"): a task is allowed there or not, and its share is the same.
-- the exponential decay of the compensation: the generator only looks at its window
-  (4 hours from the chip).
+- the exponential decay of the compensation: the generator's search only looks at a
+  window of its own after the chip (generator.search_window: twice the longest break
+  and its pause, 4h30).
 - "before bed" is only the "no screen" hour before sleep.
 
 Copy this file to make your own session, change the definitions, and run it:
@@ -113,9 +114,8 @@ CONSTRAINTS = [
 AWAKE = F_(9, 10)  # the part of the window a task can be at
 PROBLEMS = [
     (PresenceRatioProblem({"Homework": F_(40, 100) * AWAKE, "VideoGames": F_(30, 100) * AWAKE,
-                           "Reading": F_(30, 100) * AWAKE}, horizon=240 * MINUTE), 1),
-    (MinimumLengthProblem({"Homework": 30 * MINUTE, "VideoGames": 30 * MINUTE, "Reading": 15 * MINUTE},
-                          horizon=240 * MINUTE), F_(1, 10000)),
+                           "Reading": F_(30, 100) * AWAKE}), 1),
+    (MinimumLengthProblem({"Homework": 30 * MINUTE, "VideoGames": 30 * MINUTE, "Reading": 15 * MINUTE}), F_(1, 10000)),
 ]
 Q = 0.5
 

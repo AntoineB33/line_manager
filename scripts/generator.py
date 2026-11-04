@@ -2,7 +2,9 @@
 
 A run takes the state of the line, the chip's position c and the revealed modes, and
 returns a script. It is given optimization problems, each with a weight (problems.py),
-and plans the window W = (c, c + H], H the longest horizon of its problems.
+defined on the whole line. When the definitions are simple enough it finds the best line
+at once (ratio_plan.py); otherwise it searches, an approximation, on the window
+W = (c, c + H], H its own choice (`search_window`).
 
 0. Constraints (`constraints`, constraints.py): each gives the edits that make it hold
    after the chip at c, on the line as it is (e.g. FifteenMinuteBreaks: the 15-minute
@@ -104,29 +106,49 @@ def budget(q: float) -> int:
     return 2 + math.floor(36 * q)
 
 
-def rerun_distance(q: float, horizon: Fraction) -> Fraction:
+def rerun_distance(q: float, window: Fraction) -> Fraction:
     # the shortest decimal of a float keeps the order of floats: 0.2 -> 1/5
-    return horizon * (1 - Fraction(str(q)) / 2)
+    return window * (1 - Fraction(str(q)) / 2)
+
+
+SMALLEST_WINDOW = 24 * PACE  # the search's window when nothing in the definitions is longer
+
+
+def search_window(problems, constraints=()) -> Fraction:
+    """How far a run's search looks after the chip: far enough for what the definitions
+    are made of, 4 times the longest minimum length and twice the longest cycle of a
+    constraint (a break and its pause), at least SMALLEST_WINDOW."""
+    out = SMALLEST_WINDOW
+    for p, _ in problems:
+        for L in getattr(p, "lengths", {}).values():
+            out = max(out, 4 * Fraction(L))
+    for k in constraints:
+        out = max(out, 2 * Fraction(getattr(k, "cycle", 0)))
+    return out
 
 
 class RulesGenerator:
     MAX_SCENARIOS = 8
 
-    def __init__(self, rules: RuleSet, problems, q: float, use_probability: bool = True, constraints=(), seed=None) -> None:
+    def __init__(self, rules: RuleSet, problems, q: float, use_probability: bool = True, constraints=(), seed=None,
+                 window=None) -> None:
         """problems: a problem, or [(problem, weight)] with weights >= 0; constraints:
         constraints.py's (anything with `ops(state, chip)`); seed: the random choices
-        (ratio_plan.py), drawn once here if None. Raises NoBestScript (a ValueError)
-        when the definitions have no best script."""
+        (ratio_plan.py), drawn once here if None; window: the search's (`search_window`
+        if None, or the largest window of problems already bound to one). Raises
+        NoBestScript (a ValueError) when the definitions have no best script."""
         if not 0 <= q <= 1:
             raise ValueError("the allocated resources quantity must be in [0, 1]")
         self.rules = rules
-        self.problems = [(problems, Fraction(1))] if hasattr(problems, "error") else [(p, Fraction(w)) for p, w in problems]
-        if any(w < 0 for _, w in self.problems):
+        problems = [(problems, Fraction(1))] if hasattr(problems, "error") else [(p, Fraction(w)) for p, w in problems]
+        if any(w < 0 for _, w in problems):
             raise ValueError("the weights of the problems are >= 0")
-        self.horizon = max((p.horizon for p, _ in self.problems), default=Fraction(1))
+        self.constraints = tuple(constraints)
+        bound = [p.window for p, _ in problems if getattr(p, "window", None)]
+        self.window = Fraction(window) if window is not None else max(bound) if bound else search_window(problems, self.constraints)
+        self.problems = [(p.with_window(self.window) if hasattr(p, "with_window") else p, w) for p, w in problems]
         self.q = q
         self.use_probability = use_probability
-        self.constraints = tuple(constraints)
         for k in self.constraints:  # (ScreenBreaks reads what the rules put)
             if hasattr(k, "bind"):
                 k.bind(rules)
@@ -180,8 +202,8 @@ class RulesGenerator:
         cp = Pos(c)
         for p, _ in self.problems:
             for kind, r in sorted(getattr(p, "targets", {}).items()):
-                w = IntervalSet.of(Interval(c, c + p.horizon, False, True))
-                if state.line.integral(kind, w) / p.horizon < r and (best is None or r > best[0]):
+                w = IntervalSet.of(Interval(c, c + p.window, False, True))
+                if state.line.integral(kind, w) / p.window < r and (best is None or r > best[0]):
                     best = (r, kind)
             for kind, L in sorted(getattr(p, "lengths", {}).items()):
                 pres = state.line.presence(kind)
@@ -196,7 +218,7 @@ class RulesGenerator:
         at least one: with q = 0 too a run reaches c + H, or it would run again sooner than
         with a higher q. None for a run that reaches c + H at once."""
         first = c + PACE
-        rest = c + self.horizon - first
+        rest = c + self.window - first
         if rest <= 0:
             return [None]
         more = max(1, math.ceil(Fraction(str(self.q)) * rest / PACE))
@@ -223,7 +245,7 @@ class RulesGenerator:
             if perfect is not None:
                 yield perfect
                 return
-        H = self.horizon
+        H = self.window
         ctx = _Context(self, state, c, known)
         stats = RunStats(budget=budget(self.q), probability_rules=ctx.probability_rules)
         base, keep = state, None
@@ -265,7 +287,10 @@ class RulesGenerator:
         for i, hi in enumerate(frontiers):
             ctx.state = current
             until = time.perf_counter() + float(SEARCH_TIME) if self.endless else None
+            # an interval reaching this stage's frontier can still grow at the next one (problems.py)
+            ctx.open_end = hi if hi is not None and hi < c + H else None
             ops, key, label, after = self._stage(ctx, state, current, lo, hi, stats, best_key, len(frontiers) - i, until)
+            ctx.open_end = None
             if ops:
                 best_key, best_label, current = key, label, after
                 edits.append(Event(ChipIn(c, INF), (EditAction(tuple(ops)),)))
@@ -332,7 +357,8 @@ class RulesGenerator:
         """The best edit on (lo, hi] of the candidates this stage has budget and time for
         (the budget left, shared with the `left` stages to come; with `until`, all it finds
         up to that time): (ops, key, label, state)."""
-        best = ((), best_key, "no-op", base)
+        # (scored here: what counts depends on the stage's frontier, problems.MinimumLengthProblem.error)
+        best = ((), ctx.score(base), "no-op", base)
         far = self.margin()
         if lo > ctx.c and self.rules.mode_rules:  # (what the mode rules do before lo stays)
             lo = hi if far is None or hi is None else min(lo + far, hi)
@@ -407,11 +433,11 @@ class RulesGenerator:
         out = [Event(ScoreBelow(score(self.problems, state, c) * (1 - margin)), (RerunAction(),))]
         for p, _ in self.problems:
             for kind, r in sorted(getattr(p, "targets", {}).items()):
-                w = IntervalSet.of(Interval(c, c + p.horizon, False, True))
-                now = state.line.integral(kind, w) / p.horizon
+                w = IntervalSet.of(Interval(c, c + p.window, False, True))
+                now = state.line.integral(kind, w) / p.window
                 y = max(now, r) + margin / 2
                 if y < 1:
-                    out.append(Event(PresenceAbove(kind, Fraction(100), y, p.horizon, c, c + D, mode), (RerunAction(),)))
+                    out.append(Event(PresenceAbove(kind, Fraction(100), y, p.window, c, c + D, mode), (RerunAction(),)))
         return out
 
     def predicted(self, ctx: _Context, end: Fraction) -> list[tuple[Pos, Pos, str]]:
@@ -428,7 +454,7 @@ class RulesGenerator:
 class _Context:
     def __init__(self, gen: RulesGenerator, state: LineState, c: Fraction, known: ModeKnowledge) -> None:
         self.gen, self.state, self.c, self.known = gen, state, c, known
-        H = gen.horizon
+        H = gen.window
         self.Wset = IntervalSet.of(Interval(c, c + H, False, True))
         self.W = Region.of(self.Wset)
         modes = set(known.modes_seen()) | {r.mode for r in gen.rules.mode_rules}

@@ -1,8 +1,11 @@
 """The optimization problems of the rules generator.
 
 The generator is given problems, each with a weight, and minimises the weighted sum
-of their errors (generator.py). A problem has a horizon H: it looks at the window
-W = (c, c + H], c the chip's position. It provides:
+of their errors (generator.py). A problem is defined on the whole line, with no window.
+When the generator cannot find the best line at once (ratio_plan.py), its search is an
+approximation that looks at a window W = (c, c + H], c the chip's position, H the
+generator's own choice (generator.search_window): it binds each problem to it
+(`with_window`). A bound problem provides:
 - error(ctx, state): how far the state is from its targets on W, >= 0, and 0 when
   they are reached;
 - proposals(ctx, prediction, strategy): an edit of the generated script that brings
@@ -37,10 +40,10 @@ The mode rules are not predicted for this problem: it reads the line as it is.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 
-from intervals import EMPTY as IEMPTY, Interval, IntervalSet, Pos
+from intervals import EMPTY as IEMPTY, EPS, Interval, IntervalSet, Pos
 from line import GEN, Op
 from region import Region
 from solver import lhs_region, target
@@ -64,6 +67,16 @@ def forbidden(ctx, kind: str, vals=None) -> Region:
     return out
 
 
+def _bound(p, H):
+    """A copy of the problem whose search looks at (c, c + H]."""
+    H = Fraction(H)
+    if H <= 0:
+        raise ValueError("a window > 0")
+    out = replace(p)
+    out.window = H
+    return out
+
+
 def _window(c: Fraction, H: Fraction) -> IntervalSet:
     return IntervalSet.of(Interval(c, c + H, False, True))
 
@@ -72,13 +85,15 @@ def _window(c: Fraction, H: Fraction) -> IntervalSet:
 class PresenceRatioProblem:
     """Targets r_K in [0, 1] for the presence ratio (1/H) ∫_W s_K(x)/100 dx of each kind."""
     targets: dict[str, Fraction]
-    horizon: Fraction
+    window: Fraction | None = field(default=None, init=False)  # the generator's search window
 
     def __post_init__(self) -> None:
         self.targets = {t: Fraction(r) for t, r in self.targets.items()}
-        self.horizon = Fraction(self.horizon)
-        if self.horizon <= 0 or any(not 0 <= r <= 1 for r in self.targets.values()):
-            raise ValueError("horizon > 0 and targets in [0, 1]")
+        if any(not 0 <= r <= 1 for r in self.targets.values()):
+            raise ValueError("targets in [0, 1]")
+
+    def with_window(self, H) -> PresenceRatioProblem:
+        return _bound(self, H)
 
     name = "presence ratio"
 
@@ -86,12 +101,12 @@ class PresenceRatioProblem:
         return bool(self.targets)
 
     def error(self, ctx, s) -> Fraction:
-        H, Wset = self.horizon, _window(ctx.c, self.horizon)
+        H, Wset = self.window, _window(ctx.c, self.window)
         return sum((abs(ctx.expected(s, k, ctx.weights_full, Wset) / H - r) for k, r in self.targets.items()), Fraction(0))
 
     def proposals(self, ctx, pred: str, strategy: str) -> tuple[Op, ...]:
         weights = {"scenario": ctx.weights_best, "uniform": ctx.weights_uniform, "none": None}[pred]
-        H, c, s = self.horizon, ctx.c, ctx.state
+        H, c, s = self.window, ctx.c, ctx.state
         Wset = _window(c, H)
         W = Region.of(Wset)
         ops = []
@@ -137,13 +152,15 @@ def _place(free: IntervalSet, amount: Fraction, strategy: str, c: Fraction, H: F
 class MinimumLengthProblem:
     """A minimum length L_K > 0 for the intervals of each kind (see the top of this file)."""
     lengths: dict[str, Fraction]
-    horizon: Fraction
+    window: Fraction | None = field(default=None, init=False)  # the generator's search window
 
     def __post_init__(self) -> None:
         self.lengths = {k: Fraction(v) for k, v in self.lengths.items()}
-        self.horizon = Fraction(self.horizon)
-        if self.horizon <= 0 or any(v <= 0 for v in self.lengths.values()):
-            raise ValueError("horizon > 0 and minimum lengths > 0")
+        if any(v <= 0 for v in self.lengths.values()):
+            raise ValueError("minimum lengths > 0")
+
+    def with_window(self, H) -> MinimumLengthProblem:
+        return _bound(self, H)
 
     name = "minimum length"
 
@@ -151,9 +168,13 @@ class MinimumLengthProblem:
         return bool(self.lengths)
 
     def error(self, ctx, s) -> Fraction:
+        """In a stage of a run, an interval that reaches the stage's frontier (ctx.open_end)
+        can still grow at the next stage: its shortfall does not count yet."""
+        end = getattr(ctx, "open_end", None)
         out = Fraction(0)
         for k, L in self.lengths.items():
-            out += sum((d for _, d in shortfalls(s.line.presence(k), L, ctx.c, self.horizon)), Fraction(0)) / L
+            out += sum((d for iv, d in shortfalls(s.line.presence(k), L, ctx.c, self.window)
+                        if end is None or not iv.lo <= Pos(end) <= iv.hi + EPS), Fraction(0)) / L
         return out
 
     def proposals(self, ctx, pred: str, strategy: str) -> tuple[Op, ...]:
@@ -166,9 +187,9 @@ class MinimumLengthProblem:
         for k, L in sorted(self.lengths.items()):
             pres = s.line.presence(k)
             blocked = pres | s.claims.off(k) | s.claims.negative(k) | forbidden(ctx, k)
-            free = (Region.universe() - blocked).on(c, c + self.horizon + 3 * L) & IntervalSet.after(c)
+            free = (Region.universe() - blocked).on(c, c + self.window + 3 * L) & IntervalSet.after(c)
             grow = IEMPTY
-            for iv, d in shortfalls(pres, L, c, self.horizon):
+            for iv, d in shortfalls(pres, L, c, self.window):
                 if not d:
                     continue
                 want = d if strategy == "left" else Fraction(0) if strategy == "right" else d / 2
@@ -188,7 +209,7 @@ class MinimumLengthProblem:
         ops = []
         for k, L in sorted(self.lengths.items()):
             mine = s.claims.owned(k, GEN)
-            drop = [iv for iv, d in shortfalls(s.line.presence(k), L, ctx.c, self.horizon)
+            drop = [iv for iv, d in shortfalls(s.line.presence(k), L, ctx.c, self.window)
                     if d and iv.lo > c and Region.of(IntervalSet.of(iv)).issubset(mine)]
             if drop:
                 ops.append(Op.take(k, Region.of(IntervalSet(drop))))

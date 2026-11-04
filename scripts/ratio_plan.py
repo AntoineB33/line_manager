@@ -1,5 +1,5 @@
 """The best line of the presence ratio targets and minimum lengths, found at once
-(rules_generator_requirements.md), when the definitions are simple enough:
+(the examples of tests/test_ratio_plan.py), when the definitions are simple enough:
 - the rules are only exclusions "B → no A" (no mode rule, no percentage rule);
 - no constraint;
 - the problems are presence ratios and minimum lengths, a kind having one target, at

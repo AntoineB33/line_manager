@@ -61,7 +61,7 @@ def _kinks(problems, state, points) -> set:
     """Where a presence ratio crosses its target: |ratio - target| changes slope there."""
     out = set()
     for p, _ in problems:
-        H = p.horizon
+        H = p.window
         for k, r in p.targets.items():
             def g(x):
                 return state.line.integral(k, IntervalSet.of(Interval(x, x + H, False, True))) / H - r
@@ -99,7 +99,7 @@ def _next(trigger, state, c, problems):
         return _search(ratio, c, top, trigger.y, _ends([r], c, top, H))
     if trigger.z <= 0:
         return INF
-    H = max(p.horizon for p, _ in problems)
+    H = max(p.window for p, _ in problems)
     kinds = [k for p, _ in problems for k in p.targets]
     top = c + H
     points = sorted({c, top} | _ends(_presence_regions(state, kinds), c, top, H))[:MOST]

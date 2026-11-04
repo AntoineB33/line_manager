@@ -5,3 +5,4 @@ When the prompt was about a gap from the requirements, your answer must says ver
 - you need more information
 - you were wrong
 Tell me if something smells wrong.
+When the prompt is about an anomaly in the result, update the tests to make sure they won't miss it next time.

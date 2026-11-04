@@ -32,7 +32,7 @@ def random_world(rng):
         except ValueError:
             continue
     targets = {k: F(rng.randint(0, 4), 4) for k in rng.sample("ABCE", rng.randint(1, 2))}
-    problem = PresenceRatioProblem(targets, F(rng.choice([4, 6])))
+    problem = PresenceRatioProblem(targets).with_window(F(rng.choice([4, 6])))
     pos, trans, mode = F(0), [], "1"
     for _ in range(rng.randint(0, 5)):
         pos += F(rng.randint(1, 6))
@@ -58,7 +58,7 @@ class ScriptTest(unittest.TestCase):
             def run(self, s, chip, known):
                 from generator import RunStats
                 return (script if chip == 0 else Script()), RunStats()
-        sim = Simulation(state, Fixed(rs, PresenceRatioProblem({}, 10), 0.5), Chip([(0, 0), (10, 10)]), ModeTimeline(0, "1"))
+        sim = Simulation(state, Fixed(rs, PresenceRatioProblem({}).with_window(10), 0.5), Chip([(0, 0), (10, 10)]), ModeTimeline(0, "1"))
         return sim, sim.run(10)
 
     def test_never_left_of_the_chip_nor_the_users_elements(self):
@@ -122,13 +122,13 @@ class ModeRulesTest(unittest.TestCase):
 
     def simulate(self, rs, state, edits=(), script=None):
         timeline = ModeTimeline(0, "1", self.MODES)
-        gen = Oracle(rs, PresenceRatioProblem({}, 10), 0.5, timeline=timeline)
+        gen = Oracle(rs, PresenceRatioProblem({}).with_window(10), 0.5, timeline=timeline)
         if script is not None:
             class Fixed(RulesGenerator):
                 def run(self, s, chip, known):
                     from generator import RunStats
                     return script, RunStats()
-            gen = Fixed(rs, PresenceRatioProblem({}, 10), 0.5)
+            gen = Fixed(rs, PresenceRatioProblem({}).with_window(10), 0.5)
         sim = Simulation(state, gen, Chip([(0, 0), (10, 10), (20, 15)]), timeline, list(edits))
         log = sim.run(20)
         check_log(log, rs)
@@ -163,7 +163,7 @@ class ModeRulesTest(unittest.TestCase):
         chip took from an older one, and the newest edit wins where it acts."""
         rs = parse_rules(["mode 2 → no A", "B → C 1 unit on the left"])
         chip, modes = Chip([(0, 0), (20, 20)]), ModeTimeline(0, "1", [(5, "2")])
-        g = RulesGenerator(rs, PresenceRatioProblem({}, 60), F(1, 2))
+        g = RulesGenerator(rs, PresenceRatioProblem({}).with_window(60), F(1, 2))
         sim = Simulation(LineState.empty(), g, chip, modes, [
             UserEdit(F(1), [Op.put("A", Interval.closed(2, 100))]),
             UserEdit(F(10), [Op.put("B", Interval.point(50))]),
@@ -178,7 +178,7 @@ class ModeRulesTest(unittest.TestCase):
         the other way: "no D" (older), D (newer) at 2, then the mode rule and a take of D."""
         rs = parse_rules(["mode 1 → no D"])
         chip, modes = Chip([(0, 0), (20, 20)]), ModeTimeline(0, "1")
-        g = RulesGenerator(rs, PresenceRatioProblem({}, 60), F(1, 2))
+        g = RulesGenerator(rs, PresenceRatioProblem({}).with_window(60), F(1, 2))
         p = Interval.point(F(5))
         sim = Simulation(LineState.empty(), g, chip, modes, [
             UserEdit(F(1), [Op.put("D", p, 50)]), UserEdit(F(2), [Op.put("D", p)]), UserEdit(F(8), [Op.take("D", Interval.point(F(6)))])])
@@ -198,7 +198,7 @@ class ModeRulesTest(unittest.TestCase):
         rule acts on what comes after."""
         rs = parse_rules(["mode 2 → no A"])
         chip, modes = Chip([(0, 0), (5, 5), (20, 5)]), ModeTimeline(0, "2")
-        g = RulesGenerator(rs, PresenceRatioProblem({}, 60), F(1, 2))
+        g = RulesGenerator(rs, PresenceRatioProblem({}).with_window(60), F(1, 2))
         sim = Simulation(LineState.empty(), g, chip, modes, [UserEdit(F(10), [Op.put("A", Interval.closed(5, 6))])])
         log = sim.run(12)
         check_log(log, rs)
@@ -247,7 +247,7 @@ class ModeRulesTest(unittest.TestCase):
         rs = parse_rules(["T → S or no S", "S → R", "S → B on [0, 2] of p", "S → no R on (0, 6] of p", "mode 1 → no B"])
         state = apply_edit(rs, LineState.empty(), [Op.put("T", Interval(0, INF, True, False))], USER)
         # horizon 100: the next run is asked for at 75 / 18, after the positions looked at
-        sim = Simulation(state, RulesGenerator(rs, PresenceRatioProblem({}, 100), 0.5), Chip([(0, 0), (20, 20)]),
+        sim = Simulation(state, RulesGenerator(rs, PresenceRatioProblem({}).with_window(100), 0.5), Chip([(0, 0), (20, 20)]),
                          ModeTimeline(0, "1"))
         moving = False
         for i in range(1, 9):
@@ -270,7 +270,7 @@ class ModeRulesTest(unittest.TestCase):
         compiled mode rules drag the one at the chip."""
         rs = parse_rules(["Future → S or no S", "S → R", "S → B on [0, 2] of p", "S → no R on (0, 6] of p", "mode 1 → no B"])
         future = Op.put("Future", Interval(0, INF, False, False))  # (0, inf)
-        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5, constraints=[KeepOn(future)]),
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}).with_window(10), 0.5, constraints=[KeepOn(future)]),
                          Chip([(0, 0), (20, 20)]), ModeTimeline(0, "1"))
         sim.start()
         self.assertIn("keep put Future 100% on chip + (0, +inf)", sim.script.text())
@@ -291,7 +291,7 @@ class ModeRulesTest(unittest.TestCase):
         import solver
         rs = parse_rules(["T → S or R", "S → B on [0, 2] of p", "R → no B 1 unit on the right", "mode 1 → no B"])
         state = apply_edit(rs, LineState.empty(), [Op.put("T", Interval(0, INF, True, False))], USER)
-        sim = Simulation(state, RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5), Chip([(0, 0), (20, 20)]),
+        sim = Simulation(state, RulesGenerator(rs, PresenceRatioProblem({}).with_window(10), 0.5), Chip([(0, 0), (20, 20)]),
                          ModeTimeline(0, "1"))
         before, changes = sim.state, len(sim.log.changes)
         snap = sim.snapshot()
@@ -324,7 +324,7 @@ class ModeRulesTest(unittest.TestCase):
         sim, log = self.simulate(rs, LineState.empty(), script=Script())
         self.assertFalse(sim.state.line.kinds())
         self.assertFalse(any(ch.source == "mode" for ch in log.changes))
-        script, _ = RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5).run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
+        script, _ = RulesGenerator(rs, PresenceRatioProblem({}).with_window(10), 0.5).run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
         self.assertTrue(script.stretches)
 
     def test_unpredicted_modes(self):
@@ -332,7 +332,7 @@ class ModeRulesTest(unittest.TestCase):
         chip goes on): where the modes differ, no stretch applies, and the script's
         Uncovered event runs the generator again there."""
         rs = parse_rules(self.RULES)
-        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5, use_probability=False),
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}).with_window(10), 0.5, use_probability=False),
                          Chip([(0, 0), (10, 10)]), ModeTimeline(0, "1", [(4, "2"), (5, "1")]))
         log = sim.run(10)
         check_log(log, rs)
@@ -386,7 +386,7 @@ class FifteenMinuteBreaksTest(unittest.TestCase):
     def test_script_puts_them(self):
         """The line starts empty: the first run's script puts the breaks after the chip."""
         rs = parse_rules(self.RULES)
-        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 180), 0.5,
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}).with_window(180), 0.5,
                                                            constraints=[FifteenMinuteBreaks()]),
                          Chip([(0, 0), (1, 1)]), ModeTimeline(0, "2"))
         sim.run(1)
@@ -401,7 +401,7 @@ class FifteenMinuteBreaksTest(unittest.TestCase):
         completes after the first. What the breaks are around there, the chip at 160."""
         rs = parse_rules(rules)
         chip = Chip([(0, 0)])
-        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 240), 0.5, constraints=[FifteenMinuteBreaks()]),
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}).with_window(240), 0.5, constraints=[FifteenMinuteBreaks()]),
                          chip, ModeTimeline(0, "1", [(130, "2"), (140, "1")]))
         sim.background = True
         sim.start()
@@ -509,7 +509,7 @@ class ResourcesTest(unittest.TestCase):
             m.solve = counted
         try:
             rs = parse_rules(["Break15 → NoScreen", "mode 1 → no NoScreen", "mode 2 → NoScreen"])
-            gen = RulesGenerator(rs, PresenceRatioProblem({"Other": F(1, 4)}, 240), q, constraints=[FifteenMinuteBreaks()])
+            gen = RulesGenerator(rs, PresenceRatioProblem({"Other": F(1, 4)}).with_window(240), q, constraints=[FifteenMinuteBreaks()])
             gen.run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
         finally:
             for m in modules:
@@ -523,8 +523,8 @@ class ResourcesTest(unittest.TestCase):
 
     def test_the_text_does_not_depend_on_what_is_compiled(self):
         rs = parse_rules(["mode 1 → D"])
-        low = RulesGenerator(rs, PresenceRatioProblem({}, 60), F(1, 10)).run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))[0]
-        high = RulesGenerator(rs, PresenceRatioProblem({}, 60), F(9, 10)).run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))[0]
+        low = RulesGenerator(rs, PresenceRatioProblem({}).with_window(60), F(1, 10)).run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))[0]
+        high = RulesGenerator(rs, PresenceRatioProblem({}).with_window(60), F(9, 10)).run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))[0]
         self.assertGreater(low.covered[0][1], high.covered[0][1])  # a lower q reruns later, its text goes further
         self.assertLess(low.stretches[-1].b, high.stretches[-1].b)  # and it compiles less
 
@@ -553,7 +553,7 @@ class HyperparameterTest(unittest.TestCase):
             self.assertGreater(rerun_distance(q1, H), rerun_distance(q2, H))
         for bad in (-0.1, 1.5):
             with self.assertRaises(ValueError):
-                RulesGenerator(parse_rules([]), PresenceRatioProblem({}, 1), bad)
+                RulesGenerator(parse_rules([]), PresenceRatioProblem({}).with_window(1), bad)
 
     @staticmethod
     def first_rerun(script, chip, modes, t):
@@ -606,7 +606,7 @@ class RerunRulesTest(unittest.TestCase):
 
     @staticmethod
     def reruns(rules, targets, q=0.5, constraints=()):
-        gen = RulesGenerator(parse_rules(rules), PresenceRatioProblem(targets, 100), q, constraints=constraints)
+        gen = RulesGenerator(parse_rules(rules), PresenceRatioProblem(targets).with_window(100), q, constraints=constraints)
         script, _ = gen.run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
         return script.rerun_triggers()
 
@@ -631,7 +631,7 @@ class RerunRulesTest(unittest.TestCase):
         self.assertFalse(self.of(t, ChipIn))
 
     def test_the_best_line_needs_only_the_user_edits(self):
-        """Found at once (rules_generator_requirements.md): nothing to watch but the user."""
+        """Found at once (ratio_plan.py): nothing to watch but the user."""
         self.assertEqual(self.reruns([], {"A": F(1, 2)}), [Edited(True)])
 
     def test_only_the_modes_that_reach_the_target(self):
@@ -684,7 +684,7 @@ class ProbabilityFinderTest(unittest.TestCase):
         probability rules, a run with the fewest resources sees that mode 1 will give D
         and adds none; without them it expects half and adds D where mode 2 will be."""
         rs = parse_rules(["mode 1 → D"])
-        problem = PresenceRatioProblem({"D": F(3, 4)}, F(8))
+        problem = PresenceRatioProblem({"D": F(3, 4)}).with_window(F(8))
         modes = self.periodic((3, 1))
         chip = Chip([(0, 0), (60, 60)])
         err = {}
@@ -724,7 +724,7 @@ class ProblemsTest(unittest.TestCase):
         """A short interval of the user grows after the chip; the user's own stays."""
         rs = parse_rules([])
         state = apply_edit(rs, LineState.empty(), [Op.put("A", IntervalSet.of(Interval.closed(2, 4), Interval.closed(30, 31)))], USER)
-        problem = MinimumLengthProblem({"A": 10}, 40)
+        problem = MinimumLengthProblem({"A": 10}).with_window(40)
         after, stats = self.run_once(rs, state, [(problem, 1)])
         ctx = _Context(RulesGenerator(rs, [(problem, 1)], 0.5), after, F(0), ModeTimeline(0, "1").known(0))
         self.assertEqual(problem.error(ctx, after), 0, stats.chosen)
@@ -734,7 +734,7 @@ class ProblemsTest(unittest.TestCase):
         """2 units of A in (0, 20], or none since an interval of A should be 10 long: the
         heavier problem decides (in the search: with a rule, ratio_plan.py has no line)."""
         rs = parse_rules(["C → D"])
-        ratio, length = PresenceRatioProblem({"A": F(1, 10)}, 20), MinimumLengthProblem({"A": 10}, 20)
+        ratio, length = PresenceRatioProblem({"A": F(1, 10)}).with_window(20), MinimumLengthProblem({"A": 10}).with_window(20)
         after, _ = self.run_once(rs, LineState.empty(), [(ratio, 10), (length, 1)])
         self.assertTrue(after.line.presence("A"))
         after, _ = self.run_once(rs, LineState.empty(), [(ratio, 1), (length, 10)])
@@ -742,9 +742,9 @@ class ProblemsTest(unittest.TestCase):
 
     def test_the_best_line_meets_both_ratio_and_minimum_length(self):
         """With no rule, A at 10% everywhere after the chip: its ratio, and one interval
-        longer than 10 (rules_generator_requirements.md), whatever the weights."""
+        longer than 10 (ratio_plan.py), whatever the weights."""
         rs = parse_rules([])
-        ratio, length = PresenceRatioProblem({"A": F(1, 10)}, 20), MinimumLengthProblem({"A": 10}, 20)
+        ratio, length = PresenceRatioProblem({"A": F(1, 10)}).with_window(20), MinimumLengthProblem({"A": 10}).with_window(20)
         for weights in ((10, 1), (1, 10)):
             after, stats = self.run_once(rs, LineState.empty(), [(ratio, weights[0]), (length, weights[1])])
             self.assertEqual(stats.chosen, "perfect script")
@@ -817,7 +817,7 @@ class StepByStepTest(unittest.TestCase):
 
     def test_same_as_at_once(self):
         rs = parse_rules(["A → B or C", "B → no C 1 unit on the right", "mode 1 → E", "mode 2 → no E"])
-        problem = PresenceRatioProblem({"A": F(1, 4)}, F(6))
+        problem = PresenceRatioProblem({"A": F(1, 4)}).with_window(F(6))
         modes = ModeTimeline(0, "1", [(F(3), "2"), (F(7), "1")])
         edit = [Op.put("A", Interval.closed(9, 10))]
         # the edit at time 41/10 (chip 81/20): not where the scripts ask for a run (every 1/4)
@@ -842,7 +842,7 @@ class StepByStepTest(unittest.TestCase):
         script of an older call does not."""
         rs = parse_rules(["A → B"])
         chip = Chip([(0, 0)])
-        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 4), 0.5), chip, ModeTimeline(0, "1"))
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}).with_window(4), 0.5), chip, ModeTimeline(0, "1"))
         sim.background = True
         sim.start()
         first = sim.request
@@ -876,7 +876,7 @@ class StepByStepTest(unittest.TestCase):
         future = Op.put("Future", Interval(0, INF, False, False))
         chip = Chip([(0, 0)])
         # horizon 180: the next run is asked for at 135 / 18 = 7.5, after the positions looked at
-        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 180), 0.5, constraints=[KeepOn(future)]),
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}).with_window(180), 0.5, constraints=[KeepOn(future)]),
                          chip, ModeTimeline(0, "1"))
         sim.background = True
         sim.start()
@@ -900,7 +900,7 @@ class StepByStepTest(unittest.TestCase):
         """At the start the script is only an instruction to run the generator once, as
         soon as possible: it runs at the first instant, after the user's edits of it."""
         rs = parse_rules(["A → B"])
-        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 4), 0.5), Chip([(0, 0)]),
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}).with_window(4), 0.5), Chip([(0, 0)]),
                          ModeTimeline(0, "1"))
         self.assertEqual(sim.script.text(), "every 1/20 s:\n  if the program starts, then run the generator once, as soon as possible.")
         self.assertIsNone(sim.edit_now([Op.put("A", Interval.closed(2, 3))]))
@@ -914,10 +914,10 @@ class StepByStepTest(unittest.TestCase):
     def test_rules(self):
         rs = parse_rules(["A → B"])
         chip = Chip([(0, 0)])
-        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 4), 0.5), chip, ModeTimeline(0, "1"))
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}).with_window(4), 0.5), chip, ModeTimeline(0, "1"))
         self.assertIsNone(sim.edit_now([Op.put("A", Interval.closed(2, 3))]))
         self.assertEqual(sim.state.line.kinds(), ["A", "B"])
-        sim.set_generator(RulesGenerator(parse_rules(["A → C"]), PresenceRatioProblem({}, 4), 0.5))
+        sim.set_generator(RulesGenerator(parse_rules(["A → C"]), PresenceRatioProblem({}).with_window(4), 0.5))
         self.assertEqual(sim.state.line.kinds(), ["A", "C"])
         self.assertIsNotNone(sim.edit_now([Op.put("A", Interval.point(1)), Op.put_no("C", Interval.point(1))]))
 

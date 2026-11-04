@@ -155,14 +155,26 @@ class ModeRules:
             return state
         return self._constrained(LineState(c, solve(self.rs, c.problem()), state.history), at.bounded().sup())
 
-    def constrain(self, claims, line: Line, p: Pos, history=()):
+    def constrain(self, claims, line: Line, p: Pos, history=(), give_way: bool = False):
         """The claims with the constraints' elements after p where they want them, as the
         generator's (GEN; its script keeps them as the chip goes): with the chip at p in
-        mode 1, the break it would eat moves on after it."""
+        mode 1, the break it would eat moves on after it. `give_way`: the generator's other
+        elements are taken off where those go (the next run places them again)."""
         if not self.constraints:
             return claims
         st, c = LineState(claims, line, history), claims.copy()
         later = Region.of(Interval(p, INF, False, False))
+        wanted = {kind: want for k in self.constraints for kind, want in k.targets(st, p).items()}
+        if give_way:
+            moved = Region.empty()
+            for want in wanted.values():
+                moved = moved | (want or Region.empty())
+            for kind, d in c.pos.items():
+                if kind not in wanted:
+                    for key in [key for key in d if key[1] == GEN]:
+                        d[key] = d[key] - moved
+                        if not d[key]:
+                            del d[key]
         for k in self.constraints:
             for kind, want in k.targets(st, p).items():
                 d = c.pos.setdefault(kind, {})
@@ -181,7 +193,13 @@ class ModeRules:
         if not self.constraints:
             return state
         c = self.constrain(state.claims, state.line, p, state.history)
-        return state if c.same(state.claims) is True else LineState(c, solve(self.rs, c.problem()), state.history)
+        if c.same(state.claims) is True:
+            return state
+        try:
+            return LineState(c, solve(self.rs, c.problem()), state.history)
+        except Conflict:  # the generator's other elements are in the way
+            c = self.constrain(state.claims, state.line, p, state.history, give_way=True)
+            return LineState(c, solve(self.rs, c.problem()), state.history)
 
     def run_claims(self, state: LineState, decision: tuple, at: Region):
         """The claims of `with_run`, or None if the decision places nothing."""

@@ -102,7 +102,7 @@ class FlattenedTest(unittest.TestCase):
 
 class SimulationTest(unittest.TestCase):
     def sim(self, rs, limit):
-        s = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 4), 0.5), Chip([(0, 0), (1000, 1000)]), ModeTimeline(0, "1"))
+        s = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}).with_window(4), 0.5), Chip([(0, 0), (1000, 1000)]), ModeTimeline(0, "1"))
         s.memory_limit = limit
         return s
 
@@ -165,7 +165,7 @@ class SimulationTest(unittest.TestCase):
     def test_the_mode_rules_alone_reach_the_limit(self):
         """No edit of the user or the script: what the chip drags is flattened all the same."""
         rs = parse_rules(["mode 1 → D", "mode 2 → no D"])
-        g = RulesGenerator(rs, PresenceRatioProblem({}, 4), 0.5)
+        g = RulesGenerator(rs, PresenceRatioProblem({}).with_window(4), 0.5)
         modes = ModeTimeline(0, "1", [(F(i, 2) + 1, "2" if i % 2 == 0 else "1") for i in range(60)])
         s = Simulation(LineState.empty(), g, Chip([(0, 0), (1000, 1000)]), modes)
         s.memory_limit = 3000
@@ -205,7 +205,7 @@ class SimulationTest(unittest.TestCase):
 
     def test_a_stopped_step_gives_the_trajectory_back(self):
         chip = Chip([(0, 0), (1, 1)])
-        s = Simulation(LineState.empty(), RulesGenerator(parse_rules(RULES), PresenceRatioProblem({}, 4), 0.5), chip, ModeTimeline(0, "1"))
+        s = Simulation(LineState.empty(), RulesGenerator(parse_rules(RULES), PresenceRatioProblem({}).with_window(4), 0.5), chip, ModeTimeline(0, "1"))
         snap = s.snapshot()
         chip.extend(2, 2)
         s.restore(snap)

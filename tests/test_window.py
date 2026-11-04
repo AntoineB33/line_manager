@@ -57,12 +57,12 @@ def go(sim, chip, t):
 
 class FirstScriptTest(unittest.TestCase):
     def test_the_biggest_ratio_target(self):
-        sim, _ = background(["A → B"], PresenceRatioProblem({"X": F(1, 4), "Y": F(1, 2)}, 120))
+        sim, _ = background(["A → B"], PresenceRatioProblem({"X": F(1, 4), "Y": F(1, 2)}).with_window(120))
         self.assertEqual(sim.state.line.presence("Y"), Region.of(Interval(0, 10, False, True)))
         self.assertFalse(sim.state.line.presence("X"))
 
     def test_only_what_is_not_reached(self):
-        sim, _ = background(["A → B"], PresenceRatioProblem({"X": F(1, 4), "Y": F(1, 2)}, 120))
+        sim, _ = background(["A → B"], PresenceRatioProblem({"X": F(1, 4), "Y": F(1, 2)}).with_window(120))
         y = sim.state.line.presence("Y")
         sim.state = LineState.empty()
         rest = sim.gen.first_edits(sim.state, F(0))
@@ -77,14 +77,14 @@ class FirstScriptTest(unittest.TestCase):
         """The kind rules out "no screen": the constraint's breaks stay, and the
         first script does not put what they forbid."""
         rules = BREAKS + ["X → no NoScreen"]
-        sim, chip = background(rules, PresenceRatioProblem({"X": F(1, 2)}, 240), [FifteenMinuteBreaks()])
+        sim, chip = background(rules, PresenceRatioProblem({"X": F(1, 2)}).with_window(240), [FifteenMinuteBreaks()])
         self.assertIn("keep Break15", sim.script.text())
         self.assertTrue(sim.state.line.presence("Break15").contains(5))
         self.assertFalse(sim.state.line.presence("X").contains(5))
 
     def test_a_kind_short_of_its_minimum_length_goes_on(self):
         rules = parse_rules(["A → B"])
-        g = RulesGenerator(rules, MinimumLengthProblem({"X": 5, "Y": 5}, 60), F(1, 2))
+        g = RulesGenerator(rules, MinimumLengthProblem({"X": 5, "Y": 5}).with_window(60), F(1, 2))
         state = apply_edit(rules, LineState.empty(), [Op.put("X", Interval.closed(18, 20)), Op.put("Y", Interval.closed(10, 20)),
                                                       Op.put("Z", Interval.closed(18, 20))], "user")
         self.assertEqual([[o.kind for o in ops] for ops in g.first_edits(state, F(20))], [["X"]])  # Y is long enough
@@ -98,7 +98,7 @@ class FirstScriptTest(unittest.TestCase):
         self.assertFalse(sim.state.line.presence("Y").contains(25))
 
     def test_it_stays_in_the_next_scripts(self):
-        sim, _ = background(["A → B"], PresenceRatioProblem({"Y": F(1, 2)}, 120))
+        sim, _ = background(["A → B"], PresenceRatioProblem({"Y": F(1, 2)}).with_window(120))
         req = sim.request
         line = "put Y 100% on (0, 10]"
         self.assertIn(line, sim.script.text())
@@ -118,7 +118,7 @@ class CalculatorTest(unittest.TestCase):
             self.addCleanup(os.remove, hang)
             real, A.EDIT_WORKER = A.EDIT_WORKER, hang
             self.addCleanup(setattr, A, "EDIT_WORKER", real)
-        s = Session(BREAKS, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2), [FifteenMinuteBreaks()])
+        s = Session(BREAKS, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2), [FifteenMinuteBreaks()])
         s.sim.background = False
         s.sim.start()
         s.calculate_apart()
@@ -152,7 +152,7 @@ class CalculatorTest(unittest.TestCase):
         self.assertIsNotNone(first.wait(5))  # ended
 
     def test_the_same_as_at_once(self):
-        s, plain = self.session(), Session(BREAKS, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2), [FifteenMinuteBreaks()])
+        s, plain = self.session(), Session(BREAKS, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2), [FifteenMinuteBreaks()])
         plain.sim.background = False
         plain.sim.start()
         for text in ("add NoScreen on [300, 310]", "add X on [50, 51]", "add Break15 on [40, 41]"):
@@ -181,7 +181,7 @@ SELECTOR_MODES = {(UN, UN): "1", (UN, FAKE): "1", (UN, LOCK): "1", (FAKE, UN): "
 
 
 def devices(modes=((0, "1"),)):
-    s = Session(DEVICES, modes, 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2),
+    s = Session(DEVICES, modes, 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2),
                 [FifteenMinuteBreaks()], SELECTORS, SELECTOR_MODES)
     s.sim.background = False
     s.sim.start()
@@ -268,7 +268,7 @@ class SessionLogTest(unittest.TestCase):
 class ReRunTest(unittest.TestCase):
     def test_a_run_is_cancelled_by_a_new_call_of_its_script(self):
         """requirement.md: called again while it is running, the previous run is cancelled."""
-        sim, chip = background(["mode 1 → D"], PresenceRatioProblem({}, 90))
+        sim, chip = background(["mode 1 → D"], PresenceRatioProblem({}).with_window(90))
         req = sim.request
         out = list(req.gen.stages(req.state, req.chip, req.known, req.previous))
         sim.publish(req.id, *out[0])
@@ -280,7 +280,7 @@ class ReRunTest(unittest.TestCase):
 
     def test_the_next_run_comes_after_this_one(self):
         """The first stage measures: at twice what the run takes, not D/18."""
-        g = RulesGenerator(parse_rules(["mode 1 → D"]), PresenceRatioProblem({"A": F(1, 4)}, 180), F(1, 2))
+        g = RulesGenerator(parse_rules(["mode 1 → D"]), PresenceRatioProblem({"A": F(1, 4)}).with_window(180), F(1, 2))
         g.paced, g.speed = True, F(1000)
         real = g._stage
 
@@ -306,7 +306,7 @@ class TimeLimitTest(unittest.TestCase):
             def targets(self, state, c):
                 return {}
 
-        sim, chip = background(["mode 1 → D"], PresenceRatioProblem({}, 90), [Slow()])
+        sim, chip = background(["mode 1 → D"], PresenceRatioProblem({}).with_window(90), [Slow()])
         t = time.monotonic()
         why = sim.edit_now([Op.put("X", Interval.closed(50, 51))])
         took = time.monotonic() - t
@@ -318,7 +318,7 @@ class TimeLimitTest(unittest.TestCase):
     def test_the_10_seconds_are_never_extended(self):
         """With no answer from the run: at 8 s the last resort, so that an edit of 2 s going
         on at that moment still ends before the 10 s."""
-        sim, chip = background(["mode 1 → D"], PresenceRatioProblem({}, 90))
+        sim, chip = background(["mode 1 → D"], PresenceRatioProblem({}).with_window(90))
         go(sim, chip, F(79, 10))
         self.assertEqual(sim.definitive, 10)
         go(sim, chip, 8)
@@ -327,7 +327,7 @@ class TimeLimitTest(unittest.TestCase):
 
 class SleepTest(unittest.TestCase):
     def test_a_script_that_holds_by_itself_has_nothing_to_catch_up(self):
-        sim, chip = background(["Break15 → NoScreen"], PresenceRatioProblem({}, 240), [FifteenMinuteBreaks()])
+        sim, chip = background(["Break15 → NoScreen"], PresenceRatioProblem({}).with_window(240), [FifteenMinuteBreaks()])
         req = sim.request
         sim.complete(req.id, *list(req.gen.stages(req.state, req.chip, req.known, req.previous))[-1])
         go(sim, chip, 3600)
@@ -338,7 +338,7 @@ class SleepTest(unittest.TestCase):
         self.assertFalse(b.contains(3605))
 
     def test_the_chip_and_the_catch_up(self):
-        sim, chip = background(BREAKS, PresenceRatioProblem({}, 240), [FifteenMinuteBreaks()])
+        sim, chip = background(BREAKS, PresenceRatioProblem({}).with_window(240), [FifteenMinuteBreaks()])
         req = sim.request
         sim.complete(req.id, *list(req.gen.stages(req.state, req.chip, req.known, req.previous))[-1])
         t = time.monotonic()
@@ -355,7 +355,7 @@ class SleepTest(unittest.TestCase):
 class StoppedInstallTest(unittest.TestCase):
     def test_a_script_stopped_while_installed_is_installed_again(self):
         """Pause while a script of a run is installed: undone, not lost, and no exception."""
-        s = Session(BREAKS, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2), [FifteenMinuteBreaks()])
+        s = Session(BREAKS, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2), [FifteenMinuteBreaks()])
         calls = []
 
         def publish(rid, script, stats):
@@ -425,7 +425,7 @@ class CaptionTest(unittest.TestCase):
 @unittest.skipIf(gui is None, "no display")
 class WindowTest(unittest.TestCase):
     def setUp(self):
-        self.s = Session(BREAKS, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2), [FifteenMinuteBreaks()])
+        self.s = Session(BREAKS, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2), [FifteenMinuteBreaks()])
         self.root = hidden_root()
         self.app = gui.App(self.root, self.s)
         self.addCleanup(self.close)
@@ -597,7 +597,7 @@ class WindowTest(unittest.TestCase):
 
     def test_selectors_replace_the_mode_buttons(self):
         self.close()
-        self.s = s = Session(DEVICES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2),
+        self.s = s = Session(DEVICES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2),
                              [FifteenMinuteBreaks()], SELECTORS, SELECTOR_MODES)
         self.root = hidden_root()
         folder = tempfile.TemporaryDirectory()

@@ -532,7 +532,7 @@ class NothingReadsItTest(unittest.TestCase):
     """"Other" is in no rule, no constraint and no problem."""
 
     def session(self):
-        s = Session(EXAMPLE + ["mode 1 → no NoScreen"], [(0, "1")], 0, 1, [], [(PresenceRatioProblem({"Wanted": F(1, 4)}, 240), 1)],
+        s = Session(EXAMPLE + ["mode 1 → no NoScreen"], [(0, "1")], 0, 1, [], [(PresenceRatioProblem({"Wanted": F(1, 4)}).with_window(240), 1)],
                     F(1, 2), [FifteenMinuteBreaks()])
         s.sim.background = True
         s.sim.start()

@@ -77,8 +77,8 @@ CONSTRAINTS = [
     FifteenMinuteBreaks("Break15", "NoScreen", length=15 * MINUTE, pause=120 * MINUTE),
 ]
 PROBLEMS = [
-    (PresenceRatioProblem({}, horizon=240 * MINUTE), 1),
-    (MinimumLengthProblem({}, horizon=240 * MINUTE), 1),
+    (PresenceRatioProblem({}), 1),
+    (MinimumLengthProblem({}), 1),
 ]
 Q = 0.5
 

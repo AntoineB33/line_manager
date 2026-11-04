@@ -69,8 +69,8 @@ CONSTRAINTS = [
                  chain=("Break5", "Break15")),
 ]
 PROBLEMS = [
-    (PresenceRatioProblem({}, horizon=240 * MINUTE), 1),
-    (MinimumLengthProblem({}, horizon=240 * MINUTE), 1),
+    (PresenceRatioProblem({}), 1),
+    (MinimumLengthProblem({}), 1),
 ]
 Q = 0.5
 

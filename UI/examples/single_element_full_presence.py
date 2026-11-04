@@ -1,12 +1,13 @@
 """One element, A, with a presence ratio target of 100%, and nothing else: no rules, no
 constraint, no mode rule, and an empty line.
 
-Its perfect generated script (rules_generator_requirements.md) is found at
-once, and the horizon does not limit it:
+Its perfect generated script (scripts/ratio_plan.py) is found at once, on the whole
+line:
     A on (0, inf)   (the chip at 0)
 Only an edit of the user runs the generator again. Type in the command box:
-    no A on [20, 30]   a hole: the generator then searches its window (the horizon,
-                       100 units ahead), as the line has more than its perfect script
+    no A on [20, 30]   a hole: the line has more than the perfect script, so the
+                       generator searches instead, an approximation on a window of its
+                       own after the chip (generator.search_window)
 
 Copy this file to make your own session, change the definitions, and run it:
     python UI/examples/single_element_full_presence.py
@@ -24,7 +25,7 @@ CHIP = 0
 SPEED = 1  # units per second
 LINE = []  # the line starts empty
 PROBLEMS = [
-    (PresenceRatioProblem({"A": 1}, horizon=100), 1),
+    (PresenceRatioProblem({"A": 1}), 1),
 ]
 Q = 0.5
 

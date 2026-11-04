@@ -20,7 +20,7 @@ RULES = ["Break15 → NoScreen", "NoScreen → (NoComputerUnlocked or NotOnCompu
 
 
 def solves_after_a_switch(units):
-    s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2), [FifteenMinuteBreaks()])
+    s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2), [FifteenMinuteBreaks()])
     s.begin()
     req = s.sim.request
     s.sim.complete(req.id, *list(req.gen.stages(req.state, req.chip, req.known, req.previous))[-1])
@@ -49,7 +49,7 @@ class AtTheChipTest(unittest.TestCase):
     """The mode rules hold at the chip's position at every instant, not only once it has passed."""
 
     def session(self):
-        s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2), [FifteenMinuteBreaks()])
+        s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2), [FifteenMinuteBreaks()])
         s.begin()
         req = s.sim.request
         s.sim.complete(req.id, *list(req.gen.stages(req.state, req.chip, req.known, req.previous))[-1])

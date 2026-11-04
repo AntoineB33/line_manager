@@ -1,6 +1,5 @@
-"""The best line of the presence ratio targets and minimum lengths
-(rules_generator_requirements.md; scripts/ratio_plan.py): the consequences listed in the
-requirements, found at once."""
+"""The best line of the presence ratio targets and minimum lengths (scripts/ratio_plan.py),
+on the whole line, found at once: the examples of the rules generator's logic."""
 
 import time
 import unittest
@@ -21,9 +20,9 @@ FAST = 0.5  # seconds: "very quickly" (a few milliseconds here)
 
 
 def generator(rules, targets, lengths=None, seed=0):
-    problems = [(PresenceRatioProblem(targets, 100), 1)]
+    problems = [(PresenceRatioProblem(targets), 1)]
     if lengths:
-        problems.append((MinimumLengthProblem(lengths, 100), 1))
+        problems.append((MinimumLengthProblem(lengths), 1))
     return RulesGenerator(parse_rules(rules), problems, 0.5, seed=seed)
 
 
@@ -140,6 +139,39 @@ class PerfectScriptTest(unittest.TestCase):
         for rules in (["A → B"], ["B → no A on [0, 1]"], ["mode 1 → A"]):
             with self.subTest(rules=rules):
                 self.assertFalse(generator(rules, {"A": HALF, "B": HALF}, {"A": 1, "B": 1}).plan.ok)
+
+
+class NoHorizonTest(unittest.TestCase):
+    """The targets are on the whole line: a problem has no horizon, and the window of the
+    generator's search (when there is no perfect script) is its own."""
+
+    def test_a_problem_takes_no_horizon(self):
+        with self.assertRaises(TypeError):
+            PresenceRatioProblem({"A": 1}, 100)
+        with self.assertRaises(TypeError):
+            PresenceRatioProblem({"A": 1}, horizon=100)
+        with self.assertRaises(TypeError):
+            MinimumLengthProblem({"A": 1}, 100)
+
+    def test_the_examples_give_no_horizon(self):
+        import glob
+        import os
+        examples = glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "UI", "examples", "*.py"))
+        self.assertTrue(examples)
+        for f in examples:
+            with self.subTest(os.path.basename(f)):
+                self.assertNotIn("horizon=", open(f, encoding="utf-8").read())
+
+    def test_the_search_window_follows_the_definitions(self):
+        from constraints import FifteenMinuteBreaks
+        from generator import SMALLEST_WINDOW
+        rules = ["C → D"]  # (no perfect script)
+        self.assertEqual(generator(rules, {"A": HALF}).window, SMALLEST_WINDOW)
+        self.assertEqual(generator(rules, {"A": HALF}, {"A": 1000}).window, 4000)  # 4 times the longest minimum length
+        g = RulesGenerator(parse_rules(rules), [(PresenceRatioProblem({"A": HALF}), 1)], 0.5,
+                           constraints=[FifteenMinuteBreaks(length=900, pause=7200)])
+        self.assertEqual(g.window, 2 * 8100)  # twice a break and its pause
+        self.assertTrue(all(p.window == g.window for p, _ in g.problems))  # its problems are bound to it
 
 
 if __name__ == "__main__":

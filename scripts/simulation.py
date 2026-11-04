@@ -324,7 +324,7 @@ class Simulation:
                 why = str(e)
             if not why:
                 base = after
-                events.insert(at, Event(ChipIn(req.chip, req.chip + self.gen.horizon), (EditAction(tuple(ops)),)))
+                events.insert(at, Event(ChipIn(req.chip, req.chip + self.gen.window), (EditAction(tuple(ops)),)))
                 at += 1
         script = replace(s.with_events(events), on_view=s.on_view or SHOW, covered=covered, constraints=constraints,
                          live=s.live or bool(constraints and self.rules.mode_rules))
@@ -343,7 +343,7 @@ class Simulation:
             self.definitive += PACE
             req.pace_at += LAST_RESORT
             self.script = self._fit(self.script)
-            if self.definitive >= req.chip + getattr(self.gen, "horizon", 0) and getattr(self.gen, "q", 0) != 1:
+            if self.definitive >= req.chip + getattr(self.gen, "window", 0) and getattr(self.gen, "q", 0) != 1:
                 self.request = None
                 self.log.ran((t, req.chip, req.why, self.script, RunStats(chosen="the script in place, as a last resort")))
                 return

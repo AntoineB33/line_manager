@@ -491,10 +491,12 @@ class Session:
 
     def status(self) -> str:
         out = [f"time {self.sim.t}, chip at {self.position}, mode {self.mode()}, speed {self.speed}"]
-        out += [f"{p.name}, weight {w}, horizon {p.horizon}: "
+        out += [f"{p.name}, weight {w}: "
                 + ", ".join(f"{k} {v}" for k, v in sorted((getattr(p, 'targets', None) or getattr(p, 'lengths', {})).items()))
                 for p, w in self.problems] or ["no optimization problem"]
         out.append("constraints (from the chip): " + (", ".join(map(str, self.constraints)) or "none"))
+        if not self.sim.gen.plan.ok:
+            out.append(f"the generator searches {self.sim.gen.window} units after the chip (its window)")
         out.append(f"allocated resources quantity {self.q}, {self.sim.log.run_count} generator runs")
         return "\n".join(out)
 
@@ -606,7 +608,7 @@ def start(rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=
     chip:     where the chip starts
     speed:    its speed, > 0, in positions per second
     line:     the initial state of the line, as edits ("A on [1, 3)", "A 50% at 2")
-    problems: [(problem, weight)]: PresenceRatioProblem, MinimumLengthProblem
+    problems: [(problem, weight)]: PresenceRatioProblem(targets), MinimumLengthProblem(lengths)
     q:        the allocated resources quantity, in [0, 1]
     constraints: what the generated script keeps true after the chip: constraints.py's
               (FifteenMinuteBreaks()), or edits written from the chip, as text

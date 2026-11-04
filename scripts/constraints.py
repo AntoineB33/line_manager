@@ -83,6 +83,7 @@ class FifteenMinuteBreaks:
     def __init__(self, brk: str = "Break15", ns: str = "NoScreen", length=15, pause=120) -> None:
         self.brk, self.ns = brk, ns
         self.length, self.pause = Fraction(length), Fraction(pause)
+        self.cycle = self.length + self.pause  # a break and its pause (generator.search_window)
 
     def __str__(self) -> str:
         return (f"keep {self.brk} on (chip, chip + {_fmt(self.length)}] with {self.ns}, as early as possible, "
@@ -204,6 +205,7 @@ class ScreenBreaks:
         self.ns = ns
         self.chain = set(chain)
         self.rules = rules
+        self.cycle = max(L + P for _, L, P in self.kinds_)  # the longest break and its pause (generator.search_window)
 
     def bind(self, rules) -> None:
         """The rules of the line: what puts "no screen" besides the breaks."""

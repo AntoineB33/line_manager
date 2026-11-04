@@ -27,7 +27,7 @@ RULES = ["Break15 → NoScreen", "mode 1 → no NoScreen", "mode 2 → NoScreen"
 
 
 def session(length=15) -> Session:
-    s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}, horizon=240), 1)], F(1, 2), [FifteenMinuteBreaks(length=length)])
+    s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2), [FifteenMinuteBreaks(length=length)])
     s.sim.background = False
     s.sim.start()
     return s
@@ -300,7 +300,7 @@ class EventsOfTheRequirementTest(unittest.TestCase):
 
     def test_generated_and_not_fired_by_themselves(self):
         rs = parse_rules(["A → B"])
-        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({"A": F(1, 4)}, 10), 0.5), Chip([(0, 0), (4, 4)]), ModeTimeline(0, "1"))
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({"A": F(1, 4)}).with_window(10), 0.5), Chip([(0, 0), (4, 4)]), ModeTimeline(0, "1"))
         sim.start()
         text = sim.script.text()
         self.assertIn("exceeds a presence ratio of", text)
@@ -313,7 +313,7 @@ class EventsOfTheRequirementTest(unittest.TestCase):
         for line, fires in (("if D 100% exceeds a presence ratio of 1/20 over the next 10 when the chip is in [0, 6), then put R 100% on [50, 51].", True),
                             ("if D 100% exceeds a presence ratio of 1/5 over the next 10 when the chip is in [0, 6), then put R 100% on [50, 51].", False),
                             ("if D 100% exceeds a presence ratio of 1/20 over the next 10 when the chip is in [0, 6) and mode is 2, then put R 100% on [50, 51].", False)):
-            sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}, 10), 0.5), Chip([(0, 0), (4, 4)]), ModeTimeline(0, "1"))
+            sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}).with_window(10), 0.5), Chip([(0, 0), (4, 4)]), ModeTimeline(0, "1"))
             sim.start()
             sim.replace_script(parse_script(line, Script(), rs))
             sim.chip.extend(5, 4)
@@ -324,7 +324,7 @@ class EventsOfTheRequirementTest(unittest.TestCase):
 
     def test_score(self):
         rs = parse_rules([])
-        problems = [(PresenceRatioProblem({"A": F(1, 2)}, 10), F(1))]
+        problems = [(PresenceRatioProblem({"A": F(1, 2)}).with_window(10), F(1))]
         self.assertEqual(score(problems, LineState.empty(), F(0)), F(2, 3))  # the error is 1/2
         st = apply_edit(rs, LineState.empty(), [Op.put("A", Region.of(Interval.open_closed(0, 5)))], USER)
         self.assertEqual(score(problems, st, F(0)), 1)

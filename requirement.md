@@ -1,7 +1,7 @@
 There is an infinite line from −∞ on the left to ∞ on the right.
 
 There is a 0-dimensional chip on the line that moves to the right, with a mathematically continuous movement. If the program was put to sleep, when it wakes up, the chip is at the position it would have been if it had moved continuously while the program was asleep.
-There are different kinds of elements. A state of the line is a set of intervals each associated to an element type and a percentage. The same element type can't be present several times at the same position on the line.
+There are different kinds of elements. A state of the line is a set of intervals each associated to an element type and a percentage. The same element type can't be present several times at the same position on the line. An element with 0% is considered absent.
 
 Example of a state of the line:
 - A at [$x_1$, $x_2$) 100%
@@ -11,7 +11,9 @@ Example of a state of the line:
 
 There are several modes, and only one is applied for one position of the chip on the line. Every bounded stretch of the line contains finitely many mode transitions. The mode transitions are given externally.
 
-There are "percentage rules":
+There are "percentage rules". Each element have a set of possible percentages with conditions. The conditions describe the specific elements that can be present at the same position on the line, and their percentages.
+
+Examples:
 A is always 100%
 B can be:
 - 100%
@@ -21,7 +23,7 @@ C can be:
 - 80% with only B
 
 There are "element rules". In an element rules, there are two sides:
-- The left side is a boolean expression manipulating element types and percentages. An element with 0% is considered absent.
+- The left side is a boolean expression manipulating element types and percentages.
 - The right side is an expression with "and", "or" and intervals of elements with percentages. The position of those intervals are relative to either the position p where the left side is met, or the l left edge (bound or unbound) of the largest continuous interval that meets the left side and includes p.
 
 Examples:

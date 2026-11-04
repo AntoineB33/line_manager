@@ -1086,10 +1086,23 @@ def solve(rs: RuleSet, prob: Problem) -> Line:
     return line
 
 
+def _sweep(rs: RuleSet, prob: Problem, kinds_in, vals, fixed, forbid) -> dict:
+    """The sweep's values, given only the kinds linked through the rules to those it
+    decides: the others cannot change what it decides, and their periods would make it
+    go further before what it places repeats (e.g. tasks repeating every 120 and breaks
+    every 8100: until 16200)."""
+    from sweep import Sweep
+    groups = {rs.linked[k] for k in kinds_in if k in getattr(rs, "linked", {})}
+    if not groups:
+        return Sweep(rs, prob, vals, fixed, forbid, kinds_in).solve()
+    keep = lambda d: {k: v for k, v in d.items() if rs.linked.get(k) in groups or k.startswith("#")}
+    part = Problem(keep(prob.pos), keep(prob.neg))
+    return Sweep(rs, part, keep(vals), keep(fixed), keep(forbid), kinds_in).solve()
+
+
 def _solve_or(rs: RuleSet, prob: Problem, kinds_in, vals, fixed, forbid) -> Line:
     if not rs.lattice:
-        from sweep import Sweep
-        vals.update(Sweep(rs, prob, vals, fixed, forbid, kinds_in).solve())
+        vals.update(_sweep(rs, prob, kinds_in, vals, fixed, forbid))
         return Line(vals)
     kinds = kinds_of(rs, prob)
     regions: dict[str, dict] = {}
@@ -1117,8 +1130,7 @@ def _solve_or(rs: RuleSet, prob: Problem, kinds_in, vals, fixed, forbid) -> Line
     if any(_repeats(reg) for d in regions.values() for v in d.values() for reg in (v.values() if isinstance(v, dict) else [v])):
         # the lattice takes the data as constant beyond its window: data that repeats there
         # (e.g. breaks every 135 units, claimed) goes to the sweep, which follows it
-        from sweep import Sweep
-        vals.update(Sweep(rs, prob, vals, fixed, forbid, kinds_in).solve())
+        vals.update(_sweep(rs, prob, kinds_in, vals, fixed, forbid))
         return Line(vals)
     lp = LatticeProblem(kinds + sorted(n for n in regions if n.startswith("#")), kinds_in, regions, lrules)
     vals.update(lp.solve())

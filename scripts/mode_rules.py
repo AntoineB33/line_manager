@@ -111,6 +111,15 @@ class ModeRules:
         self.span = 2 * (len(rs.order) + 1) * rs.reach
         self.plan: _Plan | None = None  # the run being compiled ahead
         self.kept: Pos | None = None  # the position where the user edited after the chip got there
+        # the kinds whose ends can change a decision: those of the mode rules and the
+        # constraints, and the kinds linked to them through the rules (rs.linked); None:
+        # every kind (a constraint that does not tell its kinds)
+        read = {k for r in self.rules for k in r.lhs.kinds()} | {o.kind for r in self.rules for o in r.written_lits()}
+        for k in self.constraints:
+            read = None if read is None or not hasattr(k, "kinds") else read | set(k.kinds())
+        linked = getattr(rs, "linked", {})
+        groups = None if read is None else {linked[k] for k in read if k in linked}
+        self.reads = None if read is None else (lambda k: k in read or linked.get(k) in groups)
 
     # ------------------------------------------------------------ one position
 
@@ -220,11 +229,13 @@ class ModeRules:
     # ------------------------------------------------------------ the positions of a sweep
 
     def candidates(self, state: LineState, m: Pos, lo: Pos, hi: Pos) -> list[Pos]:
-        """The positions of [lo, hi] where a run started at m can change its decision."""
-        regions = [r for d in state.claims.pos.values() for r in d.values()]
-        regions += [r for d in state.claims.neg.values() for r in d.values()]
-        regions += [r for d in state.claims.taken.values() for r in d.values()]
-        regions += [r for d in state.line.vals.values() for r in d.values()]
+        """The positions of [lo, hi] where a run started at m can change its decision: the
+        ends of the kinds it reads (`reads`; the others cannot change it)."""
+        keep = self.reads or (lambda k: True)
+        regions = [r for k, d in state.claims.pos.items() if keep(k) for r in d.values()]
+        regions += [r for k, d in state.claims.neg.items() if keep(k) for r in d.values()]
+        regions += [r for k, d in state.claims.taken.items() if keep(k) for r in d.values()]
+        regions += [r for k, d in state.line.vals.items() if keep(k) for r in d.values()]
         span = self.span
         a, b = lo.x - span - 1, hi.x + span + 1
         ends = {m}

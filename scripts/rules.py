@@ -377,6 +377,9 @@ class RuleSet:
             for k in r.lhs.kinds():
                 edges[k] |= {o.kind for o in r.lits()}
         self.edges = edges
+        # the kinds linked through the rules either way: what one decides can change the
+        # others only within it (solver._solve_or sweeps only those of its choices)
+        self.linked = _linked(edges)
         self.blocks = _groups(edges)
         self.order = [k for b in self.blocks for k in b]
         self.block_of = {k: n for n, b in enumerate(self.blocks) for k in b}
@@ -524,6 +527,28 @@ class RuleSet:
 
     def kinds(self) -> list[str]:
         return list(self.order)
+
+
+def _linked(edges: dict[str, set[str]]) -> dict[str, int]:
+    """Kind -> the number of its group of kinds linked by the edges either way."""
+    near = {k: set() for k in edges}
+    for k, out in edges.items():
+        for o in out:
+            near.setdefault(o, set())
+            near[k].add(o)
+            near[o].add(k)
+    of, n = {}, 0
+    for root in sorted(near):
+        if root in of:
+            continue
+        todo = [root]
+        while todo:
+            k = todo.pop()
+            if k not in of:
+                of[k] = n
+                todo.extend(near[k] - of.keys())
+        n += 1
+    return of
 
 
 def _groups(edges: dict[str, set[str]]) -> list[tuple[str, ...]]:

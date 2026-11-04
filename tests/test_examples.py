@@ -100,6 +100,26 @@ class ExamplesTest(unittest.TestCase):
             self.assertFalse(second.contains(x + 30) or first.contains(x + 90), n)
         self.assertEqual(set(line.vals["A"]) | set(line.vals["B"]), {100})
 
+    def test_tasks_do_not_slow_the_mode_rules(self):
+        """screen_break_15_task.py solves the line about as often as screen_break_15.py: the
+        mode rules and the breaks read nothing of A and B, so their ends and their period
+        (120, against 8100 for the breaks) must not cut the compiled runs nor make the
+        sweep go further (it took 1249 solves and a minute; 127 without the tasks)."""
+        import mode_rules
+        import solver
+        counts = {}
+        for name in ("screen_break_15", "screen_break_15_task"):
+            n = [0]
+            real = solver.solve
+
+            def counted(*a, **k):
+                n[0] += 1
+                return real(*a, **k)
+            with mock.patch.object(solver, "solve", counted), mock.patch.object(mode_rules, "solve", counted):
+                first_run(name)
+            counts[name] = n[0]
+        self.assertLess(counts["screen_break_15_task"], 2 * counts["screen_break_15"], counts)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "UI"))
 
 from helpers import Interval, Region  # noqa: E402
+from helpers import summing_to_1  # noqa: E402
 
 import app as A  # noqa: E402
 from app import FifteenMinuteBreaks, MinimumLengthProblem, PresenceRatioProblem, Session  # noqa: E402
@@ -57,12 +58,12 @@ def go(sim, chip, t):
 
 class FirstScriptTest(unittest.TestCase):
     def test_the_biggest_ratio_target(self):
-        sim, _ = background(["A → B"], PresenceRatioProblem({"X": F(1, 4), "Y": F(1, 2)}).with_window(120))
+        sim, _ = background(["A → B"], PresenceRatioProblem(summing_to_1({"X": F(1, 4), "Y": F(1, 2)})).with_window(120))
         self.assertEqual(sim.state.line.presence("Y"), Region.of(Interval(0, 10, False, True)))
         self.assertFalse(sim.state.line.presence("X"))
 
     def test_only_what_is_not_reached(self):
-        sim, _ = background(["A → B"], PresenceRatioProblem({"X": F(1, 4), "Y": F(1, 2)}).with_window(120))
+        sim, _ = background(["A → B"], PresenceRatioProblem(summing_to_1({"X": F(1, 4), "Y": F(1, 2)})).with_window(120))
         y = sim.state.line.presence("Y")
         sim.state = LineState.empty()
         rest = sim.gen.first_edits(sim.state, F(0))
@@ -77,7 +78,7 @@ class FirstScriptTest(unittest.TestCase):
         """The kind rules out "no screen": the constraint's breaks stay, and the
         first script does not put what they forbid."""
         rules = BREAKS + ["X → no NoScreen"]
-        sim, chip = background(rules, PresenceRatioProblem({"X": F(1, 2)}).with_window(240), [FifteenMinuteBreaks()])
+        sim, chip = background(rules, PresenceRatioProblem(summing_to_1({"X": F(1, 2)})).with_window(240), [FifteenMinuteBreaks()])
         self.assertIn("keep Break15", sim.script.text())
         self.assertTrue(sim.state.line.presence("Break15").contains(5))
         self.assertFalse(sim.state.line.presence("X").contains(5))
@@ -98,7 +99,7 @@ class FirstScriptTest(unittest.TestCase):
         self.assertFalse(sim.state.line.presence("Y").contains(25))
 
     def test_it_stays_in_the_next_scripts(self):
-        sim, _ = background(["A → B"], PresenceRatioProblem({"Y": F(1, 2)}).with_window(120))
+        sim, _ = background(["A → B"], PresenceRatioProblem(summing_to_1({"Y": F(1, 2)})).with_window(120))
         req = sim.request
         line = "put Y 100% on (0, 10]"
         self.assertIn(line, sim.script.text())
@@ -280,7 +281,7 @@ class ReRunTest(unittest.TestCase):
 
     def test_the_next_run_comes_after_this_one(self):
         """The first stage measures: at twice what the run takes, not D/18."""
-        g = RulesGenerator(parse_rules(["mode 1 → D"]), PresenceRatioProblem({"A": F(1, 4)}).with_window(180), F(1, 2))
+        g = RulesGenerator(parse_rules(["mode 1 → D"]), PresenceRatioProblem(summing_to_1({"A": F(1, 4)})).with_window(180), F(1, 2))
         g.paced, g.speed = True, F(1000)
         real = g._stage
 

@@ -67,6 +67,14 @@ def forbidden(ctx, kind: str, vals=None) -> Region:
     return out
 
 
+def check_sum(targets) -> None:
+    """The presence ratio targets sum to 1 (none at all: no target)."""
+    total = sum(targets.values(), Fraction(0))
+    if targets and total != 1:
+        raise ValueError(f"the presence ratio targets sum to {total}, not 1: " +
+                         ", ".join(f"{k} {r}" for k, r in sorted(targets.items())))
+
+
 def _bound(p, H):
     """A copy of the problem whose search looks at (c, c + H]."""
     H = Fraction(H)

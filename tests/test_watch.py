@@ -6,6 +6,7 @@ from fractions import Fraction as F
 from unittest import mock
 
 from helpers import Interval  # noqa: F401 (the paths of scripts/)
+from helpers import summing_to_1  # noqa: E402
 from generator import PresenceRatioProblem, RulesGenerator
 from intervals import INF, IntervalSet
 from line import GEN, LineState, Op
@@ -64,7 +65,7 @@ class CrossingTest(unittest.TestCase):
         rng = random.Random(5)
         for _ in range(40):
             s = line_with(random_intervals(rng))
-            problems = [(PresenceRatioProblem({"A": F(rng.randint(1, 9), 10)}).with_window(rng.randint(10, 60)), F(1))]
+            problems = [(PresenceRatioProblem(summing_to_1({"A": F(rng.randint(1, 9), 10)})).with_window(rng.randint(10, 60)), F(1))]
             t = ScoreBelow(F(rng.randint(10, 19), 20))
             c = F(0)
             for _ in range(40):
@@ -83,7 +84,7 @@ class CrossingTest(unittest.TestCase):
 class SimulationTest(unittest.TestCase):
     def simulation(self, events):
         s = line_with([Interval.closed(40, 60)])
-        sim = Simulation(s, RulesGenerator(parse_rules([]), PresenceRatioProblem({"A": F(1, 4)}).with_window(40), 0.5), Chip([(0, 0), (100, 100)]), ModeTimeline(0, "1"))
+        sim = Simulation(s, RulesGenerator(parse_rules([]), PresenceRatioProblem(summing_to_1({"A": F(1, 4)})).with_window(40), 0.5), Chip([(0, 0), (100, 100)]), ModeTimeline(0, "1"))
         sim.start()
         sim.script = Script.of(events)
         sim._looks = None

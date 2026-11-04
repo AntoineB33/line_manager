@@ -1,8 +1,10 @@
 """The scripts of UI/examples/, with no window: each one starts, and its generated script
 has the rerun rules its context asks for."""
 
+import io
 import os
 import runpy
+from contextlib import redirect_stdout
 import sys
 import unittest
 from unittest import mock
@@ -18,6 +20,8 @@ except ImportError:  # (no tkinter)
 from intervals import INF, Interval as Iv  # noqa: E402
 from region import Region  # noqa: E402
 from script import ChipIn, Edited, PresenceAbove, ScoreBelow  # noqa: E402
+
+REFUSED = {"screen_break_15_task"}  # examples whose definitions are refused
 
 
 def first_run(name):
@@ -45,8 +49,6 @@ class ExamplesTest(unittest.TestCase):
     def test_every_example_has_its_own_rules(self):
         expected = {
             "screen_break_15": {(ChipIn, None), Edited},
-            # its task: the score is watched
-            "screen_break_15_task": {(ChipIn, None), Edited, ScoreBelow},
             "screen_breaks_5_15": {(ChipIn, None), Edited},
             "screen_breaks": {(ChipIn, None), Edited},
             "screen_breaks_sleep": {(ChipIn, None), Edited},
@@ -57,7 +59,7 @@ class ExamplesTest(unittest.TestCase):
             "single_element_full_presence": {Edited},
         }
         names = {f[:-3] for f in os.listdir(os.path.join(UI, "examples")) if f.endswith(".py")}
-        self.assertEqual(names, set(expected))
+        self.assertEqual(names, set(expected) | REFUSED)
         for name, rules in expected.items():
             with self.subTest(name):
                 self.assertEqual(reruns(name), rules)
@@ -70,15 +72,17 @@ class ExamplesTest(unittest.TestCase):
         self.assertEqual(line.presence("A"), Region.of(Iv(0, INF, lo_closed=False, hi_closed=False)))
         self.assertEqual(set(line.vals["A"]), {100})
 
-    def test_the_task_starts_after_the_first_break(self):
-        """Task (ratio 1, minimum length 60) right after the first break (0, 900]: not in
-        it, and at least 60 long. Each stage of a run used to keep the no-op, a piece cut
-        at its frontier falling short of 60 (problems.MinimumLengthProblem.error)."""
-        line = first_run("screen_break_15_task").state.line
-        task, brk = line.presence("Task"), line.presence("Break15")
-        self.assertTrue(brk.contains(450) and not task.contains(450))
-        self.assertTrue((task & brk).is_empty())
-        self.assertTrue(all(task.contains(x) for x in (901, 930, 960)), str(task))
+    def test_the_refused_examples_open_no_window(self):
+        """Their definitions are refused (A 1 and B 1/2: the presence ratio targets sum to
+        3/2, not 1): the window says why, does not open, and no generator runs (none asks
+        for a run at 675)."""
+        for name in sorted(REFUSED):
+            with self.subTest(name):
+                out = io.StringIO()
+                with mock.patch.object(gui, "run") as run, redirect_stdout(out):
+                    runpy.run_path(os.path.join(UI, "examples", f"{name}.py"), run_name="__main__")
+                self.assertFalse(run.called)
+                self.assertIn("the definitions are refused: the presence ratio targets sum to 3/2, not 1", out.getvalue())
 
 
 if __name__ == "__main__":

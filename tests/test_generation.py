@@ -6,6 +6,7 @@ import unittest
 from fractions import Fraction as F
 
 from helpers import check_log, rand_interval
+from helpers import summing_to_1  # noqa: E402
 from constraints import FifteenMinuteBreaks, KeepOn, ScreenBreaks
 from generator import PresenceRatioProblem, RulesGenerator, _Context, budget, rerun_distance
 from intervals import EPS, INF, Interval, IntervalSet, Pos
@@ -31,8 +32,8 @@ def random_world(rng):
             break
         except ValueError:
             continue
-    targets = {k: F(rng.randint(0, 4), 4) for k in rng.sample("ABCE", rng.randint(1, 2))}
-    problem = PresenceRatioProblem(targets).with_window(F(rng.choice([4, 6])))
+    targets = {k: F(rng.randint(0, 4), 8) for k in rng.sample("ABCE", rng.randint(1, 2))}  # (Rest: what is left to 1)
+    problem = PresenceRatioProblem(summing_to_1(targets)).with_window(F(rng.choice([4, 6])))
     pos, trans, mode = F(0), [], "1"
     for _ in range(rng.randint(0, 5)):
         pos += F(rng.randint(1, 6))
@@ -509,7 +510,7 @@ class ResourcesTest(unittest.TestCase):
             m.solve = counted
         try:
             rs = parse_rules(["Break15 → NoScreen", "mode 1 → no NoScreen", "mode 2 → NoScreen"])
-            gen = RulesGenerator(rs, PresenceRatioProblem({"Other": F(1, 4)}).with_window(240), q, constraints=[FifteenMinuteBreaks()])
+            gen = RulesGenerator(rs, PresenceRatioProblem(summing_to_1({"Other": F(1, 4)})).with_window(240), q, constraints=[FifteenMinuteBreaks()])
             gen.run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
         finally:
             for m in modules:
@@ -606,7 +607,7 @@ class RerunRulesTest(unittest.TestCase):
 
     @staticmethod
     def reruns(rules, targets, q=0.5, constraints=()):
-        gen = RulesGenerator(parse_rules(rules), PresenceRatioProblem(targets).with_window(100), q, constraints=constraints)
+        gen = RulesGenerator(parse_rules(rules), PresenceRatioProblem(summing_to_1(targets)).with_window(100), q, constraints=constraints)
         script, _ = gen.run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
         return script.rerun_triggers()
 
@@ -684,7 +685,7 @@ class ProbabilityFinderTest(unittest.TestCase):
         probability rules, a run with the fewest resources sees that mode 1 will give D
         and adds none; without them it expects half and adds D where mode 2 will be."""
         rs = parse_rules(["mode 1 → D"])
-        problem = PresenceRatioProblem({"D": F(3, 4)}).with_window(F(8))
+        problem = PresenceRatioProblem(summing_to_1({"D": F(3, 4)})).with_window(F(8))
         modes = self.periodic((3, 1))
         chip = Chip([(0, 0), (60, 60)])
         err = {}
@@ -734,7 +735,7 @@ class ProblemsTest(unittest.TestCase):
         """2 units of A in (0, 20], or none since an interval of A should be 10 long: the
         heavier problem decides (in the search: with a rule, ratio_plan.py has no line)."""
         rs = parse_rules(["C → D"])
-        ratio, length = PresenceRatioProblem({"A": F(1, 10)}).with_window(20), MinimumLengthProblem({"A": 10}).with_window(20)
+        ratio, length = PresenceRatioProblem(summing_to_1({"A": F(1, 10)})).with_window(20), MinimumLengthProblem({"A": 10}).with_window(20)
         after, _ = self.run_once(rs, LineState.empty(), [(ratio, 10), (length, 1)])
         self.assertTrue(after.line.presence("A"))
         after, _ = self.run_once(rs, LineState.empty(), [(ratio, 1), (length, 10)])
@@ -744,7 +745,7 @@ class ProblemsTest(unittest.TestCase):
         """With no rule, A at 10% everywhere after the chip: its ratio, and one interval
         longer than 10 (ratio_plan.py), whatever the weights."""
         rs = parse_rules([])
-        ratio, length = PresenceRatioProblem({"A": F(1, 10)}).with_window(20), MinimumLengthProblem({"A": 10}).with_window(20)
+        ratio, length = PresenceRatioProblem(summing_to_1({"A": F(1, 10)})).with_window(20), MinimumLengthProblem({"A": 10}).with_window(20)
         for weights in ((10, 1), (1, 10)):
             after, stats = self.run_once(rs, LineState.empty(), [(ratio, weights[0]), (length, weights[1])])
             self.assertEqual(stats.chosen, "perfect script")
@@ -817,7 +818,7 @@ class StepByStepTest(unittest.TestCase):
 
     def test_same_as_at_once(self):
         rs = parse_rules(["A → B or C", "B → no C 1 unit on the right", "mode 1 → E", "mode 2 → no E"])
-        problem = PresenceRatioProblem({"A": F(1, 4)}).with_window(F(6))
+        problem = PresenceRatioProblem(summing_to_1({"A": F(1, 4)})).with_window(F(6))
         modes = ModeTimeline(0, "1", [(F(3), "2"), (F(7), "1")])
         edit = [Op.put("A", Interval.closed(9, 10))]
         # the edit at time 41/10 (chip 81/20): not where the scripts ask for a run (every 1/4)

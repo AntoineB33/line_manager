@@ -9,9 +9,10 @@ The tasks are elements, one at a time (rules), that the generator places (PROBLE
     VideoGames   30%     30min     forbidden ("NoScreen → no VideoGames")
     Reading      30%     15min     allowed
 None during "sleep", a 20s break, or the first minute of a 5min break. The shares are
-of the time a task can be at: the presence ratios of PresenceRatioProblem are of the
-whole line, so they are the shares times the part of it that is not a break or
-"sleep" (about 9/10 of a day awake). The minimum lengths weigh 1/10000 of the ratios:
+the presence ratio targets, which sum to 1: they are of the whole line, so with
+"sleep" (a third of a day) and the breaks (about a tenth of the time awake) they cannot
+all be reached, and the generator gets as close as it can. The minimum lengths weigh 1/10000
+of the ratios:
 a run makes its edits a few seconds at a time (its stages), and a piece of a few
 seconds falls short of 15 or 30 minutes by more than its presence brings, so with the
 same weight no task would ever start. The generator plans the tasks a few minutes
@@ -111,10 +112,8 @@ CONSTRAINTS = [
                  "NoScreen",
                  chain=("Break5", "Break15")),
 ]
-AWAKE = F_(9, 10)  # the part of the window a task can be at
 PROBLEMS = [
-    (PresenceRatioProblem({"Homework": F_(40, 100) * AWAKE, "VideoGames": F_(30, 100) * AWAKE,
-                           "Reading": F_(30, 100) * AWAKE}), 1),
+    (PresenceRatioProblem({"Homework": F_(40, 100), "VideoGames": F_(30, 100), "Reading": F_(30, 100)}), 1),  # sum: 1
     (MinimumLengthProblem({"Homework": 30 * MINUTE, "VideoGames": 30 * MINUTE, "Reading": 15 * MINUTE}), F_(1, 10000)),
 ]
 Q = 0.5

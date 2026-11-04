@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "UI"))
 
 from helpers import Interval, IntervalSet, Region  # noqa: E402
+from helpers import summing_to_1  # noqa: E402
 
 import intervals  # noqa: E402
 import resolve  # noqa: E402
@@ -532,7 +533,7 @@ class NothingReadsItTest(unittest.TestCase):
     """"Other" is in no rule, no constraint and no problem."""
 
     def session(self):
-        s = Session(EXAMPLE + ["mode 1 → no NoScreen"], [(0, "1")], 0, 1, [], [(PresenceRatioProblem({"Wanted": F(1, 4)}).with_window(240), 1)],
+        s = Session(EXAMPLE + ["mode 1 → no NoScreen"], [(0, "1")], 0, 1, [], [(PresenceRatioProblem(summing_to_1({"Wanted": F(1, 4)})).with_window(240), 1)],
                     F(1, 2), [FifteenMinuteBreaks()])
         s.sim.background = True
         s.sim.start()

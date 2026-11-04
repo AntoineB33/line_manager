@@ -11,6 +11,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 
 from helpers import Interval, Region  # noqa: E402
+from helpers import summing_to_1  # noqa: E402
 
 from constraints import FifteenMinuteBreaks  # noqa: E402
 from generator import PACE, RulesGenerator  # noqa: E402
@@ -27,7 +28,7 @@ RULES = ["mode 1 → D"]
 
 
 def gen(q=F(1, 2), H=60, rules=RULES, **k):
-    return RulesGenerator(parse_rules(rules), PresenceRatioProblem({"A": F(1, 4)}).with_window(H), q, **k)
+    return RulesGenerator(parse_rules(rules), PresenceRatioProblem(summing_to_1({"A": F(1, 4)})).with_window(H), q, **k)
 
 
 def stages(g, c=0):
@@ -119,7 +120,7 @@ class ReachingBackTest(unittest.TestCase):
     def test_a_rule_that_reaches_before_the_frontier(self):
         """A stage cannot place what a rule brings back before the last frontier."""
         rs = parse_rules(["A → B 30 units on the left of p"])
-        g = RulesGenerator(rs, PresenceRatioProblem({"A": F(1, 4), "B": F(1, 4)}).with_window(120), F(9, 10))
+        g = RulesGenerator(rs, PresenceRatioProblem(summing_to_1({"A": F(1, 4), "B": F(1, 4)})).with_window(120), F(9, 10))
         out = list(g.stages(LineState.empty(), F(0), ModeTimeline(0, "1").known(0)))
         for (a, st), (b, _) in zip(out, out[1:]):
             self.assertTrue(a.base.line.same_on(b.base.line, Region.of(Interval(-10 ** 6, st.definitive, True, True))), st.definitive)
@@ -129,7 +130,7 @@ class ReachingBackTest(unittest.TestCase):
         """D at the chip forbids A 5 further: a later stage cannot place A within 5 of the
         frontier, or D before it would depend on that stage."""
         rs = parse_rules(["mode 1 → D", "D → no A 5 units on the right"])
-        g = RulesGenerator(rs, PresenceRatioProblem({"A": F(1, 2)}).with_window(60), F(9, 10))
+        g = RulesGenerator(rs, PresenceRatioProblem(summing_to_1({"A": F(1, 2)})).with_window(60), F(9, 10))
         self.assertEqual(g.margin(), 5)
         out = list(g.stages(LineState.empty(), F(0), ModeTimeline(0, "2").known(0)))
 
@@ -152,7 +153,7 @@ class EndlessTest(unittest.TestCase):
         return out, len(out) < 40
 
     def test_a_run_that_cannot_prove_it_is_done_goes_on(self):
-        out, ended = self.endless(RULES, PresenceRatioProblem({"A": F(1, 4)}).with_window(60))
+        out, ended = self.endless(RULES, PresenceRatioProblem(summing_to_1({"A": F(1, 4)})).with_window(60))
         self.assertFalse(ended)
         self.assertFalse(any(st.final for _, st in out))
         xs = [st.definitive for _, st in out]

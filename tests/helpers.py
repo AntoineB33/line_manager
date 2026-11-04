@@ -14,6 +14,18 @@ from intervals import INF, Interval, IntervalSet, Pos  # noqa: E402
 from region import Region  # noqa: E402
 from solver import EMPTY, lhs_region, solve, union  # noqa: E402
 
+
+
+def summing_to_1(targets: dict, rest: str = "Rest") -> dict:
+    """The presence ratio targets, what they leave to 1 given to `rest`, an element nothing
+    else reads (the targets sum to 1, problems.check_sum)."""
+    out = {k: F(r) for k, r in targets.items()}
+    left = 1 - sum(out.values(), F(0))
+    if left:
+        out[rest] = out.get(rest, F(0)) + left
+    return out
+
+
 GRID = [F(i, 16) for i in range(-16 * 8, 16 * 8 + 1)]  # [-8, 8] by 1/16
 POSITIONS = [Pos(x, k) for x in GRID for k in (-1, 0, 1)]  # and the positions next to them
 

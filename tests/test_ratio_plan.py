@@ -141,6 +141,79 @@ class PerfectScriptTest(unittest.TestCase):
                 self.assertFalse(generator(rules, {"A": HALF, "B": HALF}, {"A": 1, "B": 1}).plan.ok)
 
 
+class FillTest(unittest.TestCase):
+    """Every target at ratio 1 (ratio_plan.Fill): wherever it can be after the chip, at
+    once, whatever the other rules, the modes and the constraints."""
+
+    def breaks(self, rules, q=0.5):
+        from constraints import FifteenMinuteBreaks
+        g = RulesGenerator(parse_rules(["Break15 → NoScreen", "mode 1 → no NoScreen"] + rules),
+                           [(PresenceRatioProblem({"Task": 1}), 1), (MinimumLengthProblem({"Task": 1}), 1)], q,
+                           constraints=[FifteenMinuteBreaks(length=2, pause=3)])
+        began = time.perf_counter()
+        stages = list(g.stages(LineState.empty(), F(0), ModeTimeline(0, "1").known(0)))
+        return stages, time.perf_counter() - began
+
+    def test_related_to_nothing_it_is_everywhere(self):
+        stages, took = self.breaks([])
+        self.assertEqual(len(stages), 1)
+        self.assertEqual(stages[-1][0].base.line.presence("Task"), after_from(0))
+        self.assertLess(took, 5)
+
+    def test_it_is_everywhere_but_where_it_is_forbidden(self):
+        """With "Break15 → no Task": every gap between the breaks, far past the window, at
+        any q (the budget of candidates does not cut it)."""
+        for q in (0, F(1, 2)):
+            with self.subTest(q=q):
+                stages, took = self.breaks(["Break15 → no Task"], q)
+                line = stages[-1][0].base.line
+                task, brk = line.presence("Task"), line.presence("Break15")
+                self.assertTrue((task & brk).is_empty())
+                for x in (F(5, 2), 4, F(101, 2), 1000, 10 ** 6 + F(1, 2)):  # breaks every 5: (0, 2], (5, 7], ...
+                    self.assertNotEqual(task.contains(x), brk.contains(x), x)
+                self.assertLess(took, 5)
+
+
+def after_from(x):
+    return Region.of(Iv(x, INF, False, False))
+
+
+class SumTest(unittest.TestCase):
+    """The presence ratio targets sum to 1, else the definitions are refused."""
+
+    def test_targets_that_do_not_sum_to_1_are_refused(self):
+        for targets in ({"A": 1, "B": 1}, {"A": 1, "B": HALF}, {"A": HALF}, {"A": F(1, 3), "B": F(1, 3)}):
+            with self.subTest(targets=targets):
+                with self.assertRaises(ValueError):
+                    RulesGenerator(parse_rules([]), [(PresenceRatioProblem(targets), 1)], 0.5)
+
+    def test_the_targets_of_all_the_problems_together(self):
+        with self.assertRaises(ValueError):
+            RulesGenerator(parse_rules([]), [(PresenceRatioProblem({"A": 1}), 1), (PresenceRatioProblem({"B": 1}), 1)], 0.5)
+
+    def test_no_target_is_no_ratio_problem(self):
+        self.assertEqual(PresenceRatioProblem({}).targets, {})
+
+    def test_the_window_refuses_them(self):
+        """The definitions of an example (start, as in screen_break_15_task.py with A and B
+        at 1): refused, and no window opens."""
+        import io
+        import os
+        import sys
+        from contextlib import redirect_stdout
+        from unittest import mock
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "UI"))
+        import app
+        out = io.StringIO()
+        with mock.patch("gui.run") as run, redirect_stdout(out):
+            app.start(rules=[], problems=[(PresenceRatioProblem({"Task": 1}), 1)])  # (valid: to check the mock)
+            self.assertTrue(run.called)
+            run.reset_mock()
+            app.start(rules=[], problems=[(PresenceRatioProblem({"A": 1, "B": 1}), 1)])
+        self.assertFalse(run.called)
+        self.assertIn("the definitions are refused: the presence ratio targets sum to 2, not 1", out.getvalue())
+
+
 class NoHorizonTest(unittest.TestCase):
     """The targets are on the whole line: a problem has no horizon, and the window of the
     generator's search (when there is no perfect script) is its own."""
@@ -160,15 +233,16 @@ class NoHorizonTest(unittest.TestCase):
         self.assertTrue(examples)
         for f in examples:
             with self.subTest(os.path.basename(f)):
-                self.assertNotIn("horizon=", open(f, encoding="utf-8").read())
+                with open(f, encoding="utf-8") as text:
+                    self.assertNotIn("horizon=", text.read())
 
     def test_the_search_window_follows_the_definitions(self):
         from constraints import FifteenMinuteBreaks
         from generator import SMALLEST_WINDOW
         rules = ["C → D"]  # (no perfect script)
-        self.assertEqual(generator(rules, {"A": HALF}).window, SMALLEST_WINDOW)
-        self.assertEqual(generator(rules, {"A": HALF}, {"A": 1000}).window, 4000)  # 4 times the longest minimum length
-        g = RulesGenerator(parse_rules(rules), [(PresenceRatioProblem({"A": HALF}), 1)], 0.5,
+        self.assertEqual(generator(rules, {"A": HALF, "B": HALF}).window, SMALLEST_WINDOW)
+        self.assertEqual(generator(rules, {"A": HALF, "B": HALF}, {"A": 1000}).window, 4000)  # 4 times the longest minimum length
+        g = RulesGenerator(parse_rules(rules), [(PresenceRatioProblem({"A": HALF, "B": HALF}), 1)], 0.5,
                            constraints=[FifteenMinuteBreaks(length=900, pause=7200)])
         self.assertEqual(g.window, 2 * 8100)  # twice a break and its pause
         self.assertTrue(all(p.window == g.window for p, _ in g.problems))  # its problems are bound to it

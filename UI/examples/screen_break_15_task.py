@@ -1,20 +1,9 @@
-"""The 15min break of OmniApp, as screen_break_15.py, with one task: Task, with a
-presence ratio target of 1 (all the time it can be) and a minimum length of 60 (one
-minute). One unit is one second, and the chip is the now line.
+"""The 15min break of OmniApp, as screen_break_15.py, with two tasks: A with a presence
+ratio target of 1 and a minimum length of 60 (one minute), and B with a presence ratio
+target of 0.5. One unit is one second, and the chip is the now line.
 
-The task stops during a break ("Break15 → no Task"); its best line is everywhere else,
-from the end of a break to the start of the next. The generator plans it a few minutes
-ahead of the chip at each run (with mode rules, a run's later stages do not edit
-further), so it appears as the chip goes: the first run puts it right after the first
-break, for about 6 minutes from 900.
-
-Type in the command box, as in screen_break_15.py:
-    add NoScreen on [18000, 19800]   30 minutes without screen: the next break moves, and
-                                     the task with it
-Press Play to move the chip, and use the selectors (or "mode 3" in the command box).
-
-Not expressed: as screen_break_15.py, and the task's relation to "no screen" (it is
-there during "no screen" that is not a break).
+The presence ratio targets sum to 1.5, not 1: the definitions are refused. The window
+says why and does not open, and the generator never runs.
 
 Copy this file to make your own session, change the definitions, and run it:
     python UI/examples/screen_break_15_task.py
@@ -22,6 +11,7 @@ Copy this file to make your own session, change the definitions, and run it:
 
 import os
 import sys
+from fractions import Fraction
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from app import FifteenMinuteBreaks, MinimumLengthProblem, PresenceRatioProblem, start  # noqa: E402
@@ -29,7 +19,6 @@ from app import FifteenMinuteBreaks, MinimumLengthProblem, PresenceRatioProblem,
 RULES = [
     # A break comes with "no screen"; "no screen" is each device locked or not used.
     "Break15 → NoScreen",
-    "Break15 → no Task",  # the task stops during a break
     "NoScreen → (NoComputerUnlocked or NotOnComputer) & (NoPhoneUnlocked or NotOnPhone)",
     "NotOnComputer → no NoComputerUnlocked",
     "NotOnPhone → no NoPhoneUnlocked",
@@ -55,8 +44,8 @@ CONSTRAINTS = [
     FifteenMinuteBreaks("Break15", "NoScreen", length=15 * MINUTE, pause=120 * MINUTE),
 ]
 PROBLEMS = [
-    (PresenceRatioProblem({"Task": 1}), 1),
-    (MinimumLengthProblem({"Task": 60}), 1),
+    (PresenceRatioProblem({"A": Fraction(1, 2), "B": Fraction(1, 2)}), 1),  # sum: 3/2, refused
+    (MinimumLengthProblem({"A": 60}), 1),
 ]
 Q = 0.5
 

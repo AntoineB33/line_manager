@@ -169,3 +169,55 @@ def _run(presence: Region, c: Fraction, L: Fraction) -> Fraction:
         return Fraction(0)
     lo = here[0].lo
     return c - Fraction(getattr(lo, "x", lo))
+
+
+class _Lines:
+    """What problems.forbidden reads: the rules and a state."""
+
+    def __init__(self, rules, state) -> None:
+        self.gen, self.state = _Rules(rules), state
+
+
+class _Rules:
+    def __init__(self, rules) -> None:
+        self.rules = rules
+
+
+class Fill:
+    """Every kind with a target has the ratio 1 (and a minimum length only for those):
+    the best line has each of them wherever it can be after the chip, whatever the other
+    rules, the modes and the constraints, so the generator offers that edit first, on the
+    whole line, instead of building it a stage at a time (`ok`). E.g. Task, ratio 1, with
+    the 15min breaks: Task on (x, inf); with "Break15 → no Task", Task on every position
+    after the chip but the breaks."""
+
+    def __init__(self, problems) -> None:
+        found = _targets(problems)
+        self.ok = False
+        if not found:
+            return
+        targets, self.lengths = found
+        self.kinds = sorted(k for k, r in targets.items() if r > 0)
+        self.ok = bool(self.kinds) and all(targets[k] == 1 for k in self.kinds) and all(k in self.kinds for k in self.lengths)
+
+    def ops(self, rules, state: LineState, chip, window) -> list[Op] | None:
+        """The edit on this line (the constraints' elements already on it): each kind on
+        what is free of it and not forbidden after the chip; None if a free stretch shorter
+        than its minimum length would have to be filled (the search decides then)."""
+        c = Fraction(chip)
+        after = Region.of(Interval(c, INF, False, False))
+        from problems import forbidden  # (problems imports nothing of this module)
+        ops = []
+        for k in self.kinds:
+            free = after - state.line.presence(k) - forbidden(_Lines(rules, state), k)
+            if free.is_empty():
+                continue
+            L = self.lengths.get(k, Fraction(0))
+            if L:
+                for iv in free.on(c, c + window).intervals:
+                    touches = iv.hi.x >= c + window or state.line.presence(k).contains(iv.lo) or \
+                        state.line.presence(k).contains(iv.hi + Pos(0, 1))
+                    if iv.length < L and not touches:
+                        return None
+            ops.append(Op.put(k, free))
+        return ops or None

@@ -59,6 +59,7 @@ The hyperparameter q in [0, 1]:
 
 from __future__ import annotations
 
+import itertools
 import math
 import random
 import time
@@ -71,9 +72,9 @@ from line import GEN, LineState, Op
 from mode_rules import compile_runs
 from modes import ModeKnowledge
 from probability import ProbabilityFinder, Scenario
-from problems import MinimumLengthProblem, PresenceRatioProblem  # noqa: F401 (the problems, for the callers)
+from problems import MinimumLengthProblem, PresenceRatioProblem, check_sum  # noqa: F401 (the problems, for the callers)
 from region import Region
-from ratio_plan import NoBestScript, Plan  # noqa: F401 (NoBestScript: for the callers)
+from ratio_plan import Fill, NoBestScript, Plan  # noqa: F401 (NoBestScript: for the callers)
 from resolve import Refused, apply_edit
 from rules import RuleSet
 from script import SHOW, ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Uncovered, Edited, score
@@ -144,6 +145,10 @@ class RulesGenerator:
         if any(w < 0 for _, w in problems):
             raise ValueError("the weights of the problems are >= 0")
         self.constraints = tuple(constraints)
+        targets = {}
+        for p, _ in problems:
+            targets.update(getattr(p, "targets", {}))
+        check_sum(targets)  # all the problems' together
         bound = [p.window for p, _ in problems if getattr(p, "window", None)]
         self.window = Fraction(window) if window is not None else max(bound) if bound else search_window(problems, self.constraints)
         self.problems = [(p.with_window(self.window) if hasattr(p, "with_window") else p, w) for p, w in problems]
@@ -157,6 +162,7 @@ class RulesGenerator:
         self.speed = Fraction(1)  # the chip's, for how far it goes during a run
         self.seed = random.randrange(2 ** 32) if seed is None else seed
         self.plan = Plan(rules, self.problems, self.constraints, self.seed)
+        self.fill = Fill(self.problems)
 
     def kinds_read(self):
         """What the rules, the constraints and the problems read; None if that is not known."""
@@ -198,6 +204,9 @@ class RulesGenerator:
         plan = self.plan.ops(state, c) if self.plan.ok else None
         if plan is not None:
             return [plan]
+        fill = self._fill(state, c)[0]
+        if fill:
+            return [fill]
         best, short = None, []
         cp = Pos(c)
         for p, _ in self.problems:
@@ -260,6 +269,11 @@ class RulesGenerator:
             if why:
                 base, keep, stats.constraints = state, None, why
         frontiers = self.frontiers(c)
+        ctx.forced = []
+        if self.fill.ok:  # the best line at once, on the whole line: one stage
+            fill = self.fill.ops(self.rules, base, c, H)
+            if fill:
+                ctx.forced, frontiers = [("ratio 1: wherever it can be", tuple(fill))], [None]
         D = rerun_distance(self.q, H)
         predicted = self.predicted(ctx, c + D / 6) if self.rules.mode_rules else []
         covered, carried = predicted, []
@@ -336,6 +350,17 @@ class RulesGenerator:
                                     constraints=self.constraints), replace(stats)
                     lo = hi
 
+    def _fill(self, state: LineState, c: Fraction):
+        """(the fill's edit or None, the state with the constraints' elements) (ratio_plan.Fill)."""
+        if not self.fill.ok:
+            return None, state
+        ops = [o for k in self.constraints for o in k.ops(state, c)]
+        try:
+            base = apply_edit(self.rules, state, ops, GEN) if ops else state
+        except Refused:
+            return None, state
+        return self.fill.ops(self.rules, base, c, self.window), base
+
     def _perfect(self, state: LineState, c: Fraction):
         """The perfect script (ratio_plan.py) and its stats, at once: definitive everywhere,
         and only the user's edits run the generator again. None if there is none here."""
@@ -366,7 +391,7 @@ class RulesGenerator:
         limit = stats.work + max(1, (stats.budget - stats.work) // left)
         held = not any(k.ops(base, ctx.c) for k in self.constraints)
         seen = {""}
-        for label, ops in ctx.candidates(until is not None):
+        for label, ops in itertools.chain(getattr(ctx, "forced", ()), ctx.candidates(until is not None)):
             if where is not None:
                 ops = tuple(o for o in (Op(o.action, o.kind, o.region & where, o.value) for o in ops) if not o.region.is_empty())
             key = " ; ".join(map(str, ops))

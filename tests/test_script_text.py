@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "UI"))
 
 from helpers import Interval, IntervalSet, Region  # noqa: E402
+from helpers import summing_to_1  # noqa: E402
 
 from app import FifteenMinuteBreaks, PresenceRatioProblem, Session  # noqa: E402
 from intervals import INF, Pos  # noqa: E402
@@ -300,7 +301,7 @@ class EventsOfTheRequirementTest(unittest.TestCase):
 
     def test_generated_and_not_fired_by_themselves(self):
         rs = parse_rules(["A → B"])
-        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({"A": F(1, 4)}).with_window(10), 0.5), Chip([(0, 0), (4, 4)]), ModeTimeline(0, "1"))
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem(summing_to_1({"A": F(1, 4)})).with_window(10), 0.5), Chip([(0, 0), (4, 4)]), ModeTimeline(0, "1"))
         sim.start()
         text = sim.script.text()
         self.assertIn("exceeds a presence ratio of", text)
@@ -324,7 +325,7 @@ class EventsOfTheRequirementTest(unittest.TestCase):
 
     def test_score(self):
         rs = parse_rules([])
-        problems = [(PresenceRatioProblem({"A": F(1, 2)}).with_window(10), F(1))]
+        problems = [(PresenceRatioProblem(summing_to_1({"A": F(1, 2)})).with_window(10), F(1))]
         self.assertEqual(score(problems, LineState.empty(), F(0)), F(2, 3))  # the error is 1/2
         st = apply_edit(rs, LineState.empty(), [Op.put("A", Region.of(Interval.open_closed(0, 5)))], USER)
         self.assertEqual(score(problems, st, F(0)), 1)

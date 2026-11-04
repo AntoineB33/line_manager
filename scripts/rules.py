@@ -280,8 +280,80 @@ class RuleError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class PercentOption:
+    """A percentage a kind can have, and the condition on what is at the same position:
+    None (anything), ("others", s): the other elements there sum to exactly s%, or
+    ("only", ((K, p% or None), ...)): exactly these other elements are there."""
+    value: Fraction
+    cond: tuple | None = None
+
+    def __str__(self) -> str:
+        if self.cond is None:
+            return f"{_fmt(self.value)}%"
+        if self.cond[0] == "others":
+            return f"{_fmt(self.value)}% with others {_fmt(self.cond[1])}%"
+        return f"{_fmt(self.value)}% with only " + ", ".join(k + (f" {_fmt(v)}%" if v is not None else "") for k, v in self.cond[1])
+
+
+@dataclass(frozen=True)
+class PercentRule:
+    """requirement.md, percentage rules: the percentages a kind can have, each with its
+    condition. A kind with no percentage rule can have any percentage.
+        A is always 100%
+        B can be 100% | 20% with others 80%
+        C can be 100% | 80% with only B"""
+    kind: str
+    options: tuple[PercentOption, ...]
+    text: str = ""
+
+    def __str__(self) -> str:
+        return self.text or f"{self.kind} can be " + " | ".join(map(str, self.options))
+
+
+_PERCENT = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s+(?:is\s+always|can\s+be)\s*:?\s*(.+?)\s*")
+
+
+def parse_percent_rule(text: str) -> PercentRule | None:
+    """A percentage rule, or None if the text is not one (it is then an element or mode
+    rule)."""
+    m = _PERCENT.fullmatch(text)
+    if not m or "→" in text or "->" in text:
+        return None
+    kind = _kind(m.group(1))
+    opts = []
+    for part in re.split(r"\s*\|\s*", m.group(2)):
+        mo = re.fullmatch(rf"({_NUM})\s*%(?:\s+with\s+(.+))?", part.strip())
+        if not mo:
+            raise RuleError(f"bad percentage {part!r} in {text!r}")
+        value, cond = _pct(mo.group(1), False), None
+        if mo.group(2):
+            c = mo.group(2).strip()
+            m1 = re.fullmatch(rf"(?:others|other elements(?: that have a total sum of)?)\s+({_NUM})\s*%", c)
+            m2 = re.fullmatch(r"only\s+(.+)", c)
+            if m1:
+                cond = ("others", _pct(m1.group(1), False))
+            elif m2:
+                listed = []
+                for item in re.split(r"\s*(?:,|\band\b)\s*", m2.group(1).strip()):
+                    mk = re.fullmatch(rf"([A-Za-z_][A-Za-z0-9_]*)(?:\s+({_NUM})\s*%)?", item)
+                    if not mk or mk.group(1) == kind:
+                        raise RuleError(f"bad element {item!r} in {text!r}")
+                    listed.append((_kind(mk.group(1)), _pct(mk.group(2), False) if mk.group(2) else None))
+                cond = ("only", tuple(listed))
+            else:
+                raise RuleError(f"bad condition {c!r} in {text!r}")
+        opts.append(PercentOption(value, cond))
+    return PercentRule(kind, tuple(opts), text.strip())
+
+
 class RuleSet:
-    def __init__(self, rules: list[Rule]) -> None:
+    def __init__(self, rules: list[Rule], percent: tuple = ()) -> None:
+        self.percent: dict[str, PercentRule] = {}
+        for pr in percent:
+            if pr.kind in self.percent:
+                raise RuleError(f"two percentage rules for {pr.kind}")
+            self.percent[pr.kind] = pr
         # the rules of the hidden kinds come after the written ones (one per hidden kind)
         internal = {ir.lhs.kind: ir for r in rules for ir in r.internal}
         self.rules = list(rules) + list(internal.values())
@@ -348,7 +420,8 @@ class RuleSet:
             if read and any(o.anchor != "p" or not o.is_point for o in r.lits()):
                 lattice = False
             self.split.append((tuple(dict.fromkeys(cd)), tuple(dict.fromkeys(ncd)), And(tuple(rest))))
-        self.lattice = lattice
+        # the lattices do not check the percentage rules while choosing: the sweep does
+        self.lattice = lattice and not self.percent
         # no method goes from left to right (a choice can take a consequence away, or act on
         # what is decided): the choices are searched (`Sweep._search`)
         self.searched = bool(self.mixed or (absent_read and not lattice))
@@ -392,6 +465,8 @@ class RuleSet:
         # a position only acts on itself: no distance, no interval, no left edge
         self.pointwise = self.local = self.monotone = None
         self.ruled = set(self.order) | {k for r in self.rules for k in r.lhs.kinds()} | {o.kind for r in self.rules for o in r.lits()}
+        self.ruled |= set(self.percent) | {k for pr in self.percent.values() for o in pr.options if o.cond and o.cond[0] == "only"
+                                           for k, _ in o.cond[1]}
         # more elements can only add contradictions: left sides read presence, and no
         # position depends on where an interval starts
         self.monotone = all(_reads_presence(r.lhs) and all(o.anchor == "p" for o in r.lits()) for r in self.element)
@@ -822,7 +897,8 @@ def parse_rule(text: str) -> Rule:
 
 def parse_rules(texts: list[str]) -> RuleSet:
     """The rules; refused (RuleError) if they have a cycle, or if no line satisfies them."""
-    rs = RuleSet([parse_rule(t) for t in texts])
+    pct = [parse_percent_rule(t) for t in texts]
+    rs = RuleSet([parse_rule(t) for t, pr in zip(texts, pct) if pr is None], tuple(pr for pr in pct if pr is not None))
     from solver import satisfiable  # (solver.py reads the rules)
     why = satisfiable(rs)
     if why:

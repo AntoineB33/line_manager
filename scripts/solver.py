@@ -998,15 +998,92 @@ def satisfiable(rs: RuleSet) -> str | None:
     return "no line satisfying these rules was found"
 
 
+def percent_conflict(rs: RuleSet, vals, permanent: bool = False) -> str | None:
+    """Where the line breaks a percentage rule (requirement.md), described, or None. A
+    kind with a rule must have, at each position, one of its percentages whose condition
+    holds there: anything; the other elements there summing to exactly s%; exactly the
+    listed other elements there (hidden kinds are not elements). `permanent`: only where
+    adding elements cannot repair it (a percentage it cannot have, an element too many, a
+    sum already above s): while the choices are being made, more may come."""
+    if not rs.percent:
+        return None
+    pres = {k: union(d.values()) for k, d in vals.items() if not is_hidden(k)}
+    for K, pr in rs.percent.items():
+        for v, R in vals.get(K, {}).items():
+            if not R:
+                continue
+            opts = [o for o in pr.options if o.value == v]
+            if permanent:
+                bad = R
+                for o in opts:
+                    bad = bad & _percent_lost(o, K, vals, pres)
+            else:
+                bad = R - union(_percent_holds(o, K, vals, pres) for o in opts)
+            if bad:
+                return f"{K} {v}% on {bad} breaks the percentage rule {pr}"
+    return None
+
+
+def _sums(K, vals, pres) -> dict:
+    """sum of the percentages of the elements other than K -> where."""
+    out = {Fraction(0): Region.universe()}
+    for k, d in vals.items():
+        if k == K or k not in pres:
+            continue
+        new: dict = {}
+        for t, reg in out.items():
+            rest = reg - pres[k]
+            if rest:
+                new[t] = new.get(t, EMPTY) | rest
+            for v, rv in d.items():
+                both = reg & rv
+                if both:
+                    new[t + v] = new.get(t + v, EMPTY) | both
+        out = new
+    return out
+
+
+def _percent_holds(o, K, vals, pres) -> Region:
+    """Where the condition of this option holds."""
+    if o.cond is None:
+        return Region.universe()
+    if o.cond[0] == "others":
+        return _sums(K, vals, pres).get(o.cond[1], EMPTY)
+    listed = dict(o.cond[1])
+    out = Region.universe()
+    for k, v in listed.items():
+        out = out & (pres.get(k, EMPTY) if v is None else vals.get(k, {}).get(v, EMPTY))
+    for k, r in pres.items():
+        if k != K and k not in listed:
+            out = out - r
+    return out
+
+
+def _percent_lost(o, K, vals, pres) -> Region:
+    """Where the condition of this option cannot hold any more, whatever is added."""
+    if o.cond is None:
+        return EMPTY
+    if o.cond[0] == "others":
+        return union(r for t, r in _sums(K, vals, pres).items() if t > o.cond[1])
+    listed = dict(o.cond[1])
+    out = union(r for k, r in pres.items() if k != K and k not in listed)
+    for k, v in listed.items():
+        if v is not None:
+            out = out | union(r for w, r in vals.get(k, {}).items() if w != v)
+    return out
+
+
 def solve(rs: RuleSet, prob: Problem) -> Line:
     """The line of these claims; raises Conflict if the rules cannot be satisfied,
     Undetermined if they do not decide the choices."""
     has_or = bool(rs.or_items)
     kinds_in = set(rs.choice_dependent) if has_or else set()
     vals, fixed, forbid = region_stage(rs, prob, kinds_in)
-    if not has_or:
-        return Line(vals)
-    return _solve_or(rs, prob, kinds_in, vals, fixed, forbid)
+    line = Line(vals) if not has_or else _solve_or(rs, prob, kinds_in, vals, fixed, forbid)
+    why = percent_conflict(rs, line.vals)
+    if why:
+        raise Conflict(why)
+    return line
 
 
 def _solve_or(rs: RuleSet, prob: Problem, kinds_in, vals, fixed, forbid) -> Line:

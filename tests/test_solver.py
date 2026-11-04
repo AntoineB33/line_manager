@@ -1153,5 +1153,53 @@ class HistoryTest(unittest.TestCase):
         self.assertGreater(checked, 80)
 
 
+
+class PercentRuleTest(unittest.TestCase):
+    """requirement.md: percentage rules."""
+    PR = ["A is always 100%", "B can be 100% | 20% with others 80%", "C can be 100% | 80% with only B"]
+
+    def state(self, rules, *edits):
+        rs, s = parse_rules(self.PR + rules), LineState.empty()
+        for ops in edits:
+            s = apply_edit(rs, s, ops, USER)
+        return s
+
+    def test_allowed_and_refused(self):
+        I = Interval.closed
+        s = self.state([], [Op.put("B", I(0, 2), 20), Op.put("C", I(0, 2), 80)])
+        self.assertEqual((s.line.value_at("B", 1), s.line.value_at("C", 1)), (20, 80))
+        for ops in ([Op.put("B", I(0, 2), 20)], [Op.put("B", I(0, 2), 20), Op.put("A", I(0, 2))], [Op.put("A", I(0, 2), 50)]):
+            with self.assertRaises(Refused, msg=ops):
+                self.state([], ops)
+        s = self.state([], [Op.put("B", I(0, 2)), Op.put("A", I(0, 2)), Op.put("D", I(0, 2), 30)])  # 100%: anything
+        self.assertEqual(s.line.value_at("D", 1), 30)  # D has no percentage rule
+        with self.assertRaises(Refused):
+            self.state(["A → B 50%"], [Op.put("A", I(0, 1))])
+
+    def test_the_edit_wins(self):
+        """B 20% and C 80% give way at 1 to A (C 80% only with B; B 20% then with 180%)."""
+        I = Interval.closed
+        s = self.state([], [Op.put("B", I(0, 2), 20), Op.put("C", I(0, 2), 80)], [Op.put("A", I(1, 1))])
+        rest = Region.of(I(0, 2)) - Region.point(1)
+        self.assertEqual((s.line.presence("A"), s.line.presence("B"), s.line.presence("C")), (Region.point(1), rest, rest))
+        s = self.state([], [Op.put("B", I(0, 2), 20), Op.put("C", I(0, 2), 80)], [Op.take("C", I(1, 1))])
+        self.assertEqual(s.line.presence("B"), rest)
+
+    def test_or_skips_what_cannot_be_repaired(self):
+        s = self.state(["A → B 50% or B 100%"], [Op.put("A", Interval.closed(0, 1))])
+        self.assertEqual(s.line.vals["B"], {100: Region.of(Interval.closed(0, 1))})
+        s = self.state(["A → C 80% or D"], [Op.put("A", Interval.closed(0, 1))])  # A is there: not only B
+        self.assertEqual((s.line.presence("C"), s.line.presence("D")), (Region.empty(), Region.of(Interval.closed(0, 1))))
+
+    def test_parse(self):
+        rs = parse_rules(self.PR + ["D can be 50% with only B 20%, C", "E can be 20% with other elements that have a total sum of 80%"])
+        self.assertEqual(str(rs.percent["B"].options[1]), "20% with others 80%")
+        self.assertEqual(rs.percent["D"].options[0].cond, ("only", (("B", 20), ("C", None))))
+        self.assertEqual(rs.percent["E"].options[0].cond, ("others", 80))
+        for bad in (["A is always 100%", "A can be 50%"], ["B can be 20% with nobody"], ["B can be 200%"]):
+            with self.assertRaises(RuleError, msg=bad):
+                parse_rules(bad)
+
+
 if __name__ == "__main__":
     unittest.main()

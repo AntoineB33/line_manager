@@ -76,7 +76,7 @@ from fractions import Fraction
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from region import ZERO, Region, _constant, flcm
 from rules import Atom, _fgcd, conjuncts
-from solver import EMPTY, Conflict, Undetermined, checkpoint, close, kinds_of, lhs_region, unbound_reach, union
+from solver import EMPTY, Conflict, Undetermined, percent_conflict, checkpoint, close, kinds_of, lhs_region, unbound_reach, union
 
 MAX_EVENTS = 3000
 MAX_CALLS = 3000
@@ -256,6 +256,9 @@ class Sweep:
             bad = union(vals.get(k, {}).values()) & f
             if bad:
                 raise Conflict(f"{k} is required to be absent on {bad}")
+        why = percent_conflict(self.rs, vals, permanent=True)  # (more may come: only what cannot be repaired)
+        if why:
+            raise Conflict(why)
         return vals
 
     def _took(self, ch, ii: int, oi: int) -> Region:

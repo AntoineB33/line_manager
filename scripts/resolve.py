@@ -121,7 +121,7 @@ def apply_edit(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> Line
         return after
     rec = Record.of(ops)
     kinds = {op.kind for op in ops}
-    if not kinds & rs.ruled:
+    if not kinds & rs.ruled and not rs.percent:  # (a sum of percentages reads every kind)
         return _apart(state, rec, kinds)
     _alone(rs, rec.claims.problem())
     if rs.local and state.claims.clean:

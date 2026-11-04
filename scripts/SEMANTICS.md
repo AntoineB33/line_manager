@@ -140,6 +140,23 @@ An element rule has the form L → R.
   - `Region.left_edges` and `Region.dilate` compute these sets exactly, tails
     included. `test_left_edges_dilate_components` checks them point by point.
 
+### Percentage rules
+
+`A is always 100%`, `B can be 100% | 20% with others 80%`, `C can be 100% | 80% with
+only B` (requirement.md; also `with other elements that have a total sum of 80%`, and
+`with only B 20%, D`). A kind with a percentage rule must have, at each position where
+it is, one of its percentages whose condition holds there: none (anything else may be
+there), `with others s%` (the other elements there sum to exactly s%), `with only K, ...`
+(exactly these other elements are there, at these percentages if given). A kind with no
+percentage rule can have any percentage. Hidden kinds are not elements.
+  - Breaking one is a contradiction like any other: an element rule that asks for
+    `B 50%` refuses the edit, and an edit wins over older elements, which adapt
+    (`solver.percent_conflict`, `PercentRuleTest`).
+  - An "or" skips an operand that breaks one where adding elements cannot repair it (a
+    percentage the kind cannot have, an element too many, a sum already above s): the
+    sweep checks that while choosing; the whole line is checked once chosen. With
+    percentage rules, the "or"s go to the sweep, not the lattices.
+
 ### Mode rules
 
 `mode m [& L] → R` is a mode rule. It can add or remove elements only at the

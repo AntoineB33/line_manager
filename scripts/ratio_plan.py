@@ -120,13 +120,20 @@ def _cycle(c: Fraction, P: Fraction, lo: Fraction, hi: Fraction) -> Region:
 
 
 class Plan:
-    """The perfect script of these definitions, if they are simple enough (`ok`)."""
+    """The perfect script of these definitions, if they are simple enough (`ok`).
+    `strict` False: only the cycles of the targets that exclude each other, whatever the
+    other rules and the constraints (`group_ops`; the generator checks the edit)."""
 
-    def __init__(self, rs: RuleSet, problems, constraints=(), seed: int = 0) -> None:
+    def __init__(self, rs: RuleSet, problems, constraints=(), seed: int = 0, strict: bool = True) -> None:
         self.ok = False
-        found = None if constraints else _targets(problems)
-        pairs = exclusions(rs) if found else None
-        if pairs is None:
+        self.grouped = set()  # the kinds in a cycle
+        if strict:
+            found = None if constraints else _targets(problems)
+            pairs = exclusions(rs) if found else None
+        else:
+            found = _targets(problems)
+            pairs = {p for p in map(_exclusion, rs.rules) if p and len(p) == 2}
+        if pairs is None or not found:
             return
         self.targets, self.lengths = found
         lengths = self.lengths
@@ -161,8 +168,50 @@ class Plan:
                 raise NoBestScript(f"{', '.join(g)} exclude each other and none has a minimum length: every alternation of "
                                    "them is beaten by a faster one, so no script is the best")
             self.groups.append((rng.sample(g, len(g)), P))
+            self.grouped |= set(g)
         self.kinds = sorted(self.targets)
+        self.pairs = pairs
         self.ok = True
+
+    def group_ops(self, rules, state: LineState, chip) -> list[Op] | None:
+        """The edit of the cycles only (not strict); None if a kind of a cycle is there after
+        the chip and not put by the generator, or another rule forbids it somewhere after
+        the chip (its exclusions with the other kinds of its cycle aside)."""
+        c = Fraction(chip)
+        after = Region.of(Interval(c, INF, False, False))
+        from problems import forbidden  # (problems imports nothing of this module)
+        others = [r for r in rules.element if _exclusion(r) not in self.pairs]
+        ops = []
+        for k in sorted(self.grouped):
+            there = state.line.presence(k) & after
+            if not (there - state.claims.owned(k, GEN)).is_empty():
+                return None
+            if not (forbidden(_Lines(others, state), k) & after).is_empty():
+                return None
+            if not there.is_empty():
+                ops.append(Op.take(k, after))
+        for g, P in self.groups:
+            if P is not None:
+                ops += self._cycle_ops(state, c, g, P)
+        return ops
+
+    def _cycle_ops(self, state: LineState, c: Fraction, g, P) -> list[Op]:
+        """The kinds of g one after the other every P from the chip, the one at the chip last,
+        its interval there kept to its minimum length."""
+        ops = []
+        last = [k for k in g if state.line.presence(k).contains(Pos(c))]
+        start = c
+        for k in last:  # its interval at the chip goes on to its minimum length
+            rest = self.lengths.get(k, Fraction(0)) - _run(state.line.presence(k), c, self.lengths.get(k, Fraction(0)))
+            if rest > 0:
+                ops.append(Op.put(k, Region.of(Interval(c, c + rest, False, True))))
+                start = c + rest
+        at = Fraction(0)
+        for k in [k for k in g if k not in last] + last:
+            length = self.targets[k] * P
+            ops.append(Op.put(k, _cycle(start, P, at, at + length)))
+            at += length
+        return ops
 
     def ops(self, state: LineState, chip) -> list[Op] | None:
         """The edit of the perfect script from the chip, on this line; None if the line has
@@ -179,19 +228,8 @@ class Plan:
         for g, P in self.groups:
             if P is None:
                 ops.append(Op.put(g[0], after, 100 * self.targets[g[0]]))
-                continue
-            last = [k for k in g if state.line.presence(k).contains(Pos(c))]
-            start = c
-            for k in last:  # its interval at the chip goes on to its minimum length
-                rest = self.lengths.get(k, Fraction(0)) - _run(state.line.presence(k), c, self.lengths.get(k, Fraction(0)))
-                if rest > 0:
-                    ops.append(Op.put(k, Region.of(Interval(c, c + rest, False, True))))
-                    start = c + rest
-            at = Fraction(0)
-            for k in [k for k in g if k not in last] + last:
-                length = self.targets[k] * P
-                ops.append(Op.put(k, _cycle(start, P, at, at + length)))
-                at += length
+            else:
+                ops += self._cycle_ops(state, c, g, P)
         return ops
 
 
@@ -216,7 +254,12 @@ class _Lines:
 
 class _Rules:
     def __init__(self, rules) -> None:
-        self.rules = rules
+        self.rules = rules if hasattr(rules, "element") else _Element(rules)
+
+
+class _Element:
+    def __init__(self, rules) -> None:
+        self.element = list(rules)
 
 
 class Fill:
@@ -243,7 +286,7 @@ class Fill:
         self.kinds = sorted(k for k, r in self.targets.items() if r > 0)
         self.ok = bool(self.kinds) and all(k in self.kinds for k in self.lengths)
 
-    def ops(self, rules, state: LineState, chip, window) -> list[Op] | None:
+    def ops(self, rules, state: LineState, chip, window, skip=()) -> list[Op] | None:
         """The edit on this line (the constraints' elements already on it); None if there
         is none: a kind below 1 forbidden somewhere after the chip, or there and not put by
         the generator, or a free stretch shorter than a minimum length to fill."""
@@ -252,6 +295,8 @@ class Fill:
         from problems import forbidden  # (problems imports nothing of this module)
         ops = []
         for k in self.kinds:
+            if k in skip:  # (in a cycle: Plan.group_ops)
+                continue
             pres = state.line.presence(k)
             no = forbidden(_Lines(rules, state), k) & after
             if self.targets[k] < 1:
@@ -272,4 +317,4 @@ class Fill:
                     if iv.length < L and not touches:
                         return None
             ops.append(Op.put(k, free))
-        return ops or None
+        return ops

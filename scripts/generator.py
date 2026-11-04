@@ -165,10 +165,11 @@ class RulesGenerator:
         check_best_exists(rules, self.problems)  # whatever the rest of the definitions
         self.plan = Plan(rules, self.problems, self.constraints, self.seed)
         self.fill = Fill(self.problems)
+        self.cycles = Plan(rules, self.problems, self.constraints, self.seed, strict=False)
         if self.fill.ok and self._modes_that_matter():
             self.fill.ok = False  # the mode rules change the targets' share: the search predicts them
         if not shortcuts:  # the search alone, whatever the definitions (its tests)
-            self.plan.ok = self.fill.ok = False
+            self.plan.ok = self.fill.ok = self.cycles.ok = False
 
     def kinds_read(self):
         """What the rules, the constraints and the problems read; None if that is not known."""
@@ -277,7 +278,7 @@ class RulesGenerator:
         frontiers = self.frontiers(c)
         ctx.forced = []
         if self.fill.ok:  # the best line at once, on the whole line: one stage
-            fill = self.fill.ops(self.rules, base, c, H)
+            fill = self._at_once(base, c)
             try:
                 valid = bool(fill) and check_script_edit(state, apply_edit(self.rules, base, fill, GEN), c) is None
             except Refused:
@@ -369,7 +370,22 @@ class RulesGenerator:
             base = apply_edit(self.rules, state, ops, GEN) if ops else state
         except Refused:
             return None, state
-        return self.fill.ops(self.rules, base, c, self.window), base
+        return self._at_once(base, c), base
+
+    def _at_once(self, base: LineState, c: Fraction) -> list[Op] | None:
+        """The best line's edit on this line (the constraints' elements on it), if it is
+        found at once: each target where it can be (ratio_plan.Fill), the targets that
+        exclude each other in their cycles (ratio_plan.Plan.group_ops); None if not."""
+        grouped = self.cycles.grouped if self.cycles.ok else set()
+        ops = self.fill.ops(self.rules, base, c, self.window, skip=grouped)
+        if ops is None:
+            return None
+        if grouped:
+            more = self.cycles.group_ops(self.rules, base, c)
+            if more is None:
+                return None
+            ops = ops + more
+        return ops or None
 
     def _perfect(self, state: LineState, c: Fraction):
         """The perfect script (ratio_plan.py) and its stats, at once: definitive everywhere,

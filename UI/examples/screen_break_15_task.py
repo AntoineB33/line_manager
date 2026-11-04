@@ -1,10 +1,11 @@
 """The 15min break of OmniApp, as screen_break_15.py, with two tasks: A and B, each
-with a presence ratio target of 0.5, that exclude each other ("A → no B"), and no
-minimum length. One unit is one second, and the chip is the now line.
+with a presence ratio target of 0.5, that exclude each other ("A → no B"), and A with
+a minimum length of 60. One unit is one second, and the chip is the now line.
 
-Every alternation of A and B is beaten by a faster one, so no line is the best: the
-definitions are refused. The window says why and does not open, and the generator never
-runs. With a minimum length (uncomment it below), A and B alternate by it.
+The best line alternates 60 of A and 60 of B forever, from the chip (the first one at
+random): the generator finds it at once (ratio_plan.Plan.group_ops), and the breaks come
+and go as in screen_break_15.py. Without the minimum length, every alternation is beaten
+by a faster one: the definitions are refused.
 
 Copy this file to make your own session, change the definitions, and run it:
     python UI/examples/screen_break_15_task.py
@@ -48,7 +49,7 @@ CONSTRAINTS = [
 ]
 PROBLEMS = [
     (PresenceRatioProblem({"A": Fraction(1, 2), "B": Fraction(1, 2)}), 1),  # sum: 1
-    # (MinimumLengthProblem({"A": 60}), 1),
+    (MinimumLengthProblem({"A": 60}), 1),
 ]
 Q = 0.5
 

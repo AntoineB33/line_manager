@@ -161,11 +161,11 @@ class FillTest(unittest.TestCase):
     """Every target at ratio 1 (ratio_plan.Fill): wherever it can be after the chip, at
     once, whatever the other rules, the modes and the constraints."""
 
-    def breaks(self, rules, q=0.5, targets=None):
+    def breaks(self, rules, q=0.5, targets=None, lengths=None):
         from constraints import FifteenMinuteBreaks
         g = RulesGenerator(parse_rules(["Break15 → NoScreen", "mode 1 → no NoScreen"] + rules),
-                           [(PresenceRatioProblem(targets or {"Task": 1}), 1), (MinimumLengthProblem({"Task": 1}), 1)], q,
-                           constraints=[FifteenMinuteBreaks(length=2, pause=3)])
+                           [(PresenceRatioProblem(targets or {"Task": 1}), 1), (MinimumLengthProblem(lengths or {"Task": 1}), 1)],
+                           q, constraints=[FifteenMinuteBreaks(length=2, pause=3)])
         began = time.perf_counter()
         stages = list(g.stages(LineState.empty(), F(0), ModeTimeline(0, "1").known(0)))
         return stages, time.perf_counter() - began
@@ -197,13 +197,30 @@ class FillTest(unittest.TestCase):
         self.assertEqual(line.vals["B"], {50: after_from(0)})
         self.assertLess(took, 5)
 
-    def test_below_1_and_forbidden_somewhere_or_refused_the_search_decides(self):
-        for rules in (["Break15 → no B"], ["Task → no B"]):
+    def test_below_1_and_forbidden_somewhere_the_search_decides(self):
+        for rules in (["Break15 → no B"],):  # ("Task → no B": they alternate, at once)
             with self.subTest(rules=rules):
                 stages, _ = self.breaks(rules, targets={"Task": HALF, "B": HALF})
                 self.assertNotEqual(stages[-1][1].chosen, "the targets at once: each where it can be")
                 line = stages[-1][0].base.line
                 self.assertNotEqual(line.vals.get("B"), {50: after_from(0)})
+
+    def test_exclusive_targets_alternate_whatever_the_other_rules(self):
+        """A and B at 0.5, "A → no B", A at least 1, with the breaks and their rules: A and
+        B alternate by 1 forever, at once (one stage)."""
+        stages, took = self.breaks(["A → no B"], targets={"A": HALF, "B": HALF}, lengths={"A": 1})
+        self.assertEqual(len(stages), 1)
+        line = stages[-1][0].base.line
+        a, b = line.presence("A"), line.presence("B")
+        first, second = (a, b) if a.contains(HALF) else (b, a)
+        for n in (0, 1, 7, 10 ** 5):
+            self.assertTrue(first.contains(2 * n + HALF) and second.contains(2 * n + F(3, 2)), n)
+            self.assertFalse(second.contains(2 * n + HALF) or first.contains(2 * n + F(3, 2)), n)
+        self.assertLess(took, 30)
+
+    def test_exclusive_targets_forbidden_elsewhere_leave_it_to_the_search(self):
+        stages, _ = self.breaks(["A → no B", "Break15 → no A"], targets={"A": HALF, "B": HALF}, lengths={"A": 1})
+        self.assertNotEqual(stages[-1][1].chosen, "the targets at once: each where it can be")
 
     def test_a_mode_rule_that_reaches_a_target_leaves_it_to_the_search(self):
         """"mode 1 → D": what the mode adds at the chip changes D's share."""

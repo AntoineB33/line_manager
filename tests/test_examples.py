@@ -22,7 +22,7 @@ from region import Region  # noqa: E402
 from script import ChipIn, Edited, PresenceAbove, ScoreBelow  # noqa: E402
 
 # examples whose definitions are refused, and why
-REFUSED = {"screen_break_15_task": "the definitions are refused: A, B exclude each other and none has a minimum length"}
+REFUSED = {}
 
 
 def first_run(name):
@@ -50,6 +50,8 @@ class ExamplesTest(unittest.TestCase):
     def test_every_example_has_its_own_rules(self):
         expected = {
             "screen_break_15": {(ChipIn, None), Edited},
+            # its tasks: the score and their ratios are watched
+            "screen_break_15_task": {(ChipIn, None), Edited, ScoreBelow, PresenceAbove},
             "screen_breaks_5_15": {(ChipIn, None), Edited},
             "screen_breaks": {(ChipIn, None), Edited},
             "screen_breaks_sleep": {(ChipIn, None), Edited},
@@ -84,6 +86,19 @@ class ExamplesTest(unittest.TestCase):
                     runpy.run_path(os.path.join(UI, "examples", f"{name}.py"), run_name="__main__")
                 self.assertFalse(run.called)
                 self.assertIn(why, out.getvalue())
+
+    def test_the_tasks_alternate_by_60(self):
+        """A and B at 0.5, "A → no B", A at least 60: 60 of A and 60 of B one after the
+        other forever, after the first run (the search used to put 6 minutes of A only)."""
+        line = first_run("screen_break_15_task").state.line
+        a, b = line.presence("A"), line.presence("B")
+        first, second = (a, b) if a.contains(30) else (b, a)
+        for n in (0, 1, 2, 100, 10 ** 4):
+            x = 120 * n
+            self.assertTrue(first.contains(x + 1) and first.contains(x + 60), n)
+            self.assertTrue(second.contains(x + 61) and second.contains(x + 120), n)
+            self.assertFalse(second.contains(x + 30) or first.contains(x + 90), n)
+        self.assertEqual(set(line.vals["A"]) | set(line.vals["B"]), {100})
 
 
 if __name__ == "__main__":

@@ -786,10 +786,11 @@ _INTERVAL = re.compile(r"\bon\s*[\[({][^\])}]*[\])}]")
 
 
 class _Rhs:
-    """expr := ors (& ors)* ; ors := unary (or unary)* ; unary := ( expr ) | literal.
-    "&" separates the items and "or" binds tighter: "B or C & D" is (B or C) & D;
-    parentheses group anything: "(B & C) or D". The parentheses of an interval
-    ("on (0, 1] of l") belong to its literal."""
+    """expr := ors (& ors)* ; ors := unary (or unary)* ; unary := ( expr ) | no ( expr ) |
+    literal. "&" separates the items and "or" binds tighter: "B or C & D" is (B or C) & D;
+    parentheses group anything: "(B & C) or D". "no (...)" is its negation, made of
+    literals: "no (B or C)" is "no B & no C", "no (B & C)" is "no B or no C". The
+    parentheses of an interval ("on (0, 1] of l") belong to its literal."""
 
     def __init__(self, text: str) -> None:
         saved: list[str] = []
@@ -840,9 +841,25 @@ class _Rhs:
             if self.next() != ")":
                 raise RuleError("missing ')' in the right side")
             return node
+        if tok == "no" and self.peek() == "(":
+            self.next()
+            node = self.expr()
+            if self.next() != ")":
+                raise RuleError("missing ')' in the right side")
+            return _negated(node)
         if tok in (")", "&", "and", "or"):
             raise RuleError(f"unexpected {tok!r} in the right side")
         return ("lit", _lit(tok))
+
+
+def _negated(node):
+    """The negation of a right side's node, made of literals (De Morgan)."""
+    if node[0] == "lit":
+        o = node[1]
+        if o.value is not None:
+            raise RuleError(f"'no (...)' takes no percentage: {o}")
+        return ("lit", Lit(o.kind, o.where, o.anchor, None, not o.negated))
+    return ("or" if node[0] == "and" else "and", [_negated(p) for p in node[1]])
 
 
 def _conjuncts(node) -> list:

@@ -98,6 +98,18 @@ class PerfectScriptTest(unittest.TestCase):
         RulesGenerator(parse_rules(rules), targets + [(MinimumLengthProblem({"A": 60}), 1)], 0.5,
                        constraints=[FifteenMinuteBreaks()])  # a minimum length: a best line exists
 
+    def test_two_exclusive_with_no_minimum_length_among_others_are_refused(self):
+        """A, B, C at 1/3 that exclude each other, A at least 60: B and C alternate ever
+        faster between the pieces of A. One of them at least 1 too: A, B, C take turns."""
+        rules = ["A → no B", "A → no C", "B → no C"]
+        third = F(1, 3)
+        with self.assertRaises(ValueError):
+            generator(rules, {"A": third, "B": third, "C": third}, {"A": 60})
+        generator(rules, {"A": third, "B": third, "C": third}, {"A": 60, "B": 1})
+
+    def test_one_exclusive_with_no_minimum_length_is_not_refused(self):
+        generator(["A → no B"], {"A": HALF, "B": HALF}, {"A": 60})  # B's pieces come between A's
+
     def test_exclusive_with_an_element_with_no_target_is_not_refused(self):
         generator(["B → no C"], {"A": HALF, "B": HALF})
 
@@ -222,12 +234,117 @@ class FillTest(unittest.TestCase):
         stages, _ = self.breaks(["A → no B", "Break15 → no A"], targets={"A": HALF, "B": HALF}, lengths={"A": 1})
         self.assertNotEqual(stages[-1][1].chosen, "the targets at once: each where it can be")
 
+    def test_a_mode_rule_that_only_forbids_targets_keeps_the_best_line(self):
+        """"mode 2 → NoScreen" with "NoScreen → no D": the mode only forbids D at the chip,
+        the line found from what is known is the best, made again after the mode acts."""
+        targets = [(PresenceRatioProblem({"D": F(3, 4), "E": F(1, 4)}), 1)]
+        g = RulesGenerator(parse_rules(["mode 2 → NoScreen", "NoScreen → no D"]), targets, 0.5)
+        self.assertTrue(g.fill.ok)
+        g = RulesGenerator(parse_rules(["mode 2 → X", "X → D"]), targets, 0.5)
+        self.assertFalse(g.fill.ok)  # through the element rules, it adds D
+
     def test_a_mode_rule_that_reaches_a_target_leaves_it_to_the_search(self):
         """"mode 1 → D": what the mode adds at the chip changes D's share."""
         g = RulesGenerator(parse_rules(["mode 1 → D"]), [(PresenceRatioProblem({"D": F(3, 4), "E": F(1, 4)}), 1)], 0.5)
         self.assertFalse(g.fill.ok)
         g = RulesGenerator(parse_rules(["mode 1 → C"]), [(PresenceRatioProblem({"D": F(3, 4), "E": F(1, 4)}), 1)], 0.5)
         self.assertTrue(g.fill.ok)
+
+
+class RulesTest(unittest.TestCase):
+    def test_no_of_a_group(self):
+        """"no (...)" is its negation, made of literals."""
+        from rules import parse_rule
+        self.assertEqual(str(parse_rule("X → no (A or B or C)")), "X → no A & no B & no C")
+        self.assertEqual(str(parse_rule("X → no (A & B)")), "X → no A or no B")
+        with self.assertRaises(ValueError):
+            parse_rule("X → no (A 50%)")
+
+    def test_one_rule_can_exclude_several(self):
+        """"A → no B & no C" is A excluding B and A excluding C."""
+        third = F(1, 3)
+        with self.assertRaises(ValueError):  # B and C, with no minimum length
+            generator(["A → no B & no C", "B → no C"], {"A": third, "B": third, "C": third}, {"A": 60})
+        g = generator(["A → no B & no C", "B → no C"], {"A": third, "B": third, "C": third}, {"A": 60, "B": 60})
+        self.assertEqual([sorted(k) for k, _ in g.plan.groups], [["A", "B", "C"]])
+
+
+class LaidTest(unittest.TestCase):
+    """Targets that exclude each other, forbidden where other elements are: their turns go
+    on in the stretches left, from one to the next (ratio_plan.Plan._laid)."""
+
+    def test_the_turns_go_on_between_the_breaks(self):
+        from constraints import FifteenMinuteBreaks
+        rules = ["Break15 → NoScreen", "NoScreen → no (A or B)", "A → no B"]
+        g = RulesGenerator(parse_rules(rules), [(PresenceRatioProblem({"A": HALF, "B": HALF}), 1),
+                                               (MinimumLengthProblem({"A": 1, "B": 1}), 1)], 0.5,
+                           constraints=[FifteenMinuteBreaks(length=2, pause=3)])
+        began = time.perf_counter()
+        script, stats = g.run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
+        took = time.perf_counter() - began
+        self.assertEqual(stats.chosen, "the targets at once: each where it can be")
+        line = script.base.line
+        a, b, ns = line.presence("A"), line.presence("B"), line.presence("NoScreen")
+        # breaks on (0, 2], (5, 7], ...: stretches of 3 between them, turns of 1
+        for x in (F(1, 2), 1, F(3, 2), 6, F(1001, 2)):
+            self.assertTrue(ns.contains(x) and not a.contains(x) and not b.contains(x), x)
+        turns = [k for x in (F(5, 2), F(7, 2), F(9, 2), F(15, 2), F(17, 2), F(19, 2), F(25, 2), F(27, 2), F(29, 2))
+                 for k in "AB" if line.presence(k).contains(x)]
+        self.assertEqual(len(turns), 9)
+        self.assertTrue(all(p != q for p, q in zip(turns, turns[1:])), turns)  # A and B take turns, across the breaks
+        for n in (10, 1000):  # and so on forever
+            self.assertTrue(any(line.presence(k).contains(5 * n + F(5, 2)) for k in "AB"), n)
+        self.assertLess(took, 10)
+
+
+BREAK_RULES = ["Break15 → NoScreen",
+               "NoScreen → (NoComputerUnlocked or NotOnComputer) & (NoPhoneUnlocked or NotOnPhone)",
+               "NotOnComputer → no NoComputerUnlocked", "NotOnPhone → no NoPhoneUnlocked",
+               "mode 1 → no NoScreen", "mode 2 → NoScreen & NoComputerUnlocked & NoPhoneUnlocked",
+               "mode 3 → NoScreen & (NotOnComputer or NotOnPhone)"]
+
+
+class BreaksAndTasksTest(unittest.TestCase):
+    """The 15min breaks of screen_break_15.py, with A and B at 0.5 that exclude each other
+    and A at least 60."""
+
+    def first_run(self, tasks: bool):
+        """The line after the first run and how many times the line was solved."""
+        import mode_rules
+        import solver
+        from constraints import FifteenMinuteBreaks
+        rules = BREAK_RULES + (["A → no B"] if tasks else [])
+        problems = [(PresenceRatioProblem({"A": HALF, "B": HALF}), 1), (MinimumLengthProblem({"A": 60}), 1)] if tasks else []
+        g = RulesGenerator(parse_rules(rules), problems, 0.5,
+                           constraints=[FifteenMinuteBreaks("Break15", "NoScreen", length=900, pause=7200)])
+        n, real = [0], solver.solve
+
+        def counted(*a, **k):
+            n[0] += 1
+            return real(*a, **k)
+        from unittest import mock
+        with mock.patch.object(solver, "solve", counted), mock.patch.object(mode_rules, "solve", counted):
+            script, _ = g.run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
+        return script.base.line, n[0]
+
+    def test_they_alternate_by_60(self):
+        line, _ = self.first_run(True)
+        a, b = line.presence("A"), line.presence("B")
+        first, second = (a, b) if a.contains(30) else (b, a)
+        for n in (0, 1, 2, 100, 10 ** 4):
+            x = 120 * n
+            self.assertTrue(first.contains(x + 1) and first.contains(x + 60), n)
+            self.assertTrue(second.contains(x + 61) and second.contains(x + 120), n)
+            self.assertFalse(second.contains(x + 30) or first.contains(x + 90), n)
+
+    def test_the_tasks_do_not_slow_the_mode_rules(self):
+        """About as many solves as without the tasks: the mode rules and the breaks read
+        nothing of A and B, so their ends and their period (120, against 8100 for the
+        breaks) must not cut the compiled runs nor make the sweep go further (it took 1249
+        solves and a minute; 127 without the tasks)."""
+        _, plain = self.first_run(False)
+        _, tasks = self.first_run(True)
+        self.assertLess(tasks, 2 * plain, (tasks, plain))
 
 
 def after_from(x):

@@ -166,8 +166,8 @@ class RulesGenerator:
         self.plan = Plan(rules, self.problems, self.constraints, self.seed)
         self.fill = Fill(self.problems)
         self.cycles = Plan(rules, self.problems, self.constraints, self.seed, strict=False)
-        if self.fill.ok and self._modes_that_matter():
-            self.fill.ok = False  # the mode rules change the targets' share: the search predicts them
+        if self.fill.ok and self._modes_add_targets():
+            self.fill.ok = False  # the mode rules add to the targets' share: the search predicts them
         if not shortcuts:  # the search alone, whatever the definitions (its tests)
             self.plan.ok = self.fill.ok = self.cycles.ok = False
 
@@ -454,6 +454,27 @@ class RulesGenerator:
             out += [Event(ChipIn(lo, INF, m), rerun) for m in self._modes_that_matter()]
             out += self._watches(after, c, D, mode)
         return out
+
+    def _modes_add_targets(self) -> bool:
+        """Whether a mode rule can put a target kind on the line, directly or through the
+        element rules ("mode 1 → D", D a target). A mode rule that can only forbid them at
+        the chip ("mode 2 → NoScreen", "NoScreen → no A") does not change what the best
+        line is from what is known: a run after the mode acts makes it again."""
+        targets = {k for p, _ in self.problems for k, r in getattr(p, "targets", {}).items() if r > 0}
+        written = [o for r in self.rules.mode_rules for o in r.written_lits()]
+        put = {o.kind for o in written if not o.negated}
+        reached = put | {o.kind for o in written}
+        grew = True
+        while grew:
+            grew = False
+            for r in self.rules.rules:
+                if not r.is_mode_rule and reached & set(r.lhs.kinds()):
+                    more = {o.kind for o in r.written_lits() if not o.negated} - put
+                    if more:
+                        put |= more
+                        reached |= more
+                        grew = True
+        return bool(put & targets)
 
     def _modes_that_matter(self) -> list[str]:
         """The modes whose rules reach what the problems read, directly or through the

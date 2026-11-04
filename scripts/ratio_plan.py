@@ -30,7 +30,7 @@ from __future__ import annotations
 import random
 from fractions import Fraction
 
-from intervals import INF, Interval, IntervalSet, Pos
+from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import GEN, LineState, Op
 from problems import MinimumLengthProblem, PresenceRatioProblem
 from region import Region
@@ -41,57 +41,52 @@ class NoBestScript(ValueError):
     pass
 
 
-def _exclusion(r) -> frozenset | None:
-    """The two kinds of a rule "B → no A" (everywhere B is, no A), else None."""
-    lits = r.lits()
-    if r.is_mode_rule or r.internal or not (type(r.lhs) is Atom and r.lhs.op == "present" and len(r.rhs) == 1 and len(lits) == 1):
+def _exclusions(r) -> set[frozenset] | None:
+    """The pairs of kinds of a rule "B → no A" or "B → no A & no C" (everywhere B is, none
+    of them), else None."""
+    if r.is_mode_rule or r.internal or not (type(r.lhs) is Atom and r.lhs.op == "present"):
         return None
-    o = lits[0]
-    if not (o.negated and o.anchor == "p" and o.value is None and o.where.is_point and o.where.lo == 0):
-        return None
-    return frozenset((r.lhs.kind, o.kind))
+    out = set()
+    for it in r.rhs:
+        if len(it.options) != 1:
+            return None
+        o = it.options[0]
+        if not (o.negated and o.anchor == "p" and o.value is None and o.where.is_point and o.where.lo == 0):
+            return None
+        out.add(frozenset((r.lhs.kind, o.kind)))
+    return out or None
+
+
+def _pairs(rules) -> set[frozenset]:
+    """The pairs of two kinds that exclude each other, in the rules that only do that."""
+    return {p for r in rules for p in (_exclusions(r) or ()) if len(p) == 2}
 
 
 def exclusions(rs: RuleSet) -> set[frozenset] | None:
     """The pairs of kinds that exclude each other, if the rules are only "B → no A"; None
     otherwise."""
-    if rs.mode_rules or rs.percent:
+    if rs.mode_rules or rs.percent or any(_exclusions(r) is None for r in rs.rules):
         return None
-    pairs = {_exclusion(r) for r in rs.rules}
-    return None if None in pairs else pairs
+    return _pairs(rs.rules)
 
 
 def check_best_exists(rs: RuleSet, problems) -> None:
     """Raises NoBestScript when two kinds with a target exclude each other ("B → no A")
-    and none of the kinds they are linked to that way has a minimum length: every
-    alternation of them is beaten by a faster one, whatever the other rules, the modes
-    and the constraints."""
+    and neither has a minimum length: every alternation of them is beaten by a faster
+    one, whatever the other rules, the modes and the constraints (A, B, C at 1/3 that
+    exclude each other, A at least 60: between two pieces of A, B and C alternate ever
+    faster). One of them with a minimum length: the other's pieces come between its own."""
     found = _targets(problems)
     if not found:
         return
     targets, lengths = found
     kinds = {k for k, r in targets.items() if r > 0}
-    near = {k: set() for k in kinds}
-    for r in rs.rules:
-        pair = _exclusion(r)
-        if pair and len(pair) == 2 and pair <= kinds:
-            a, b = sorted(pair)
-            near[a].add(b)
-            near[b].add(a)
-    seen = set()
-    for k in sorted(kinds):
-        if k in seen or not near[k]:
-            continue
-        g, todo = set(), [k]
-        while todo:
-            a = todo.pop()
-            if a not in g:
-                g.add(a)
-                todo.extend(near[a] - g)
-        seen |= g
-        if not any(lengths.get(a, 0) for a in g):
-            raise NoBestScript(f"{', '.join(sorted(g))} exclude each other and none has a minimum length: every "
-                               "alternation of them is beaten by a faster one, so no script is the best")
+    free = sorted({tuple(sorted(pair)) for pair in _pairs(rs.rules)
+                   if pair <= kinds and not any(lengths.get(k) for k in pair)})
+    if free:
+        a, b = free[0]
+        raise NoBestScript(f"{a}, {b} exclude each other and neither has a minimum length: every alternation of them "
+                           "is beaten by a faster one, so no script is the best")
 
 
 def _targets(problems) -> tuple[dict, dict] | None:
@@ -132,7 +127,7 @@ class Plan:
             pairs = exclusions(rs) if found else None
         else:
             found = _targets(problems)
-            pairs = {p for p in map(_exclusion, rs.rules) if p and len(p) == 2}
+            pairs = _pairs(rs.rules)
         if pairs is None or not found:
             return
         self.targets, self.lengths = found
@@ -174,40 +169,131 @@ class Plan:
         self.ok = True
 
     def group_ops(self, rules, state: LineState, chip) -> list[Op] | None:
-        """The edit of the cycles only (not strict); None if a kind of a cycle is there after
-        the chip and not put by the generator, or another rule forbids it somewhere after
-        the chip (its exclusions with the other kinds of its cycle aside)."""
+        """The edit of the cycles only (not strict). Where the other rules forbid the kinds
+        of a cycle after the chip (its exclusions with the other kinds of its cycle aside),
+        the cycle goes on in the stretches they leave (`_laid`). None if a kind of a cycle
+        is there after the chip and not put by the generator, or the other rules do not
+        forbid the kinds of a cycle at the same positions."""
         c = Fraction(chip)
         after = Region.of(Interval(c, INF, False, False))
         from problems import forbidden  # (problems imports nothing of this module)
-        others = [r for r in rules.element if _exclusion(r) not in self.pairs]
-        ops = []
+        inside = {p for p in self.pairs if p <= self.grouped}  # (the cycles' own exclusions)
+        others = [r for r in rules.element if not (_exclusions(r) or {None}) <= inside]
+        ops, no = [], {}
         for k in sorted(self.grouped):
             there = state.line.presence(k) & after
             if not (there - state.claims.owned(k, GEN)).is_empty():
                 return None
-            if not (forbidden(_Lines(others, state), k) & after).is_empty():
-                return None
+            no[k] = forbidden(_Lines(others, state), k) & after
             if not there.is_empty():
                 ops.append(Op.take(k, after))
         for g, P in self.groups:
-            if P is not None:
+            if P is None:
+                continue
+            if any(no[k] != no[g[0]] for k in g):
+                return None
+            if no[g[0]].is_empty():
                 ops += self._cycle_ops(state, c, g, P)
+            else:
+                laid = self._laid(state, c, g, P, after - no[g[0]])
+                if laid is None:
+                    return None
+                ops += laid
         return ops
 
-    def _cycle_ops(self, state: LineState, c: Fraction, g, P) -> list[Op]:
-        """The kinds of g one after the other every P from the chip, the one at the chip last,
-        its interval there kept to its minimum length."""
-        ops = []
+    def _order(self, state: LineState, c: Fraction, g) -> tuple[list, list[Op], Fraction]:
+        """The kinds of g in their turn (the one at the chip last), the edit that keeps its
+        interval at the chip to its minimum length, and where the turns start."""
+        ops, start = [], c
         last = [k for k in g if state.line.presence(k).contains(Pos(c))]
-        start = c
-        for k in last:  # its interval at the chip goes on to its minimum length
+        for k in last:
             rest = self.lengths.get(k, Fraction(0)) - _run(state.line.presence(k), c, self.lengths.get(k, Fraction(0)))
             if rest > 0:
                 ops.append(Op.put(k, Region.of(Interval(c, c + rest, False, True))))
                 start = c + rest
+        return [k for k in g if k not in last] + last, ops, start
+
+    def _laid(self, state: LineState, c: Fraction, g, P, free: Region) -> list[Op] | None:
+        """The kinds of g taking their turns in the stretches of `free` after the chip, a
+        turn going on from one stretch to the next: each for r P, less at the end of a
+        stretch if that is still its minimum length, else nothing there. What `free`
+        repeats, the turns repeat once a period starts with the same kind. None if free
+        repeats with no position outside it to cut its periods at."""
+        order, ops, start = self._order(state, c, g)
+        n = len(order)
+        pieces = {k: [] for k in g}
+
+        def lay(ivs, i):
+            """Turns on these stretches (finite), from the turn i: the turn after them."""
+            for iv in ivs:
+                x, end, closed = iv.lo, iv.hi, True  # (a stretch's first position is in it)
+                while True:
+                    k = order[i % n]
+                    length = self.targets[k] * P
+                    room = (end - x).x
+                    if room < length and not (room > 0 and room >= self.lengths.get(k, Fraction(0))):
+                        break  # too short for its turn: nothing there
+                    b = end if room <= length else x + length  # (the ε of x: not past the end)
+                    # the last piece of a stretch stops just before its end: what comes after
+                    # it (e.g. a break) starts there, and nothing may touch it
+                    pieces[k].append(Interval(x, b, closed, room > length))
+                    x, i, closed = b, i + 1, False
+                    if room <= length:
+                        break
+            return i
+
+        free = free & Region.of(Interval(start, INF, False, False))
+        pr, right = free.pr, free.right
+        if not right or right == IntervalSet.of(Interval(0, pr.x, True, False)):
+            # free is a finite union of intervals, and everything from free.hi on if `right`
+            hi = max(free.hi, Pos(start))
+            ivs = list(free.on(start, hi).intervals) if hi > Pos(start) else []
+            x0 = None
+            if right:
+                if ivs and ivs[-1].hi + EPS >= hi:  # the last one goes on forever
+                    x0 = ivs.pop().lo
+                else:
+                    x0 = hi
+            i = lay(ivs, 0)
+            out = {k: Region.of(IntervalSet(v)) for k, v in pieces.items()}
+            if x0 is not None:
+                at = Fraction(0)
+                for j in range(n):
+                    k = order[(i + j) % n]
+                    length = self.targets[k] * P
+                    out[k] = out[k] | _cycle(Fraction(x0.x), P, at, at + length)
+                    at += length
+            return ops + [Op.put(k, r) for k, r in out.items() if not r.is_empty()]
+        gaps = IntervalSet.of(Interval(0, pr.x, True, False)) - right
+        if not gaps:
+            return None
+        q = free.hi + gaps.intervals[0].lo  # outside free, every pr from there
+        while q < Pos(start):
+            q = q + pr
+        i = lay(free.on(start, q).intervals, 0)
+        seen, j = {}, 0
+        while i % n not in seen:
+            seen[i % n] = j
+            i = lay(free.on(q + pr * j, q + pr * (j + 1)).intervals, i)
+            j += 1
+        j1 = seen[i % n]
+        lo, hi = q + pr * j1, q + pr * j
+        out = []
+        for k in g:
+            ivs = IntervalSet(pieces[k])
+            core = ivs & IntervalSet.of(Interval(start, lo, False, False))
+            tail = (ivs & IntervalSet.of(Interval(lo, hi, True, False))).shift(-lo)
+            r = Region(start, lo, core, Pos(1), IntervalSet(), hi - lo, tail) & Region.of(Interval(c, INF, False, False))
+            if not r.is_empty():
+                out.append(Op.put(k, r))
+        return ops + out
+
+    def _cycle_ops(self, state: LineState, c: Fraction, g, P) -> list[Op]:
+        """The kinds of g one after the other every P from the chip, the one at the chip last,
+        its interval there kept to its minimum length."""
+        order, ops, start = self._order(state, c, g)
         at = Fraction(0)
-        for k in [k for k in g if k not in last] + last:
+        for k in order:
             length = self.targets[k] * P
             ops.append(Op.put(k, _cycle(start, P, at, at + length)))
             at += length

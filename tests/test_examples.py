@@ -50,8 +50,10 @@ class ExamplesTest(unittest.TestCase):
     def test_every_example_has_its_own_rules(self):
         expected = {
             "screen_break_15": {(ChipIn, None), Edited},
-            # its tasks: the score and their ratios are watched
-            "screen_break_15_task": {(ChipIn, None), Edited, ScoreBelow, PresenceAbove},
+            # its tasks: the score and their ratios are watched, and each mode, which can
+            # forbid them at the chip (the next run makes the turns again)
+            "screen_break_15_task": {(ChipIn, None), (ChipIn, "1"), (ChipIn, "2"), (ChipIn, "3"), Edited,
+                                     ScoreBelow, PresenceAbove},
             "screen_breaks_5_15": {(ChipIn, None), Edited},
             "screen_breaks": {(ChipIn, None), Edited},
             "screen_breaks_sleep": {(ChipIn, None), Edited},
@@ -87,38 +89,25 @@ class ExamplesTest(unittest.TestCase):
                 self.assertFalse(run.called)
                 self.assertIn(why, out.getvalue())
 
-    def test_the_tasks_alternate_by_60(self):
-        """A and B at 0.5, "A → no B", A at least 60: 60 of A and 60 of B one after the
-        other forever, after the first run (the search used to put 6 minutes of A only)."""
+    def test_the_tasks_take_turns_between_the_breaks(self):
+        """A, B, C at 1/3, excluding each other, none during "no screen", A and B at least
+        60: turns of 60 between the breaks, from one stretch to the next, forever, after
+        the first run (the search put 6 minutes of A, and nothing of B and C)."""
         line = first_run("screen_break_15_task").state.line
-        a, b = line.presence("A"), line.presence("B")
-        first, second = (a, b) if a.contains(30) else (b, a)
-        for n in (0, 1, 2, 100, 10 ** 4):
-            x = 120 * n
-            self.assertTrue(first.contains(x + 1) and first.contains(x + 60), n)
-            self.assertTrue(second.contains(x + 61) and second.contains(x + 120), n)
-            self.assertFalse(second.contains(x + 30) or first.contains(x + 90), n)
-        self.assertEqual(set(line.vals["A"]) | set(line.vals["B"]), {100})
+        ns = line.presence("NoScreen")
+        pres = {k: line.presence(k) for k in "ABC"}
 
-    def test_tasks_do_not_slow_the_mode_rules(self):
-        """screen_break_15_task.py solves the line about as often as screen_break_15.py: the
-        mode rules and the breaks read nothing of A and B, so their ends and their period
-        (120, against 8100 for the breaks) must not cut the compiled runs nor make the
-        sweep go further (it took 1249 solves and a minute; 127 without the tasks)."""
-        import mode_rules
-        import solver
-        counts = {}
-        for name in ("screen_break_15", "screen_break_15_task"):
-            n = [0]
-            real = solver.solve
-
-            def counted(*a, **k):
-                n[0] += 1
-                return real(*a, **k)
-            with mock.patch.object(solver, "solve", counted), mock.patch.object(mode_rules, "solve", counted):
-                first_run(name)
-            counts[name] = n[0]
-        self.assertLess(counts["screen_break_15_task"], 2 * counts["screen_break_15"], counts)
+        def at(x):
+            return [k for k in "ABC" if pres[k].contains(x)]
+        for x in range(0, 30000, 7):
+            self.assertLessEqual(len(at(x)), 1, x)
+            self.assertFalse(at(x) and ns.contains(x), x)
+        for start in (900, 8100 + 900, 81 * 8100 + 900):  # the end of a break
+            turns = [at(start + 30 + 60 * j) for j in range(120)]  # the 2 hours to the next break
+            self.assertTrue(all(len(k) == 1 for k in turns), start)
+            self.assertTrue(all(a != b for a, b in zip(turns, turns[1:])), start)
+            self.assertEqual(turns[:3], turns[3:6], start)
+            self.assertEqual(at(start - 30), [], start)
 
 
 if __name__ == "__main__":

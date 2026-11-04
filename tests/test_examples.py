@@ -15,20 +15,26 @@ try:
     import gui
 except ImportError:  # (no tkinter)
     gui = None
+from intervals import Interval as Iv, IntervalSet  # noqa: E402
 from script import ChipIn, Edited, PresenceAbove, ScoreBelow  # noqa: E402
 
 
-def reruns(name):
-    """The rerun rules of the example's script, once its first run has completed: their
-    kinds, with the mode of those that have one."""
+def first_run(name):
+    """The example's simulation, once its first run has completed."""
     with mock.patch.object(gui, "run") as run:
         runpy.run_path(os.path.join(UI, "examples", f"{name}.py"), run_name="__main__")
     s = run.call_args[0][0]
     s.begin()
     req = s.sim.request
     s.sim.complete(req.id, *list(req.gen.stages(req.state, req.chip, req.known, req.previous))[-1])
+    return s.sim
+
+
+def reruns(name):
+    """The rerun rules of the example's script, once its first run has completed: their
+    kinds, with the mode of those that have one."""
     out = set()
-    for t in s.sim.script.rerun_triggers():
+    for t in first_run(name).script.rerun_triggers():
         out.add((ChipIn, t.mode) if isinstance(t, ChipIn) else type(t))
     return out
 
@@ -44,12 +50,22 @@ class ExamplesTest(unittest.TestCase):
             # the tasks: their targets are watched, in each mode (all reach VideoGames)
             "screen_breaks_sleep_tasks": {(ChipIn, None), (ChipIn, "1"), (ChipIn, "2"), (ChipIn, "3"), Edited,
                                           ScoreBelow, PresenceAbove},
+            # nothing but its target: no constraint, no mode rule
+            "single_element_full_presence": {ScoreBelow, Edited},
         }
         names = {f[:-3] for f in os.listdir(os.path.join(UI, "examples")) if f.endswith(".py")}
         self.assertEqual(names, set(expected))
         for name, rules in expected.items():
             with self.subTest(name):
                 self.assertEqual(reruns(name), rules)
+
+    def test_single_element_full_presence_fills_its_window(self):
+        """A at 100% is on the whole window, (chip, chip + horizon], at 100%, and
+        nothing else is on the line."""
+        line = first_run("single_element_full_presence").state.line
+        self.assertEqual(line.kinds(), ["A"])
+        self.assertEqual(line.presence("A").bounded(), IntervalSet([Iv(0, 100, lo_closed=False)]))
+        self.assertEqual(set(line.vals["A"]), {100})
 
 
 if __name__ == "__main__":

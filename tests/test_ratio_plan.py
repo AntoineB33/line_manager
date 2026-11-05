@@ -297,6 +297,31 @@ class LaidTest(unittest.TestCase):
         self.assertLess(took, 10)
 
 
+class SearchTest(unittest.TestCase):
+    """The search alone (no shortcut), A and B at 0.5 that exclude each other, at least 60:
+    it fills its whole window, in short pieces (it used to keep 6 minutes of A and no B,
+    cut to its first stage), quickly."""
+
+    def search(self, window):
+        g = RulesGenerator(parse_rules(["A → no B", "C → D"]), [(PresenceRatioProblem({"A": HALF, "B": HALF}), 1),
+                           (MinimumLengthProblem({"A": 60, "B": 60}), 1)], 0.5, shortcuts=False, window=window)
+        began = time.perf_counter()
+        script, stats = g.run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
+        return script.base.line, stats, time.perf_counter() - began
+
+    def test_it_fills_the_window_in_turns(self):
+        for window, longest in ((2400, 60), (16200, 130)):
+            with self.subTest(window=window):
+                line, stats, took = self.search(window)
+                self.assertEqual(stats.key[0], 0)  # the shares over the window are the targets
+                for k in "AB":
+                    ivs = line.presence(k).on(0, window).intervals
+                    self.assertEqual(sum((iv.length for iv in ivs), F(0)), window / 2, k)
+                    self.assertLessEqual(max(iv.length for iv in ivs), longest, k)  # not blocks
+                    self.assertGreaterEqual(min(iv.length for iv in ivs), 60, k)
+                self.assertLess(took, 10)
+
+
 BREAK_RULES = ["Break15 → NoScreen",
                "NoScreen → (NoComputerUnlocked or NotOnComputer) & (NoPhoneUnlocked or NotOnPhone)",
                "NotOnComputer → no NoComputerUnlocked", "NotOnPhone → no NoPhoneUnlocked",

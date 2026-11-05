@@ -401,9 +401,9 @@ class RulesGenerator:
             if getattr(k, "explicit", False) and getattr(k, "length", None) is not None:
                 again = (Op.take(k.kind, Region.of(Interval(0, INF, False, False))),
                          Op.put(k.kind, cycle(0, k.spacing(), 0, k.length)))
-                # (within 0: the chip in a piece; written out, so that the user sees what to change)
-                out += [Event(ChipOn(k.kind, m, within=Fraction(0)), (EditAction(again, from_chip=True),))
-                        for m in k.pushed_in(self.rules)]
+                # (no `within`: as far after the chip as the edit puts it, so changing the edit
+                # alone moves where the chip pushes it: simulation._reach)
+                out += [Event(ChipOn(k.kind, m), (EditAction(again, from_chip=True),)) for m in k.pushed_in(self.rules)]
         return out
 
     def _fill(self, state: LineState, c: Fraction):

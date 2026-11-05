@@ -159,7 +159,7 @@ class WrittenOutTest(unittest.TestCase):
         text = s.script_text()
         self.assertIn("R1 = cycle(F(0), F(8100), F(0), F(900))", text)
         self.assertIn("EditAction(ops=(Op.put('Break15', R1),))", text)
-        self.assertIn("ChipOn(kind='Break15', mode='1', within=F(0))", text)
+        self.assertIn("ChipOn(kind='Break15', mode='1')", text)
         self.assertIn("from_chip=True", text)
         self.assertNotIn("ConstraintEditAction()),", text)  # (nothing called while it runs)
 
@@ -183,21 +183,20 @@ class WrittenOutTest(unittest.TestCase):
         self.assertEqual(self.breaks(s)[0], (30, 930))
 
     def test_the_user_s_example_a_gap_of_10_kept(self):
-        """(chip + 10, chip + 910] instead of (chip, chip + 900], and the push while the break
-        is less than 10 after the chip (within=F(10)): as the chip goes in mode 1, the break
-        stays 10 ahead of it."""
+        """The user's example, as the user does it: the generator off, then in the generated
+        script (chip, chip + 900] replaced by (chip + 10, chip + 910], nothing else: the chip
+        in mode 1 pushes the break 10 ahead of it, as it goes."""
         s = example("screen_break_15_rules")
+        s.command("generator off")
         text = s.script_text()
-        self.assertIn("ChipOn(kind='Break15', mode='1', within=F(0))", text)  # (what to change: written out)
         edited = text.replace("Op.put('Break15', R1)), from_chip=True)",
                               "Op.put('Break15', cycle(F(0), F(8100), F(10), F(910)))), from_chip=True)")
-        edited = edited.replace("mode='1', within=F(0))", "mode='1', within=F(10))")
+        self.assertNotEqual(edited, text)
         s.edit_script(edited, s.sim.script)
         for _ in range(5):
             s.tick(F(5))
             a, b = self.breaks(s)[0]
             self.assertEqual((a - s.position, b - s.position), (10, 910), s.position)
-
 
 class GeneratorOffTest(unittest.TestCase):
     """The Generator button / `generator off`: no run, whatever asks for it; on: one run."""

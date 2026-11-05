@@ -126,8 +126,9 @@ class ChipOn:
     """True while the chip is in an interval of `kind`, or one is less than `within` after
     it, i.e. on [chip, chip + within) (within 0: the chip in it, not where it starts), and
     (if `mode` is not None) the mode at the chip is `mode`. Its actions fire at each
-    instant it is true: e.g. with within=F(10) and its edit putting the piece at
-    (chip + 10, chip + 910], the chip keeps it 10 ahead as it goes."""
+    instant it is true. With no `within`: as far after the chip as its event's edit
+    written from the chip puts `kind` (simulation._reach): with that edit putting the
+    piece at (chip + 10, chip + 910], the chip keeps it 10 ahead as it goes."""
     kind: str
     mode: str | None = None
     within: Num | None = None  # (None: 0)

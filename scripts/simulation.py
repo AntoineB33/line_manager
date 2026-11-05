@@ -61,6 +61,22 @@ MEMORY_LIMIT = 2 * 1024 ** 3  # bytes a state can take: beyond, its far left is 
 LAST_RESORT = PACE_TIME - EDIT_LIMIT  # (so that an edit going on never delays the pace)
 
 
+def _reach(ev: Event):
+    """Its trigger, a ChipOn with no `within` taking it from the event's own edit written
+    from the chip: as far after the chip as that edit puts its kind (its first position),
+    so that a piece closer to the chip than the edit puts it is pushed (0: the chip in it)."""
+    trig = ev.trigger
+    if not isinstance(trig, ChipOn) or trig.within is not None:
+        return trig
+    for a in ev.actions:
+        if isinstance(a, EditAction) and a.from_chip:
+            for o in a.ops:
+                if o.action == "put" and o.kind == trig.kind and not o.region.is_empty():
+                    lo = o.region.inf()
+                    return replace(trig, within=max(Fraction(0), lo.x if isinstance(lo, Pos) else Fraction(0)))
+    return replace(trig, within=Fraction(0))
+
+
 def against_constraints(rules, state: LineState, c: Fraction, constraints) -> str | None:
     """Why the constraints the script must satisfy cannot hold on this line, if so."""
     ops = [o for k in constraints for o in k.ops(state, c)]
@@ -667,7 +683,7 @@ class Simulation:
                 mode = self.modes.mode_at(c)
                 if not due(looks.get(key), ev.trigger, self.state, c, mode, problems):
                     continue
-                now = self._cond(ev.trigger, t)
+                now = self._cond(_reach(ev), t)
                 looks[key] = look(ev.trigger, self.state, c, mode, problems)
                 rising = now and key not in script.true
                 (script.true.add if now else script.true.discard)(key)

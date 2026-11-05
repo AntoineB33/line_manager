@@ -225,6 +225,52 @@ class GeneratorOffTest(unittest.TestCase):
         s.close()
 
 
+class ScriptFileTest(unittest.TestCase):
+    """The generated script is one file from the start of the program (script_file.py): at
+    the start, only an instruction to run the generator once."""
+
+    def setUp(self):
+        import tempfile
+        from script_file import ScriptFile
+        self.dir = tempfile.mkdtemp()
+        self.file = ScriptFile("example", self.dir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def text(self):
+        with open(self.file.path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_at_the_start_it_runs_the_generator_once(self):
+        s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2),
+                    [Breaks(length=15)])
+        self.assertTrue(self.file.write(s.sim.script, s.script_text()))  # (before the generator runs)
+        text = self.text()
+        self.assertIn("Event(trigger=Start(), actions=(RerunAction(first=True),))", text)
+        self.assertEqual(from_python(text, s.sim.script).events, s.sim.script.events)  # only that
+        self.assertEqual(len(s.sim.script.events), 1)
+
+    def test_written_again_for_another_script_only(self):
+        s = session()
+        a = s.sim.script
+        self.assertTrue(self.file.write(a, s.script_text()))
+        self.assertFalse(self.file.write(a, "not written"))  # the same script: as it is
+        self.assertNotIn("not written", self.text())
+        self.assertIsNone(self.file.saved())  # what the program wrote is no edit
+
+    def test_a_save_of_the_user_is_read_once(self):
+        s = session()
+        self.file.write(s.sim.script, s.script_text())
+        with open(self.file.path, "w", encoding="utf-8") as f:
+            f.write(s.script_text().replace("length=F(15)", "length=F(16)"))
+        text = self.file.saved()
+        self.assertIn("length=F(16)", text)
+        self.assertIsNone(self.file.saved())  # read: not again
+        self.assertIn("replaced", s.edit_script(text, self.file.script))
+
+
 class EditorTest(unittest.TestCase):
     def test_the_file_opens_in_vs_code_when_it_is_there(self):
         try:

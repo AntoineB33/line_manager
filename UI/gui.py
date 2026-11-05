@@ -40,7 +40,6 @@ import shutil
 import queue
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import tkinter as tk
@@ -51,6 +50,7 @@ from tkinter import font as tkfont, messagebox
 from app import EDITS, PAUSED, ScriptError
 from intervals import Pos
 from script import STEP
+from script_file import PROJECT, ScriptFile
 from session_log import SessionLog
 from single_window import listen, take_over
 from solver import STOP, Interrupted
@@ -60,10 +60,6 @@ CONTROL = 0x4  # in the state of an event
 MIN_SPAN, MAX_SPAN = F(3), F(3 * 2 ** 17)  # the positions the window can show
 MIN_LEFT = 70  # (the captions on the left may need more: `App._edge`)
 _tick = tick
-
-
-PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GENERATED = os.path.join(PROJECT, "generated_scripts")  # the files of the generated script button
 
 
 def open_in_editor(path: str) -> None:
@@ -114,7 +110,7 @@ class App:
         if session.initial_refused:
             self.log(f"the initial state is refused: {session.initial_refused}")
         self.log('Press Play to move the chip. Type "help" below for the commands.')
-        self.opened: dict[str, list] = {}  # path -> [its text, the script it was written from]
+        self.script_file = ScriptFile()  # the generated script, one file from start to end (script_file.py)
         self.next_watch = 0.0
         self.lock = threading.Lock()
         self.loopers: set = set()  # the periods of the loops that have a thread
@@ -260,41 +256,28 @@ class App:
             self.post(lambda: self.s.command(cmd))
 
     def open_script(self) -> None:
-        if self.snap is None:
-            return
-        # a new file at each click: an editor that has an older one open cannot show it instead
-        # the script itself: a Python file whose SCRIPT is it (script_python.py)
-        # in the project (generated_scripts/, not in git): VS Code finds what it imports there
-        # (.vscode/settings.json), so Ctrl+click and hovering work on cycle, turns, Op, ...
-        os.makedirs(GENERATED, exist_ok=True)
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="generated_script_", suffix=".py", dir=GENERATED,
-                                         delete=False) as f:
-            f.write(self.snap["script"])
-            path = f.name
-        self.opened[path] = [self.snap["script"], self.snap["script_object"]]
-        self.log(f"generated script written to {path}")
+        """The generated script's file (script_file.py), in the editor: the one file of the
+        session, which the program writes again each time the script in place is another."""
+        self._write_script()
+        self.log(f"generated script: {self.script_file.path}")
         try:
-            open_in_editor(path)
+            open_in_editor(self.script_file.path)
         except OSError as e:
-            self.log(f"cannot open {path}: {e}")
+            self.log(f"cannot open {self.script_file.path}: {e}")
+
+    def _write_script(self) -> None:
+        """The file holds the script in place (written again if it is another one)."""
+        if self.snap is not None and self.script_file.write(self.snap["script_object"], self.snap["script"]):
+            self.journal(f"generated script written to {self.script_file.path}")
 
     def _watch(self) -> None:
-        """A file of `open_script` saved with changes: the text goes to the simulation's
-        thread (`_edited`), which replaces the script or says why it does not."""
-        for path, seen in list(self.opened.items()):
-            try:
-                with open(path, encoding="utf-8-sig") as f:
-                    text = f.read()
-            except OSError:
-                continue  # being saved, or gone
-            except UnicodeDecodeError:
-                if seen[0] is not None:
-                    seen[0] = None
-                    self.show_script_error(f"{path} is not in UTF-8: the generated script stays as it is.")
-                continue
-            if text.strip() and text.strip() != (seen[0] or "").strip():  # (empty: being saved)
-                seen[0] = text
-                self.post(lambda text=text, script=seen[1]: self._edited(text, script))
+        """The script's file: written again if the script in place is another one; saved by the
+        user with other text, that text goes to the simulation's thread (`_edited`), which
+        replaces the script or says why it does not."""
+        self._write_script()
+        text = self.script_file.saved()
+        if text is not None:
+            self.post(lambda text=text, script=self.script_file.script: self._edited(text, script))
 
     def _edited(self, text: str, script):
         try:

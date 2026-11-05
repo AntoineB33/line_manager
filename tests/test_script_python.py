@@ -121,10 +121,50 @@ class RunGoingOnTest(unittest.TestCase):
                       "start-up script (run the generator once) at time 0; the run goes on, and its next script "
                       "replaces this one.", s.script_text())
         self.assertIn("No generator run has completed yet.", s.script_text())
+        # published before the run's last one, it calls for a new run where it stops being definitive
+        self.assertIn("Event(trigger=ChipIn(lo=F(10), hi=INF), actions=(RerunAction(),))", s.script_text())
         s.sim.edit_now([Op.put("NoScreen", Region.of(Interval.closed(50, 60)))])
         self.assertIsNot(s.sim.request, first)  # the run from the line before the edit: replaced
         self.assertEqual(s.sim.request.why, "user edit")
         self.assertIn("asked by the script then in place, at your edit", s.script_text())
+        s.close()
+
+
+class PerfectTest(unittest.TestCase):
+    """The user's rule: a script that calls for no new run but at the user's edits is the
+    perfect one, and the run that published it ends there."""
+
+    def test_the_run_ends_with_it(self):
+        from generator import RulesGenerator
+        from line import LineState
+        from modes import ModeTimeline
+        from rules import parse_rules
+        from script import Edited
+        g = RulesGenerator(parse_rules(["A → B"]), [(PresenceRatioProblem({}), 1)], 0.5)
+        out = list(g.stages(LineState.empty(), F(0), ModeTimeline(0, "1").known(0)))
+        self.assertEqual(len(out), 1)
+        script, stats = out[0]
+        self.assertTrue(all(isinstance(tr, Edited) for tr in script.rerun_triggers()))
+        self.assertTrue(stats.final)
+        self.assertEqual(stats.definitive, float("inf"))
+
+    def test_a_late_run_moves_the_call(self):
+        """The script in place gets definitive further when the run is late (the pace):
+        its call for a new run goes with where it stops being definitive."""
+        from script import ChipIn, RerunAction
+        from simulation import LAST_RESORT
+        s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2),
+                    [FifteenMinuteBreaks(length=15)])
+        s.sim.background = True
+        s.begin()
+        req = s.sim.request
+        s.sim.keep_pace(req.pace_at)
+
+        def calls():
+            return [e.trigger.lo for e in s.sim.script.events if isinstance(e.trigger, ChipIn) and e.trigger.mode is None
+                    and e.actions == (RerunAction(),)]
+        self.assertEqual(s.sim.definitive, 20)
+        self.assertEqual(calls(), [20])
         s.close()
 
 

@@ -347,7 +347,11 @@ class SleepTest(unittest.TestCase):
         self.assertLess(time.monotonic() - t, 30)
         self.assertEqual(chip.position(sim.t), 3600)
         self.assertGreaterEqual(sim.definitive, 3610)
-        self.assertIsNotNone(sim.request)
+        # a run catching up, or the script calls for one where it stops being definitive
+        # (the user's rule: a script that calls for none is the perfect one, and this is not)
+        calls = [e.trigger.lo for e in sim.script.events if isinstance(e.trigger, ChipIn) and e.trigger.mode is None
+                 and any(isinstance(a, RerunAction) for a in e.actions)]
+        self.assertTrue(sim.request is not None or any(x <= sim.definitive for x in calls), calls)
         b = sim.state.line.presence("Break15")
         self.assertTrue(b.contains(3605))  # the constraint holds there at once
         self.assertFalse(b.contains(3599))  # and it was dragged, not left behind

@@ -311,6 +311,11 @@ class Simulation:
             # an edit of the user while this run goes on runs the generator again (the run,
             # from the line before it, is cancelled): the start-up script had no such rule
             events.append(Event(Edited(True), (RerunAction(),)))
+        # published before the run's last one, it calls for a new run where it stops being
+        # definitive (with the user's rule that a script calling for none is the perfect one):
+        # the run going on replaces it before, else the chip has
+        # gone past what is decided and a run catches up from there
+        events.append(Event(ChipIn(x, INF), (RerunAction(),)))
         covered = [(lo, hi, m) for lo, hi, m in s.covered if m is not None]
         if self.rules.mode_rules:
             covered.insert(0, (Pos(req.chip), Pos(x), None))
@@ -344,13 +349,27 @@ class Simulation:
         that way, the run is over."""
         req = self.request
         while req is not None and req.published and t >= req.pace_at:
+            was = self.definitive
             self.definitive += PACE
             req.pace_at += LAST_RESORT
-            self.script = self._fit(self.script)
+            self.script = self._moved(self._fit(self.script), was, self.definitive)
             if self.definitive >= req.chip + getattr(self.gen, "window", 0) and getattr(self.gen, "q", 0) != 1:
                 self.request = None
                 self.log.ran((t, req.chip, req.why, self.script, RunStats(chosen="the script in place, as a last resort")))
                 return
+
+    @staticmethod
+    def _moved(script: Script, was, now) -> Script:
+        """The script whose call for a new run where it stopped being definitive (at `was`,
+        first_script) is where it stops now: definitive further, it calls for it further."""
+        events, moved = [], False
+        for e in script.events:
+            tr = e.trigger
+            if (isinstance(tr, ChipIn) and tr.lo == was and tr.hi == INF and tr.mode is None
+                    and len(e.actions) == 1 and isinstance(e.actions[0], RerunAction)):
+                e, moved = Event(ChipIn(now, INF), e.actions), True
+            events.append(e)
+        return replace(script.with_events(events)) if moved else script
 
     def _fit(self, script: Script) -> Script:
         """The script with the frontier of the run: its edits that are new after it, and the

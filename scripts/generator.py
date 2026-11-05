@@ -343,7 +343,10 @@ class RulesGenerator:
                 after_edits.append(Event(Edited(True), (RerunAction(),)))
                 if covered and not live:
                     after_edits.append(Event(Uncovered(), (RerunAction(),)))
-            final = i == len(frontiers) - 1
+            # a script that calls for no new run but at the user's edits is the perfect one
+            # (the user's rule): the run ends with it, definitive everywhere
+            perfect = all(isinstance(e.trigger, Edited) for e in after_edits)
+            final = i == len(frontiers) - 1 or perfect
             stretches = []
             if final and predicted:
                 # the text does not depend on what is compiled ahead, a shortcut: a lower q
@@ -353,13 +356,15 @@ class RulesGenerator:
                 stretches, stats.refused = compile_runs(self.rules, current, ahead, self.constraints)
             # (nothing left to improve: the error, not the stretches', which turns of a given
             # length cannot bring to 0)
-            done = final and (not self.endless or (best_key[0] == 0 and all(isinstance(e.trigger, Edited) for e in after_edits)))
-            stats.chosen, stats.key, stats.final, stats.definitive = best_label, best_key, done, hi
+            done = final and (not self.endless or perfect)
+            stats.chosen, stats.key, stats.final, stats.definitive = best_label, best_key, done, INF if perfect else hi
             if published is None or ops or final:  # (a stage that edits nothing publishes the same script)
                 events = ([Event(ChipIn(c, INF), (keep,))] if keep is not None else []) + carried + edits + after_edits
                 published = Script.of(events, on_view=SHOW, stretches=stretches, covered=covered, origin=c, base=current,
                                       live=live, constraints=self.constraints)
             yield published, replace(stats)
+            if perfect:
+                return
             lo = hi
             if final and not done:  # nothing proves it is the best: requirement.md, the run never ends
                 lo = c + max(H, PACE) if hi is None else hi

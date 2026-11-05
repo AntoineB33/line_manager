@@ -17,7 +17,7 @@ import re
 from dataclasses import replace
 from fractions import Fraction
 
-from constraints import FifteenMinuteBreaks, KeepOn, ScreenBreaks
+from constraints import AsEarlyAsPossible, Breaks, KeepOn, MinimumGap, ScreenBreaks
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import Op
 from region import ONE, Region
@@ -182,7 +182,28 @@ def _screen_breaks(m, rules) -> ScreenBreaks:
     return ScreenBreaks(breaks, ns, chain, rules=rules)
 
 
+_GAP = re.compile(r"keep (\S+) at least (\S+) apart$")
+_GAP_AFTER = re.compile(r"keep (\S+) at least (\S+) after (\S+) or more of (\S+)$")
+
+
+_EARLY = re.compile(r"keep (\S+) as early as possible(?:, (\S+) each)?$")
+
+
 def _constraint(line: str, rules):
+    m = _EARLY.match(line)
+    if m:
+        if rules is not None and m[1] not in rules.order:
+            raise ValueError(f"{m[1]} is not in the rules")
+        return AsEarlyAsPossible(m[1], None if m[2] is None else _number(m[2]))
+    m = _GAP.match(line) or _GAP_AFTER.match(line)
+    if m:
+        kinds = [m[1]] + ([m[4]] if m.re is _GAP_AFTER else [])
+        for k in kinds:
+            if rules is not None and k not in rules.order:
+                raise ValueError(f"{k} is not in the rules")
+        if m.re is _GAP_AFTER:
+            return MinimumGap(m[1], _number(m[2]), after=m[4], at_least=_number(m[3]))
+        return MinimumGap(m[1], _number(m[2]))
     m = _SCREEN.match(line)
     if m and " (none within " in line:
         return _screen_breaks(m, rules)
@@ -197,7 +218,7 @@ def _constraint(line: str, rules):
         length, pause = _number(length), _number(pause)
         if length <= 0 or pause < 0:
             raise ValueError("a length > 0, and a pause >= 0")
-        return FifteenMinuteBreaks(kind, ns, length, pause)
+        return Breaks(kind, ns, length, pause)
     op = _op(line[len("keep "):].replace(" on chip + ", " on ", 1))
     return KeepOn(op)
 
@@ -294,6 +315,11 @@ def parse_script(text: str, previous: Script, rules=None) -> Script:
             errors.append((i, str(e)))
     if errors:
         raise ScriptError(errors)
+    for c in constraints:  # (as the generator binds them: what they read of the rules and of each other)
+        if hasattr(c, "bind") and rules is not None:
+            c.bind(rules)
+        if hasattr(c, "bind_all"):
+            c.bind_all(constraints)
     same = list(map(str, constraints)) == list(was)
     kept = [st for st in previous.stretches if same and any(m in (st.mode, None) and a <= st.a and st.b <= b for a, b, m in covered)]
     loops = [Loop(p, tuple(evs)) for p, evs in parts.items() if evs or p == STEP]

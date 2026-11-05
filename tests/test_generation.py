@@ -7,7 +7,7 @@ from fractions import Fraction as F
 
 from helpers import check_log, rand_interval
 from helpers import summing_to_1  # noqa: E402
-from constraints import FifteenMinuteBreaks, KeepOn, ScreenBreaks
+from constraints import Breaks, KeepOn, ScreenBreaks
 from generator import PresenceRatioProblem, RulesGenerator, _Context, budget, rerun_distance
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import GEN, MODE, USER, LineState, Op
@@ -350,7 +350,7 @@ class FifteenMinuteBreaksTest(unittest.TestCase):
     RULES = ["Break15 → NoScreen", "mode 1 → no NoScreen"]
 
     def breaks(self, state, chip=0):
-        return FifteenMinuteBreaks().breaks(state, F(chip)) & Region.of(Interval.closed(0, 700))
+        return Breaks().breaks(state, F(chip)) & Region.of(Interval.closed(0, 700))
 
     def with_no_screen(self, a, b):
         return apply_edit(parse_rules(self.RULES), LineState.empty(), [Op.put("NoScreen", Interval.closed(a, b))], USER)
@@ -380,7 +380,7 @@ class FifteenMinuteBreaksTest(unittest.TestCase):
     def test_going_on_at_the_chip(self):
         """The chip inside a break: the break stays as it is, and nothing changes."""
         rs = parse_rules(self.RULES)
-        k = FifteenMinuteBreaks()
+        k = Breaks()
         line = apply_edit(rs, LineState.empty(), k.ops(LineState.empty(), F(0)), GEN)
         self.assertEqual(k.ops(line, F(140)), [])
 
@@ -388,7 +388,7 @@ class FifteenMinuteBreaksTest(unittest.TestCase):
         """The line starts empty: the first run's script puts the breaks after the chip."""
         rs = parse_rules(self.RULES)
         sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}).with_window(180), 0.5,
-                                                           constraints=[FifteenMinuteBreaks()]),
+                                                           constraints=[Breaks()]),
                          Chip([(0, 0), (1, 1)]), ModeTimeline(0, "2"))
         sim.run(1)
         check_log(sim.log, rs)
@@ -402,7 +402,7 @@ class FifteenMinuteBreaksTest(unittest.TestCase):
         completes after the first. What the breaks are around there, the chip at 160."""
         rs = parse_rules(rules)
         chip = Chip([(0, 0)])
-        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}).with_window(240), 0.5, constraints=[FifteenMinuteBreaks()]),
+        sim = Simulation(LineState.empty(), RulesGenerator(rs, PresenceRatioProblem({}).with_window(240), 0.5, constraints=[Breaks()]),
                          chip, ModeTimeline(0, "1", [(130, "2"), (140, "1")]))
         sim.background = True
         sim.start()
@@ -510,7 +510,7 @@ class ResourcesTest(unittest.TestCase):
             m.solve = counted
         try:
             rs = parse_rules(["Break15 → NoScreen", "mode 1 → no NoScreen", "mode 2 → NoScreen"])
-            gen = RulesGenerator(rs, PresenceRatioProblem(summing_to_1({"Other": F(1, 4)})).with_window(240), q, constraints=[FifteenMinuteBreaks()])
+            gen = RulesGenerator(rs, PresenceRatioProblem(summing_to_1({"Other": F(1, 4)})).with_window(240), q, constraints=[Breaks()])
             gen.run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
         finally:
             for m in modules:
@@ -616,10 +616,10 @@ class RerunRulesTest(unittest.TestCase):
         return [t for t in triggers if isinstance(t, kind)]
 
     def test_nothing_to_optimise_only_the_user_edits(self):
-        self.assertEqual(self.reruns(["Break15 → NoScreen"], {}, constraints=[FifteenMinuteBreaks()]), [Edited(True)])
+        self.assertEqual(self.reruns(["Break15 → NoScreen"], {}, constraints=[Breaks()]), [Edited(True)])
 
     def test_mode_rules_are_compiled_ahead_by_a_run(self):
-        t = self.reruns(["Break15 → NoScreen", "mode 1 → no NoScreen"], {}, constraints=[FifteenMinuteBreaks()])
+        t = self.reruns(["Break15 → NoScreen", "mode 1 → no NoScreen"], {}, constraints=[Breaks()])
         self.assertEqual(t, [ChipIn(F(25, 6), INF), Edited(True)])
 
     def test_a_constraint_that_goes_with_the_chip_needs_runs(self):
@@ -768,7 +768,7 @@ class SameResultTest(unittest.TestCase):
     def line(self, step):
         rs = parse_rules(self.RULES)
         modes = ModeTimeline(0, "1", [(F(7, 3), "2"), (F(22, 3), "1"), (F(14), "2")])
-        gen = RulesGenerator(rs, [], 0.5, constraints=[KeepOn(Op.put("D", Interval.open_closed(1, 3))), FifteenMinuteBreaks("E", "F", 2, 3)])
+        gen = RulesGenerator(rs, [], 0.5, constraints=[KeepOn(Op.put("D", Interval.open_closed(1, 3))), Breaks("E", "F", 2, 3)])
         sim = Simulation(LineState.empty(), gen, Chip([(0, 0), (20, 20)]), modes)
         sim.start()
         sim.replace_script(self.script(gen))

@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "UI"))
 from helpers import Interval, IntervalSet, Region  # noqa: E402
 from helpers import summing_to_1  # noqa: E402
 
-from app import FifteenMinuteBreaks, PresenceRatioProblem, Session  # noqa: E402
+from app import Breaks, PresenceRatioProblem, Session  # noqa: E402
 from intervals import INF, Pos  # noqa: E402
 from line import Op  # noqa: E402
 from region import ONE  # noqa: E402
@@ -34,7 +34,7 @@ def english(s: Session) -> str:
 
 
 def session(length=15) -> Session:
-    s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2), [FifteenMinuteBreaks(length=length)])
+    s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2), [Breaks(length=length)])
     s.sim.background = False
     s.sim.start()
     return s

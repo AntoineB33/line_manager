@@ -15,7 +15,7 @@ give the mode (SELECTOR_MODES):
     fake locked, the other not unlocked   mode 3: "no screen", and "not on a computer"
                                        (else "not on a phone")
 
-The breaks are a constraint of the rules generator (constraints.FifteenMinuteBreaks):
+The breaks are a constraint of the rules generator (constraints.Breaks):
 a break lasts 15 minutes, starts as early as possible, and after 15 minutes or more of
 "no screen" (a break included) no break starts in the next 2 hours, so one every 135
 minutes; a break that would start inside a "no screen" period starts at its start (or
@@ -47,7 +47,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from app import FifteenMinuteBreaks, MinimumLengthProblem, PresenceRatioProblem, start  # noqa: E402
+from app import Breaks, MinimumLengthProblem, PresenceRatioProblem, start  # noqa: E402
 
 RULES = [
     # A break comes with "no screen"; "no screen" is each device locked or not used.
@@ -74,7 +74,7 @@ CHIP = 0
 SPEED = 1  # seconds per second: real time
 LINE = []  # the line starts empty
 CONSTRAINTS = [
-    FifteenMinuteBreaks("Break15", "NoScreen", length=15 * MINUTE, pause=120 * MINUTE),
+    Breaks("Break15", "NoScreen", length=15 * MINUTE, pause=120 * MINUTE),
 ]
 PROBLEMS = [
     (PresenceRatioProblem({}), 1),

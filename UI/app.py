@@ -38,7 +38,7 @@ from fractions import Fraction as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 
-from constraints import FifteenMinuteBreaks, KeepOn, ScreenBreaks  # noqa: E402,F401 (the breaks: for the example scripts)
+from constraints import AsEarlyAsPossible, Breaks, KeepOn, MinimumGap, ScreenBreaks  # noqa: E402,F401 (for the example scripts)
 from generator import RulesGenerator  # noqa: E402
 from intervals import INF, Interval, IntervalSet  # noqa: E402
 from line import LineState, Op  # noqa: E402
@@ -375,7 +375,7 @@ class Session:
                 head.append(self.running().capitalize() + ": its next script replaces this one.")
         if self.sim.definitive is not None:
             head.append(f"Definitive up to {self.sim.definitive}.")
-        return to_python(self.sim.script, head)  # the Python that builds the script in place
+        return to_python(self.sim.script, head, self.rs)  # the Python that builds the whole script in place
 
     def edit_script(self, text: str, previous: Script) -> str:
         """The text of `previous`, changed by the user, replaces the script in place, and
@@ -630,7 +630,7 @@ def start(rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=
     problems: [(problem, weight)]: PresenceRatioProblem(targets), MinimumLengthProblem(lengths)
     q:        the allocated resources quantity, in [0, 1]
     constraints: what the generated script keeps true after the chip: constraints.py's
-              (FifteenMinuteBreaks()), or edits written from the chip, as text
+              (Breaks()), or edits written from the chip, as text
               ("Future on (0, inf)": Future on (chip, inf))
     selectors: {name: options}: the window shows them instead of the mode buttons
     selector_modes: {(an option of each selector): mode}, for every choice; the first

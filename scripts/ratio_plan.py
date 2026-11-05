@@ -15,8 +15,10 @@ of its kinds exclude each other), else there is no plan.
   cycle of period P = max L_K / r_K, each kind once in it for r_K P, so its shortest
   piece is its minimum length. A then B, ratios 1/2, lengths 1:
       A on (x + 2n, x + 2n + 1], B on (x + 2n + 1, x + 2n + 2], for every n >= 0
-  The order in the cycle is drawn at random once per generator (its seed), except
-  that a kind at the chip comes last: first, it would give more of it to the intervals
+  The order in the cycle: a kind the constraints put as early as possible first
+  (constraints.AsEarlyAsPossible), then the largest target (a stretch from the chip all of
+  it is the closest to the targets), at random between equal targets once per generator
+  (its seed), except that a kind at the chip comes last: first, it would give more of it to the intervals
   ending just after the chip. Before the cycle, the interval of that kind at the chip
   goes on until it is its minimum length long. With no minimum length (P = 0) every
   cycle is beaten by a faster one, so no line is the best: the definitions are refused
@@ -109,26 +111,23 @@ class Built(Region):
     """A region and the Python call that built it (`src`): the generated script's text
     gives the call, not its intervals (script_python.py). An operation that changes nothing
     gives it back; another one gives the call with the operation."""
-    __slots__ = ("src",)
+    __slots__ = ("src",)  # the call's text, or (operator, left, right): the operation on two regions
 
     def __and__(self, other):
         if self.issubset(other):
             return self
-        from script_python import py
-        return _built(Region.__and__(self, other), f"({self.src} & {py(other)})")
+        return _built(Region.__and__(self, other), ("&", self, other))
 
     def __sub__(self, other):
         if (Region.__and__(self, other)).is_empty():
             return self
-        from script_python import py
-        return _built(Region.__sub__(self, other), f"({self.src} - {py(other)})")
+        return _built(Region.__sub__(self, other), ("-", self, other))
 
     def __or__(self, other):
-        from script_python import py
-        return _built(Region.__or__(self, other), f"({self.src} | {py(other)})")
+        return _built(Region.__or__(self, other), ("|", self, other))
 
 
-def _built(r: Region, src: str) -> Built:
+def _built(r: Region, src) -> Built:
     out = Built.__new__(Built)
     for s in Region.__slots__:
         setattr(out, s, getattr(r, s))
@@ -144,42 +143,75 @@ def cycle(c, P, lo, hi) -> Region:
                   f"{py(Fraction(lo))}, {py(Fraction(hi))})")
 
 
-def turns(free: Region, start, order, lengths: dict, minimum: dict) -> dict | None:
+def turns(free: Region, start, order, lengths: dict, minimum: dict, forbid: dict | None = None) -> dict | None:
     """The kinds of `order` taking their turns, one after the other, in the stretches of
     `free` from `start`, a turn going on from one stretch to the next: each for its length
     (`lengths`), less at the end of a stretch if that is still its minimum length
     (`minimum`), else nothing there; the last piece of a stretch stops just before its
-    end (what comes after it, e.g. a break, starts there). What `free` repeats, the turns
-    repeat once a period starts with the same kind. {kind: region}; None if `free`
-    repeats with no position outside it to cut its periods at."""
+    end (what comes after it, e.g. a break, starts there). `forbid`: {kind: region, with
+    an end} where that kind alone cannot be (e.g. no break within 2 hours after the last
+    one): when its turn comes there, the kind before it goes on until it can be. What
+    `free` repeats, the turns repeat once a period starts with the same kind, past what is
+    forbidden. {kind: region}; None if `free` repeats with no position outside it to cut
+    its periods at, or what is forbidden has no end."""
     from script_python import py
-    out = _turns(free, Fraction(start), list(order), lengths, minimum)
+    forbid = {k: r for k, r in (forbid or {}).items() if not r.is_empty()}
+    out = _turns(free, Fraction(start), list(order), lengths, minimum, forbid)
     if out is None:
         return None
-    src = f"turns({py(free)}, {py(Fraction(start))}, {list(order)!r}, {py(dict(lengths))}, {py(dict(minimum))})"
+    more = f", {py(forbid)}" if forbid else ""
+    src = f"turns({py(free)}, {py(Fraction(start))}, {list(order)!r}, {py(dict(lengths))}, {py(dict(minimum))}{more})"
     return {k: _built(r, f"{src}[{k!r}]") for k, r in out.items()}
 
 
-def _turns(free: Region, start: Fraction, order: list, lengths: dict, minimum: dict) -> dict | None:
+def _turns(free: Region, start: Fraction, order: list, lengths: dict, minimum: dict, forbid: dict) -> dict | None:
     n = len(order)
     pieces = {k: [] for k in order}
+    if any(not r.is_bounded() for r in forbid.values()):
+        return None
+    fend = max([Pos(start)] + [r.bounded().sup() for r in forbid.values()])  # past it, nothing is forbidden
 
-    def lay(ivs, i):
-        """Turns on these stretches (finite), from the turn i: the turn after them."""
+    def lay(ivs, i, until=None):
+        """Turns on these stretches (finite), from the turn i: (the turn after them, None);
+        with `until`, stops at the first end of a turn past it: (that turn, where)."""
         for iv in ivs:
             x, end, closed = iv.lo, iv.hi, True  # (a stretch's first position is in it)
             while True:
+                if until is not None and x >= until and not closed:
+                    return i, x
                 k = order[i % n]
                 length = lengths[k]
-                room = (end - x).x
+                room = (end - x).x if end != INF else length + 1  # (no end: room for a whole turn)
+                f = forbid.get(k)
+                ahead = f.on(x, end + 1).intervals if f is not None and end != INF else \
+                    (f.on(x, f.bounded().sup() + 1).intervals if f is not None else [])
+                ahead = [g for g in ahead if g.hi >= x]
+                if ahead and ahead[0].lo <= x:  # k cannot be here: the kind before it goes on
+                    y = min(ahead[0].hi, end) if end != INF else ahead[0].hi
+                    before = order[(i - 1) % n]
+                    pieces[before].append(Interval(x, y, closed, True))
+                    x, closed = y, False
+                    if y == end:
+                        break
+                    continue
+                if ahead and (ahead[0].lo - x).x < room:  # forbidden further in its turn: it ends before
+                    room = (ahead[0].lo - x).x
+                    stop = ahead[0].lo - EPS
+                else:
+                    stop = end
                 if room < length and not (room > 0 and room >= minimum.get(k, Fraction(0))):
+                    if ahead and stop != end:  # too short before what forbids it: the one before goes on
+                        before = order[(i - 1) % n]
+                        pieces[before].append(Interval(x, stop, closed, True))
+                        x, closed = stop, False
+                        continue
                     break  # too short for its turn: nothing there
-                b = end if room <= length else x + length  # (the ε of x: not past the end)
+                b = stop if room <= length else x + length  # (the ε of x: not past the end)
                 pieces[k].append(Interval(x, b, closed, room > length))
                 x, i, closed = b, i + 1, False
-                if room <= length:
+                if room <= length and b == end:
                     break
-        return i
+        return i, None
 
     free = free & Region.of(Interval(start, INF, False, False))
     pr, right = free.pr, free.right
@@ -193,7 +225,9 @@ def _turns(free: Region, start: Fraction, order: list, lengths: dict, minimum: d
                 x0 = ivs.pop().lo
             else:
                 x0 = hi
-        i = lay(ivs, 0)
+        i, _ = lay(ivs, 0)
+        if x0 is not None and x0 < fend:  # turns there, while something is forbidden
+            i, x0 = lay([Interval(x0, INF, True, False)], i, until=fend)
         out = {k: Region.of(IntervalSet(v)) for k, v in pieces.items()}
         if x0 is not None:
             P = sum(lengths.values(), Fraction(0))
@@ -209,11 +243,15 @@ def _turns(free: Region, start: Fraction, order: list, lengths: dict, minimum: d
     q = free.hi + gaps.intervals[0].lo  # outside free, every pr from there
     while q < Pos(start):
         q = q + pr
-    i = lay(free.on(start, q).intervals, 0)
-    seen, j = {}, 0
+    i, _ = lay(free.on(start, q).intervals, 0)
+    j = 0
+    while q + pr * j < fend:  # (the periods with something forbidden: before the pattern)
+        i, _ = lay(free.on(q + pr * j, q + pr * (j + 1)).intervals, i)
+        j += 1
+    seen = {}
     while i % n not in seen:
         seen[i % n] = j
-        i = lay(free.on(q + pr * j, q + pr * (j + 1)).intervals, i)
+        i, _ = lay(free.on(q + pr * j, q + pr * (j + 1)).intervals, i)
         j += 1
     j1 = seen[i % n]
     lo, hi = q + pr * j1, q + pr * j
@@ -283,13 +321,19 @@ class Plan:
             if P == 0:
                 raise NoBestScript(f"{', '.join(g)} exclude each other and none has a minimum length: every alternation of "
                                    "them is beaten by a faster one, so no script is the best")
-            self.groups.append((rng.sample(g, len(g)), P))
+            # the largest target first: a stretch from the chip that is all of it is the closest
+            # to the targets (the user's rule: every stretch as close as possible, the earliest
+            # first); at random between equal targets
+            drawn = rng.sample(g, len(g))
+            # a kind the constraints put as early as possible first (constraints.AsEarlyAsPossible)
+            early = {getattr(k, "kind", None) for k in constraints if type(k).__name__ == "AsEarlyAsPossible"}
+            self.groups.append((sorted(drawn, key=lambda k: (k not in early, -self.targets[k])), P))
             self.grouped |= set(g)
         self.kinds = sorted(self.targets)
         self.pairs = pairs
         self.ok = True
 
-    def group_ops(self, rules, state: LineState, chip) -> list[Op] | None:
+    def group_ops(self, rules, state: LineState, chip, constraints=()) -> list[Op] | None:
         """The edit of the cycles only (not strict). Where the other rules forbid the kinds
         of a cycle after the chip (its exclusions with the other kinds of its cycle aside),
         the cycle goes on in the stretches they leave (`_laid`). None if a kind of a cycle
@@ -300,27 +344,44 @@ class Plan:
         from problems import forbidden  # (problems imports nothing of this module)
         inside = {p for p in self.pairs if p <= self.grouped}  # (the cycles' own exclusions)
         others = [r for r in rules.element if not (_exclusions(r) or {None}) <= inside]
-        ops, no = [], {}
+        ops, no, theres = [], {}, {}
+        # (what forbids them read on the line without the generator's turns after the chip:
+        # they are made again here)
+        vals = {k: ({v: r - after for v, r in d.items()} if k in self.grouped else d) for k, d in state.line.vals.items()}
         for k in sorted(self.grouped):
             there = state.line.presence(k) & after
             if not (there - state.claims.owned(k, GEN)).is_empty():
                 return None
-            no[k] = forbidden(_Lines(others, state), k) & after
-            if not there.is_empty():
-                ops.append(Op.take(k, after))
+            no[k] = forbidden(_Lines(others, state), k, vals) & after
+            for gap in (g for g in constraints if hasattr(g, "apart") and g.kind == k):  # (constraints.MinimumGap)
+                # its `after` intervals but those of the generator's turns after the chip (made
+                # again here: "no screen" that comes with a break of its own is not counted)
+                source = state.line.presence(gap.after) - (there if gap.after != k else after)
+                no[k] = no[k] | (gap.apart(source) & after)
+            theres[k] = there
         for g, P in self.groups:
             if P is None:
                 continue
-            if any(no[k] != no[g[0]] for k in g):
-                return None
-            if no[g[0]].is_empty():
+            common = no[g[0]]
+            for k in g[1:]:
+                common = common & no[k]
+            alone = {k: no[k] - common for k in g}  # (where a kind alone cannot be: the others go on)
+            if common.is_empty() and all(r.is_empty() for r in alone.values()):
                 ops += self._cycle_ops(state, c, g, P)
             else:
-                laid = self._laid(state, c, g, P, after - no[g[0]])
+                laid = self._laid(state, c, g, P, after - common, alone)
                 if laid is None:
                     return None
                 ops += laid
-        return ops
+        # the generator's earlier turns off, where the new ones do not put the same kind ("take":
+        # the kind is then absent there, so not where it is put again)
+        put = {}
+        for o in ops:
+            if o.action == "put":
+                put[o.kind] = put.get(o.kind, Region.empty()) | o.region
+        takes = [Op.take(k, r - put.get(k, Region.empty())) for k, r in sorted(theres.items())
+                 if not (r - put.get(k, Region.empty())).is_empty()]
+        return takes + ops
 
     def _order(self, state: LineState, c: Fraction, g) -> tuple[list, list[Op], Fraction]:
         """The kinds of g in their turn (the one at the chip last), the edit that keeps its
@@ -334,12 +395,13 @@ class Plan:
                 start = c + rest
         return [k for k in g if k not in last] + last, ops, start
 
-    def _laid(self, state: LineState, c: Fraction, g, P, free: Region) -> list[Op] | None:
+    def _laid(self, state: LineState, c: Fraction, g, P, free: Region, alone=None) -> list[Op] | None:
         """The kinds of g taking their turns in the stretches of `free` after the chip, each
-        for r P (`turns`); None if there are none to take."""
+        for r P (`turns`), a kind's turn waiting where it alone cannot be (`alone`); None if
+        there are none to take."""
         order, ops, start = self._order(state, c, g)
         out = turns(free, start, order, {k: self.targets[k] * P for k in order},
-                    {k: self.lengths.get(k, Fraction(0)) for k in order})
+                    {k: self.lengths.get(k, Fraction(0)) for k in order}, alone)
         if out is None:
             return None
         return ops + [Op.put(k, r) for k, r in out.items() if not r.is_empty()]

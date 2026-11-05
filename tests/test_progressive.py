@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from helpers import Interval, Region  # noqa: E402
 from helpers import summing_to_1  # noqa: E402
 
-from constraints import FifteenMinuteBreaks  # noqa: E402
+from constraints import Breaks  # noqa: E402
 from generator import PACE, RulesGenerator  # noqa: E402
 from intervals import Pos  # noqa: E402
 from line import LineState  # noqa: E402
@@ -229,7 +229,7 @@ class PublishTest(unittest.TestCase):
 
     def test_the_script_at_the_start_needs_no_run(self):
         """It is there at the instant of the call, with nothing from the run."""
-        sim, chip = self.simulation(rules=["Break15 → NoScreen", "mode 1 → no NoScreen"], constraints=[FifteenMinuteBreaks()])
+        sim, chip = self.simulation(rules=["Break15 → NoScreen", "mode 1 → no NoScreen"], constraints=[Breaks()])
         self.assertIsNotNone(sim.request)
         self.assertEqual(sim.definitive, 10)
         text = sim.script.text()
@@ -240,7 +240,7 @@ class PublishTest(unittest.TestCase):
 
     def test_the_run_that_never_answers(self):
         """The pace and the constraints hold, and the run ends, with nothing from the run."""
-        sim, chip = self.simulation(rules=["Break15 → NoScreen", "mode 1 → no NoScreen"], constraints=[FifteenMinuteBreaks()])
+        sim, chip = self.simulation(rules=["Break15 → NoScreen", "mode 1 → no NoScreen"], constraints=[Breaks()])
         req = sim.request
         seen = []
         for t in range(1, 125):

@@ -11,7 +11,7 @@ from helpers import Interval  # noqa: F401 (the paths of scripts/)
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "UI"))
 import mode_rules  # noqa: E402
-from app import FifteenMinuteBreaks, PresenceRatioProblem, Session  # noqa: E402
+from app import Breaks, PresenceRatioProblem, Session  # noqa: E402
 from intervals import EPS, Pos  # noqa: E402
 
 RULES = ["Break15 → NoScreen", "NoScreen → (NoComputerUnlocked or NotOnComputer) & (NoPhoneUnlocked or NotOnPhone)",
@@ -20,7 +20,7 @@ RULES = ["Break15 → NoScreen", "NoScreen → (NoComputerUnlocked or NotOnCompu
 
 
 def solves_after_a_switch(units):
-    s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2), [FifteenMinuteBreaks()])
+    s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2), [Breaks()])
     s.begin()
     req = s.sim.request
     s.sim.complete(req.id, *list(req.gen.stages(req.state, req.chip, req.known, req.previous))[-1])
@@ -49,7 +49,7 @@ class AtTheChipTest(unittest.TestCase):
     """The mode rules hold at the chip's position at every instant, not only once it has passed."""
 
     def session(self):
-        s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2), [FifteenMinuteBreaks()])
+        s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2), [Breaks()])
         s.begin()
         req = s.sim.request
         s.sim.complete(req.id, *list(req.gen.stages(req.state, req.chip, req.known, req.previous))[-1])

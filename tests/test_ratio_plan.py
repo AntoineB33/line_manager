@@ -88,15 +88,15 @@ class PerfectScriptTest(unittest.TestCase):
     def test_refused_whatever_the_other_rules_and_the_constraints(self):
         """With the breaks, their rules and mode rules too (screen_break_15_task.py): the
         check comes before any shortcut."""
-        from constraints import FifteenMinuteBreaks
+        from constraints import Breaks
         rules = ["Break15 → NoScreen", "mode 1 → no NoScreen", "A → no B"]
         targets = [(PresenceRatioProblem({"A": HALF, "B": HALF}), 1)]
         with self.assertRaises(ValueError):
-            RulesGenerator(parse_rules(rules), targets, 0.5, constraints=[FifteenMinuteBreaks()])
+            RulesGenerator(parse_rules(rules), targets, 0.5, constraints=[Breaks()])
         with self.assertRaises(ValueError):  # the search alone too
-            RulesGenerator(parse_rules(rules), targets, 0.5, constraints=[FifteenMinuteBreaks()], shortcuts=False)
+            RulesGenerator(parse_rules(rules), targets, 0.5, constraints=[Breaks()], shortcuts=False)
         RulesGenerator(parse_rules(rules), targets + [(MinimumLengthProblem({"A": 60}), 1)], 0.5,
-                       constraints=[FifteenMinuteBreaks()])  # a minimum length: a best line exists
+                       constraints=[Breaks()])  # a minimum length: a best line exists
 
     def test_two_exclusive_with_no_minimum_length_among_others_are_refused(self):
         """A, B, C at 1/3 that exclude each other, A at least 60: B and C alternate ever
@@ -174,10 +174,10 @@ class FillTest(unittest.TestCase):
     once, whatever the other rules, the modes and the constraints."""
 
     def breaks(self, rules, q=0.5, targets=None, lengths=None):
-        from constraints import FifteenMinuteBreaks
+        from constraints import Breaks
         g = RulesGenerator(parse_rules(["Break15 → NoScreen", "mode 1 → no NoScreen"] + rules),
                            [(PresenceRatioProblem(targets or {"Task": 1}), 1), (MinimumLengthProblem(lengths or {"Task": 1}), 1)],
-                           q, constraints=[FifteenMinuteBreaks(length=2, pause=3)])
+                           q, constraints=[Breaks(length=2, pause=3)])
         began = time.perf_counter()
         stages = list(g.stages(LineState.empty(), F(0), ModeTimeline(0, "1").known(0)))
         return stages, time.perf_counter() - began
@@ -274,11 +274,11 @@ class LaidTest(unittest.TestCase):
     on in the stretches left, from one to the next (ratio_plan.Plan._laid)."""
 
     def test_the_turns_go_on_between_the_breaks(self):
-        from constraints import FifteenMinuteBreaks
+        from constraints import Breaks
         rules = ["Break15 → NoScreen", "NoScreen → no (A or B)", "A → no B"]
         g = RulesGenerator(parse_rules(rules), [(PresenceRatioProblem({"A": HALF, "B": HALF}), 1),
                                                (MinimumLengthProblem({"A": 1, "B": 1}), 1)], 0.5,
-                           constraints=[FifteenMinuteBreaks(length=2, pause=3)])
+                           constraints=[Breaks(length=2, pause=3)])
         began = time.perf_counter()
         script, stats = g.run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
         took = time.perf_counter() - began
@@ -322,6 +322,120 @@ class SearchTest(unittest.TestCase):
                 self.assertLess(took, 10)
 
 
+class AsEarlyAsPossibleTest(unittest.TestCase):
+    def place(self, constraints, chip=0):
+        g = RulesGenerator(parse_rules([]), [], 0.5, constraints=constraints)
+        script, _ = g.run(LineState.empty(), F(chip), ModeTimeline(0, "1").known(chip))
+        return script.base.line.presence("X")
+
+    def test_it_places_a_kind_by_itself(self):
+        """AsEarlyAsPossible("X", length=2), no target: X everywhere from the chip; with
+        MinimumGap("X", 3): (0, 2], then none for 3, (5, 7], ... forever."""
+        from constraints import AsEarlyAsPossible, MinimumGap
+        self.assertEqual(self.place([AsEarlyAsPossible("X", length=2)]).on(0, 100),
+                         Region.of(Iv(0, 100, False, False)).on(0, 100))
+        x = self.place([AsEarlyAsPossible("X", length=2), MinimumGap("X", 3)])
+        for n in (0, 1, 2, 1000):
+            a = 5 * n
+            self.assertTrue(x.contains(a + 1) and x.contains(a + 2), n)
+            self.assertFalse(x.contains(a + 3) or x.contains(a + 5), n)
+
+    def test_it_comes_first(self):
+        """Break15 1/9 and Free 8/9 that exclude each other: the stretch rule puts Free first
+        (the largest target); with AsEarlyAsPossible("Break15"), Break15 comes first."""
+        from constraints import AsEarlyAsPossible
+        rules = parse_rules(["Break15 → no Free"])
+        problems = [(PresenceRatioProblem({"Break15": F(1, 9), "Free": F(8, 9)}), 1), (MinimumLengthProblem({"Break15": 900}), 1)]
+        for constraints, first in (((), "Free"), ((AsEarlyAsPossible("Break15"),), "Break15")):
+            with self.subTest(first=first):
+                g = RulesGenerator(rules, problems, 0.5, constraints=constraints)
+                script, _ = g.run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
+                self.assertTrue(script.base.line.presence(first).contains(1))
+
+
+class MinimumGapTest(unittest.TestCase):
+    """constraints.MinimumGap: no interval of a kind within `gap` after the end of another
+    one, a constraint of the rules generator (not a rule of the line)."""
+
+    def gap(self):
+        from constraints import MinimumGap
+        return MinimumGap("Break15", 7200)
+
+    def state(self, *pieces, owner="user"):
+        from intervals import Interval as Iv2
+        rs = parse_rules([])
+        s = LineState.empty()
+        for a, b, who in pieces:
+            s = apply_edit(rs, s, [Op.put("Break15", Iv2(a, b, False, True))], who)
+        return rs, s
+
+    def test_where_it_is_kept(self):
+        from intervals import Interval as Iv2
+        rs, s = self.state((0, 900, "user"))
+        apart = self.gap().apart(s.line.presence("Break15"))
+        self.assertTrue(apart.contains(901) and apart.contains(8100) and not apart.contains(8101) and not apart.contains(450))
+
+    def test_the_generator_s_too_close_goes(self):
+        rs, s = self.state((0, 900, "user"), (5000, 5900, "generated"))
+        ops = self.gap().ops(s, F(0))
+        self.assertEqual([o.action for o in ops], ["take"])
+        self.assertTrue(ops[0].region.contains(5450) and not ops[0].region.contains(450))
+
+    def test_an_edit_of_the_user_too_close_is_refused(self):
+        from simulation import against_constraints
+        rs, s = self.state((0, 900, "user"), (5000, 5900, "user"))
+        self.assertIsNotNone(against_constraints(rs, s, F(0), [self.gap()]))
+        rs, s = self.state((0, 900, "user"), (8100, 9000, "user"))  # 2 hours after: kept
+        self.assertIsNone(against_constraints(rs, s, F(0), [self.gap()]))
+
+    def test_the_user_s_edit_wins_over_the_generator_s(self):
+        """A break of the user too close after one of the generator: the generator's part
+        too close goes, the user's stays."""
+        from simulation import against_constraints
+        rs, s = self.state((1000, 1900, "generated"), (5000, 5900, "user"))
+        self.assertIsNone(against_constraints(rs, s, F(0), [self.gap()]))
+        off = self.gap().ops(s, F(0))[0].region
+        self.assertTrue(off.contains(1450) and not off.contains(5450))
+
+    def test_after_long_enough_no_screen(self):
+        """("Break15", 7200, after="NoScreen", at_least=900): 2 hours after 15 minutes or more
+        of "no screen" from anywhere, none after a shorter one."""
+        from constraints import MinimumGap
+        from intervals import Interval as Iv2
+        gap = MinimumGap("Break15", 7200, after="NoScreen", at_least=900)
+        rs = parse_rules(["Break15 → NoScreen"])
+        for (a, b), pushed in (((1000, 2800), True), ((1000, 1600), False)):  # 30 minutes, 10 minutes
+            with self.subTest(no_screen=(a, b)):
+                s = apply_edit(rs, LineState.empty(), [Op.put("NoScreen", Iv2(a, b))], "user")
+                s = apply_edit(rs, s, [Op.put("Break15", Iv2(5000, 5900, False, True))], "generated")
+                ops = gap.ops(s, F(0))
+                self.assertEqual(bool(ops), pushed)
+                if pushed:
+                    self.assertTrue(ops[0].region.contains(5450))
+        self.assertTrue(gap.apart(Region.of(Iv2(1000, 2800))).contains(2800 + 7200))
+        self.assertTrue(gap.apart(Region.of(Iv2(1000, 1600))).is_empty())
+
+    def test_a_run_after_a_break_waits_for_its_2_hours(self):
+        """screen_break_15_rules.py's definitions, a run from chip 9000 (the break of
+        (7200, 8100] behind it): the free time goes on to 15300, then a break, every 8100,
+        found at once."""
+        from constraints import MinimumGap
+        rules = BREAK_RULES[:4] + ["Break15 → no Free", "Break15 is always 100%"] + BREAK_RULES[4:]
+        g = RulesGenerator(parse_rules(rules), [(PresenceRatioProblem({"Break15": F(1, 9), "Free": F(8, 9)}), 1),
+                                                 (MinimumLengthProblem({"Break15": 900}), 1)], 0.5,
+                           constraints=[MinimumGap("Break15", 7200)])
+        script, _ = g.run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
+        ops, base = g._fill(script.base, F(9000))
+        self.assertIsNotNone(ops)  # found at once
+        after = apply_edit(g.rules, base, ops, "generated")
+        b, free = after.line.presence("Break15"), after.line.presence("Free")
+        self.assertTrue(free.contains(9001) and free.contains(15299) and not b.contains(15299))
+        for n in range(4):
+            x = 15300 + 8100 * n
+            self.assertTrue(b.contains(x + 1) and b.contains(x + 900) and not b.contains(x + 901), n)
+        self.assertEqual(MinimumGap("Break15", 7200).ops(after, F(9000)), [])  # kept
+
+
 BREAK_RULES = ["Break15 → NoScreen",
                "NoScreen → (NoComputerUnlocked or NotOnComputer) & (NoPhoneUnlocked or NotOnPhone)",
                "NotOnComputer → no NoComputerUnlocked", "NotOnPhone → no NoPhoneUnlocked",
@@ -337,11 +451,11 @@ class BreaksAndTasksTest(unittest.TestCase):
         """The line after the first run and how many times the line was solved."""
         import mode_rules
         import solver
-        from constraints import FifteenMinuteBreaks
+        from constraints import Breaks
         rules = BREAK_RULES + (["A → no B"] if tasks else [])
         problems = [(PresenceRatioProblem({"A": HALF, "B": HALF}), 1), (MinimumLengthProblem({"A": 60}), 1)] if tasks else []
         g = RulesGenerator(parse_rules(rules), problems, 0.5,
-                           constraints=[FifteenMinuteBreaks("Break15", "NoScreen", length=900, pause=7200)])
+                           constraints=[Breaks("Break15", "NoScreen", length=900, pause=7200)])
         n, real = [0], solver.solve
 
         def counted(*a, **k):
@@ -435,13 +549,13 @@ class NoHorizonTest(unittest.TestCase):
                     self.assertNotIn("horizon=", text.read())
 
     def test_the_search_window_follows_the_definitions(self):
-        from constraints import FifteenMinuteBreaks
+        from constraints import Breaks
         from generator import SMALLEST_WINDOW
         rules = ["C → D"]  # (no perfect script)
         self.assertEqual(generator(rules, {"A": HALF, "B": HALF}).window, SMALLEST_WINDOW)
         self.assertEqual(generator(rules, {"A": HALF, "B": HALF}, {"A": 1000}).window, 4000)  # 4 times the longest minimum length
         g = RulesGenerator(parse_rules(rules), [(PresenceRatioProblem({"A": HALF, "B": HALF}), 1)], 0.5,
-                           constraints=[FifteenMinuteBreaks(length=900, pause=7200)])
+                           constraints=[Breaks(length=900, pause=7200)])
         self.assertEqual(g.window, 2 * 8100)  # twice a break and its pause
         self.assertTrue(all(p.window == g.window for p, _ in g.problems))  # its problems are bound to it
 

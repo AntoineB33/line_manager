@@ -232,7 +232,8 @@ class App:
         if self.snap is None:
             return
         # a new file at each click: an editor that has an older one open cannot show it instead
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="line_manager_generated_script_", suffix=".txt",
+        # the script itself: a Python file whose SCRIPT is it (script_python.py)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="line_manager_generated_script_", suffix=".py",
                                          delete=False) as f:
             f.write(self.snap["script"])
             path = f.name
@@ -240,7 +241,10 @@ class App:
         self.log(f"generated script written to {path}")
         try:
             if sys.platform.startswith("win"):
-                os.startfile(path)  # noqa: S606 (the user's own text editor)
+                try:  # to edit it ("open" would run a .py file)
+                    os.startfile(path, "edit")  # noqa: S606 (the user's own editor)
+                except OSError:
+                    subprocess.Popen(["notepad.exe", path])
             else:
                 subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", path])
         except OSError as e:

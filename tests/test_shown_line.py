@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from helpers import Interval, Region  # noqa: E402
 
-from constraints import FifteenMinuteBreaks  # noqa: E402
+from constraints import Breaks  # noqa: E402
 from generator import RulesGenerator  # noqa: E402
 from intervals import Pos  # noqa: E402
 from line import LineState  # noqa: E402
@@ -27,7 +27,7 @@ RULES = ["Break15 → NoScreen",
 
 
 def simulation(modes) -> Simulation:
-    sim = Simulation(LineState.empty(), RulesGenerator(parse_rules(RULES), PresenceRatioProblem({}).with_window(240), 0.5, constraints=[FifteenMinuteBreaks()]),
+    sim = Simulation(LineState.empty(), RulesGenerator(parse_rules(RULES), PresenceRatioProblem({}).with_window(240), 0.5, constraints=[Breaks()]),
                      Chip([(0, 0)]), modes)
     sim.start()
     return sim

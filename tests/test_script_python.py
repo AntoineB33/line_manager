@@ -12,7 +12,7 @@ from helpers import Interval  # noqa: F401 (the paths of scripts/)
 
 UI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "UI")
 sys.path.insert(0, UI)
-from app import FifteenMinuteBreaks, PresenceRatioProblem, Session  # noqa: E402
+from app import Breaks, PresenceRatioProblem, Session  # noqa: E402
 from script_python import from_python, to_python  # noqa: E402
 from script_text import ScriptError  # noqa: E402
 
@@ -20,7 +20,7 @@ RULES = ["Break15 → NoScreen", "mode 1 → no NoScreen", "mode 2 → NoScreen"
 
 
 def session() -> Session:
-    s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2), [FifteenMinuteBreaks(length=15)])
+    s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2), [Breaks(length=15)])
     s.sim.background = False
     s.sim.start()
     return s
@@ -49,6 +49,48 @@ class PythonTest(unittest.TestCase):
                          (s.sim.script.loops, s.sim.script.on_edit, s.sim.script.on_view, s.sim.script.covered,
                           s.sim.script.live))
 
+    def test_the_whole_script_comes_back_at_once(self):
+        """Every part of the script in place, its state too (the line the run compiled from,
+        what was true and fired), as values: reading it back computes nothing, so a saved
+        script applies at once (screen_break_15_task.py). The mode rules the run compiled
+        ahead, a cache, are kept from the script it replaces."""
+        import time
+        from unittest import mock
+        import mode_rules
+        import solver
+        s = example("screen_break_15_task")
+        a = s.sim.script
+        text = s.script_text()
+        for part in ("BASE = line_state(claims(", "Line({", "origin=", "true=", "fired=", "since=", "frame=",
+                     "on_edit=", "on_view=", "loops="):
+            self.assertIn(part, text)
+        began = time.perf_counter()
+        with mock.patch.object(solver, "solve", side_effect=AssertionError("solved")),                 mock.patch.object(mode_rules, "compile_runs", side_effect=AssertionError("compiled")):
+            b = from_python(text, a, s.rs)
+        self.assertLess(time.perf_counter() - began, 1)
+        self.assertEqual((b.loops, b.on_edit, b.on_view, b.covered, b.live, b.origin, b.true, b.fired, b.since),
+                         (a.loops, a.on_edit, a.on_view, a.covered, a.live, a.origin, a.true, a.fired, a.since))
+        self.assertEqual(list(map(str, b.constraints)), list(map(str, a.constraints)))
+        self.assertEqual((b.base.line.vals, b.base.history), (a.base.line.vals, a.base.history))
+        self.assertEqual(b.stretches, a.stretches)  # (kept: the same covered stretches, the same constraints)
+        self.assertNotIn("[900+2ε", text)  # what was true or fired names its events, not their intervals
+
+    def test_the_file_is_the_script(self):
+        """The button's file is a .py file that runs on its own: it builds SCRIPT, the script
+        in place, and nothing else."""
+        import subprocess
+        import tempfile
+        s = session()
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".py", delete=False) as f:
+            f.write(s.script_text() + "\nprint(type(SCRIPT).__name__, len(SCRIPT.events))\n")
+            path = f.name
+        try:
+            out = subprocess.run([sys.executable, path], capture_output=True, text=True, timeout=120)
+        finally:
+            os.unlink(path)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.split(), ["Script", str(len(s.sim.script.events))])
+
     def test_a_change_of_the_python_is_the_script(self):
         s = session()
         before = s.sim.script
@@ -76,7 +118,9 @@ class PythonTest(unittest.TestCase):
         self.assertEqual(text.count("turns("), 1)
         for k in "ABC":
             self.assertIn(f"Op.put('{k}', TURNS1['{k}'])", text)
-        self.assertLess(text.count("Interval("), 10)
+        edit = next(line for line in text.splitlines() if "Op.put('A', TURNS1['A'])" in line)
+        self.assertNotIn("Interval(", edit)  # the turns are their call
+        self.assertLess(text.count("Interval("), 40)  # (the line the run compiled from too: not 120 pieces a period)
         back = from_python(text, s.sim.script)
         self.assertEqual(back.loops, s.sim.script.loops)
         line = s.sim.state.line
@@ -91,12 +135,15 @@ class PythonTest(unittest.TestCase):
         from line import LineState
         from modes import ModeTimeline
         from rules import parse_rules
-        g = RulesGenerator(parse_rules(["B → no A"]), [(PresenceRatioProblem({"A": F(1, 2), "B": F(1, 2)}), 1),
+        rs = parse_rules(["B → no A"])
+        g = RulesGenerator(rs, [(PresenceRatioProblem({"A": F(1, 2), "B": F(1, 2)}), 1),
                            (MinimumLengthProblem({"A": 1, "B": 1}), 1)], 0.5, seed=0)
         script, _ = g.run(LineState.empty(), F(3), ModeTimeline(0, "1").known(3))
-        text = to_python(script)
-        self.assertEqual(text.count("cycle("), 2, text)
-        self.assertEqual(from_python(text, script).loops, script.loops)
+        text = to_python(script, rules=rs)
+        self.assertEqual(text.count("cycle("), 2, text)  # once each, at the top: the line and the edits name it
+        back = from_python(text, script, rs)
+        self.assertEqual(back.loops, script.loops)
+        self.assertEqual(back.base.line.vals, script.base.line.vals)  # (the line as values)
 
 
 class FrameTest(unittest.TestCase):
@@ -139,7 +186,7 @@ class RunGoingOnTest(unittest.TestCase):
         from line import Op
         from region import Region
         s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2),
-                    [FifteenMinuteBreaks(length=15)])
+                    [Breaks(length=15)])
         s.sim.background = True
         s.begin()
         first = s.sim.request
@@ -183,7 +230,7 @@ class PerfectTest(unittest.TestCase):
         from script import ChipIn, RerunAction
         from simulation import LAST_RESORT
         s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2),
-                    [FifteenMinuteBreaks(length=15)])
+                    [Breaks(length=15)])
         s.sim.background = True
         s.begin()
         req = s.sim.request

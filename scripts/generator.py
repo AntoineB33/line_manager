@@ -7,7 +7,7 @@ at once (ratio_plan.py); otherwise it searches, an approximation, on the window
 W = (c, c + H], H its own choice (`search_window`).
 
 0. Constraints (`constraints`, constraints.py): each gives the edits that make it hold
-   after the chip at c, on the line as it is (e.g. FifteenMinuteBreaks: the 15-minute
+   after the chip at c, on the line as it is (e.g. Breaks: the 15-minute
    breaks, where OmniApp's rules put them). A run makes them first, and every
    candidate edit comes on top of them; the script makes them where it is put in
    place (script.ConstraintEditAction).
@@ -59,7 +59,6 @@ The hyperparameter q in [0, 1]:
 
 from __future__ import annotations
 
-import itertools
 import math
 import random
 import time
@@ -164,6 +163,8 @@ class RulesGenerator:
         for k in self.constraints:  # (ScreenBreaks reads what the rules put)
             if hasattr(k, "bind"):
                 k.bind(rules)
+            if hasattr(k, "bind_all"):  # (AsEarlyAsPossible reads the other constraints)
+                k.bind_all(self.constraints)
         self.paced = False  # in a process of its own: the instant script holds PACE after the chip
         self.endless = False  # q = 1 in a process of its own: the run goes on until it proves it is done
         self.speed = Fraction(1)  # the chip's, for how far it goes during a run
@@ -403,7 +404,7 @@ class RulesGenerator:
         if ops is None:
             return None
         if grouped:
-            more = self.cycles.group_ops(self.rules, base, c)
+            more = self.cycles.group_ops(self.rules, base, c, self.constraints)
             if more is None:
                 return None
             ops = ops + more
@@ -449,7 +450,10 @@ class RulesGenerator:
             limit = stats.work + max(1, (stats.budget - stats.work) // left)
         held = not any(k.ops(base, ctx.c) for k in self.constraints)
         seen = {""}
-        for label, ops in itertools.chain(getattr(ctx, "forced", ()), ctx.candidates(until is not None)):
+        # the best line found at once (ratio_plan) is the run's edit: no candidate of the search
+        # competes with it (their score does not follow the stretch rule as it does)
+        forced = getattr(ctx, "forced", ())
+        for label, ops in (iter(forced) if forced else ctx.candidates(until is not None)):
             if where is not None:
                 ops = tuple(o for o in (_within(o, where) for o in ops) if not o.region.is_empty())
             key = " ; ".join(map(str, ops))

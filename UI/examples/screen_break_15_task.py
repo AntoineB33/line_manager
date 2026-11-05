@@ -19,7 +19,7 @@ import sys
 from fractions import Fraction
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from app import FifteenMinuteBreaks, MinimumLengthProblem, PresenceRatioProblem, start  # noqa: E402
+from app import Breaks, MinimumLengthProblem, PresenceRatioProblem, start  # noqa: E402
 
 RULES = [
     # A break comes with "no screen"; "no screen" is each device locked or not used.
@@ -49,7 +49,7 @@ CHIP = 0
 SPEED = 1  # seconds per second: real time
 LINE = []  # the line starts empty
 CONSTRAINTS = [
-    FifteenMinuteBreaks("Break15", "NoScreen", length=15 * MINUTE, pause=120 * MINUTE),
+    Breaks("Break15", "NoScreen", length=15 * MINUTE, pause=120 * MINUTE),
 ]
 PROBLEMS = [
     (PresenceRatioProblem({"A": Fraction(1, 3), "B": Fraction(1, 3), "C": Fraction(1, 3)}), 1),  # sum: 1

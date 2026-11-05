@@ -50,6 +50,8 @@ class ExamplesTest(unittest.TestCase):
     def test_every_example_has_its_own_rules(self):
         expected = {
             "screen_break_15": {(ChipIn, None), Edited},
+            # the breaks from rules and constraints (no target): as screen_break_15
+            "screen_break_15_rules": {(ChipIn, None), Edited},
             # its tasks: the score and their ratios are watched, and each mode, which can
             # forbid them at the chip (the next run makes the turns again)
             "screen_break_15_task": {(ChipIn, None), (ChipIn, "1"), (ChipIn, "2"), (ChipIn, "3"), Edited,
@@ -109,6 +111,44 @@ class ExamplesTest(unittest.TestCase):
             self.assertEqual(turns[:3], turns[3:6], start)
             self.assertEqual(at(start - 30), [], start)
 
+    def test_the_breaks_from_rules_and_constraints_only(self):
+        """screen_break_15_rules.py: no code for the breaks and no target (a break is no task),
+        only rules and constraints of the generator (AsEarlyAsPossible of 15 minutes,
+        MinimumGap after 15 minutes of "no screen"): a break of 900 every 8100 from the
+        chip, "no screen" on each, nothing else."""
+        sim = first_run("screen_break_15_rules")
+        line = sim.state.line
+        b = line.presence("Break15")
+        for n in (0, 1, 2, 100):
+            x = 8100 * n
+            self.assertTrue(b.contains(x + 1) and b.contains(x + 900), n)
+            self.assertFalse(b.contains(x + 901) or b.contains(x + 8099), n)
+        self.assertEqual(line.presence("NoScreen").on(0, 40000), b.on(0, 40000))
+        self.assertNotIn("Free", line.kinds())
+
+    def breaks(self, name, no_screen=None):
+        """The breaks of an example after its first run, and after the user adds "no screen"."""
+        from intervals import Interval as Iv2
+        from line import Op
+        sim = first_run(name)
+        if no_screen:
+            sim.edit_now([Op.put("NoScreen", Region.of(Iv2(*no_screen, True, True)))])
+            req = sim.request
+            sim.complete(req.id, *list(req.gen.stages(req.state, req.chip, req.known, req.previous))[-1])
+        return sim.state.line.presence("Break15").on(0, 60000)
+
+    def test_the_same_breaks_as_the_hand_written_ones(self):
+        """screen_break_15_rules.py (rules, targets, constraints of the generator) and
+        screen_break_15.py (the breaks written in Python, constraints.Breaks): the same line,
+        and the same after 30 minutes without screen (the next break 2 hours after them)."""
+        def real(breaks):  # (their ends as numbers: the hand-written ones end ε after, at 900+ε)
+            return [(iv.lo.x, iv.hi.x) for iv in breaks.intervals]
+        for no_screen in (None, (18000, 19800)):
+            with self.subTest(no_screen=no_screen):
+                self.assertEqual(real(self.breaks("screen_break_15_rules", no_screen)),
+                                 real(self.breaks("screen_break_15", no_screen)))
+        starts = [iv.lo.x for iv in self.breaks("screen_break_15_rules", (18000, 19800)).intervals]
+        self.assertEqual(starts[:4], [0, 8100, 16200, 27000])
 
 if __name__ == "__main__":
     unittest.main()

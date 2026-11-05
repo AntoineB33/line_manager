@@ -19,7 +19,7 @@ import resolve  # noqa: E402
 import solver  # noqa: E402
 import state_delta  # noqa: E402
 from solver import Line  # noqa: E402
-from constraints import FifteenMinuteBreaks  # noqa: E402
+from constraints import Breaks  # noqa: E402
 from line import GEN, USER, LineState, Op  # noqa: E402
 from problems import PresenceRatioProblem  # noqa: E402
 from resolve import Refused, apply_edit  # noqa: E402
@@ -534,7 +534,7 @@ class NothingReadsItTest(unittest.TestCase):
 
     def session(self):
         s = Session(EXAMPLE + ["mode 1 → no NoScreen"], [(0, "1")], 0, 1, [], [(PresenceRatioProblem(summing_to_1({"Wanted": F(1, 4)})).with_window(240), 1)],
-                    F(1, 2), [FifteenMinuteBreaks()])
+                    F(1, 2), [Breaks()])
         s.sim.background = True
         s.sim.start()
         return s

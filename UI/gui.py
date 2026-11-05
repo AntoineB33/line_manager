@@ -95,6 +95,7 @@ class App:
         self.out: queue.Queue = queue.Queue()
         self.snap = None
         self.shown = None  # (chip, line, claims): what the last frame showed
+        self.commands = 0  # the commands carried out: the line they change is shown at once
         self.edge = (None, MIN_LEFT)  # (kinds, where the line starts for them)
         self.wall = None  # when the chip was where the last step left it (None: it is not moving)
         self.frame = None  # (kinds, edge, width): what the fixed items were drawn for
@@ -411,11 +412,14 @@ class App:
             except queue.Empty:
                 break
             busy = True
+            self.commands += 1
             STOP.clear()  # a command is not stopped by Pause
             try:
                 self.out.put(job())
             except Exception as e:  # shown, and the simulation goes on
                 self.out.put(f"error: {e}")
+        if busy:  # what the commands did, shown at once: the step below can take seconds
+            self._publish()
         n = self.s.sim.log.run_count
         STOP.clear()  # nor is a run: it goes on paused or not
         for msg in self.s.runs():  # start the run asked for, install the completed ones
@@ -456,7 +460,7 @@ class App:
         self.snap = {"t": s.sim.t, "x": s.position, "mode": s.mode(), "speed": s.speed, "line": s.sim.state.line,
                      "claims": s.sim.state.claims, "kinds": s.kinds(), "reruns": reruns, "other": other,
                      "past": s.past_runs(), "modes": s.known_modes(), "script": s.script_text(), "script_object": s.sim.script,
-                     "mode_names": list(s.mode_names), "running": s.running() is not None, "generator_off": s.sim.generator_off, "ahead": s.sim.ahead(), "wall": self.wall, "shown": s.sim.shown,
+                     "mode_names": list(s.mode_names), "running": s.running() is not None, "generator_off": s.sim.generator_off, "ahead": s.sim.ahead(), "wall": self.wall, "commands": self.commands, "shown": s.sim.shown,
                      "selection": s.selection() if s.selectors else None}
         if self.file is not None and self.file.state_due():
             self.file.state(s.state_text())
@@ -526,7 +530,7 @@ class App:
         ahead = sn["ahead"]
         key = getattr(ahead, "key", None)
         line = (key,) if key is not None and sn["wall"] is not None else (id(sn["line"]), id(sn["claims"]))
-        return (id(sn["script_object"]), sn["shown"], line, self.span, self.scrolled, w, self.paused, sn["mode"], sn["speed"], tuple(sn["reruns"]), tuple(sn["other"]),
+        return (sn["commands"], id(sn["script_object"]), sn["shown"], line, self.span, self.scrolled, w, self.paused, sn["mode"], sn["speed"], tuple(sn["reruns"]), tuple(sn["other"]),
                 len(sn["past"]), sn["past"][-1:], len(sn["modes"]), tuple(sn["kinds"]), tuple(sn["mode_names"]), sn["selection"], sn["running"])
 
     def _rebuild(self, sn: dict, p, w: int) -> None:
@@ -581,6 +585,8 @@ class App:
             p = x + sn["speed"] * F(time.time() - sn["wall"]).limit_denominator(1000)
             if self.shown is not None and p < self.shown[0]:
                 p = self.shown[0]
+        if self.shown is not None and self.sign is not None and self.sign[0] != sn["commands"]:
+            self.shown = None  # (the line the last frame showed is from before the commands)
         sign = self._signature(sn, w)
         if sign != self.sign or p >= self.valid or self.frame is None:
             self.sign = sign

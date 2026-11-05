@@ -530,6 +530,41 @@ class WindowTest(unittest.TestCase):
         self.assertTrue(any(abs(c[2] - x0) <= 1 and abs(c[0] - (x0 - 2000 * app.view.scale)) <= 1 for c in bars),
                         (x0, bars))  # (the bar: from -2000 to 0)
 
+    def test_an_edit_is_shown_before_the_step_after_it(self):
+        """Playing, "add NoScreen at [-2000, 0)": the step after the command can take seconds
+        (only Pause stopped it); the window gets the edited line before it."""
+        app, s = self.app, self.s
+        self.pump(10, lambda: s.sim.started and app.snap is not None)
+        seen = []
+
+        def tick(dt):
+            seen.append((app.snap["commands"] == app.commands, app.snap["line"].presence("NoScreen").contains(-1000)))
+            return True
+        with app.lock, mock.patch.object(s, "tick", tick):
+            app.paused = False
+            app.jobs.put(lambda: s.command("add NoScreen at [-2000, 0)"))
+            app._step(time.time())
+            app.paused = True
+        self.assertEqual(seen, [(True, True)])
+
+    def test_an_edit_behind_the_chip_drawn_is_shown_at_once(self):
+        """The frames go on from the line the last frame showed while the chip is drawn past
+        the last step: after a command, from the edited line."""
+        app, s = self.app, self.s
+        self.pump(10, lambda: s.sim.started and app.snap is not None)
+        app.span, app.scrolled = F(6000), F(0)
+        old = dict(app.snap, wall=time.time(), ahead=lambda p: None, commands=app.commands)  # (no formula ahead)
+        app.draw(old)
+        self.assertFalse(old["line"].presence("NoScreen").contains(-1000))
+        app.shown = (old["x"] + 1, old["line"], old["claims"])  # (the chip drawn past the step)
+        s.command("add NoScreen at [-2000, 0)")
+        edited = dict(old, line=s.sim.state.line, claims=s.sim.state.claims, commands=app.commands + 1, wall=time.time())
+        app.draw(edited)
+        x0 = app.edge[1] + float(-app.at_x(app.edge[1])) * app.view.scale  # (where position 0 is drawn)
+        bars = [app.canvas.coords(app.view.ids[k][0]) for k in app.view.ids if k[0] == "bar" and k[1] == "NoScreen"]
+        self.assertTrue(any(abs(c[2] - x0) <= 1 and abs(c[0] - (x0 - 2000 * app.view.scale)) <= 1 for c in bars),
+                        (x0, bars))  # (the bar: from -2000 to 0)
+
     def test_a_chip_scrolled_out_of_view_is_not_drawn(self):
         app, c = self.app, self.app.canvas
         self.pump(10, lambda: app.snap is not None)

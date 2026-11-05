@@ -381,7 +381,8 @@ class Session:
         """The text of `previous`, changed by the user, replaces the script in place, and
         the run going on is cancelled. ScriptError if it is not correctly written."""
         # the Python the window shows (script_python.py), or the script's text (script_text.py)
-        script = from_python(text, previous, self.rs) if "SCRIPT" in text else parse_script(text, previous, self.rs)
+        script = (from_python(text, previous, self.rs, self.sim.shown) if "SCRIPT" in text
+                  else parse_script(text, previous, self.rs))
         newer = self.sim.script is not previous
         self.close()
         self.sim.replace_script(script)

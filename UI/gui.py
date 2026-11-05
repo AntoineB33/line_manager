@@ -61,6 +61,11 @@ MIN_LEFT = 70  # (the captions on the left may need more: `App._edge`)
 _tick = tick
 
 
+def keeps_frame(script, shown: int) -> bool:
+    """Whether s_f stays as the user wrote it: until s_v has made it again (ShowLine)."""
+    return script.frame_given is not None and shown <= script.frame_given
+
+
 class App:
     def __init__(self, root: tk.Tk, session, file: SessionLog | None = None) -> None:
         self.root, self.s, self.file = root, session, file
@@ -499,7 +504,8 @@ class App:
                 left2 = p + delta + self.scrolled - span / 4
                 later = items(sn, state.line, state.claims, p + delta, left2, span, a, b, scale, w) if shows else None
         self.view.sync(now, later, delta, p, X, scale)
-        script.frame = self.view.frame()
+        if not keeps_frame(script, sn["shown"]):
+            script.frame = self.view.frame()
         if self.formula is None and sn["wall"] is not None:
             self.valid = p  # no formula: each frame reads the line
         self._mode_buttons(sn["mode_names"], sn["mode"], sn["selection"])

@@ -99,6 +99,35 @@ class PythonTest(unittest.TestCase):
         self.assertEqual(from_python(text, script).loops, script.loops)
 
 
+class FrameTest(unittest.TestCase):
+    """s_f (Script.frame) is part of the script: in its text, and what the user writes there
+    is drawn until s_v makes it again (when the view moves or is resized)."""
+
+    def test_s_f_is_in_the_text_and_read_back(self):
+        from script import Place
+        s = session()
+        s.sim.script.frame = [Place("world", "line"), Place(17, "rectangle", (1.5, 2.0, 3.0, 4.0), (0.0, 1.0))]
+        text = s.script_text()
+        self.assertIn("frame=[", text)
+        self.assertIn("Place(item='world', shape='line'),", text)
+        self.assertIn("Place(item=17, shape='rectangle', coords=(1.5, 2.0, 3.0, 4.0), rates=(0.0, 1.0)),", text)
+        edited = text.replace("coords=(1.5, 2.0, 3.0, 4.0)", "coords=(1.5, 2.0, 30.0, 4.0)")
+        s.edit_script(edited, s.sim.script)
+        self.assertEqual(s.sim.script.frame[1].coords, (1.5, 2.0, 30.0, 4.0))
+        self.assertEqual(s.sim.script.frame_given, s.sim.shown)
+
+    def test_the_window_keeps_it_until_s_v(self):
+        try:
+            from gui import keeps_frame
+        except ImportError:
+            self.skipTest("no tkinter")
+        from script import Place, Script
+        given = Script(frame=[Place("world", "line")], frame_given=3)
+        self.assertTrue(keeps_frame(given, 3))  # the window redraws: it stays
+        self.assertFalse(keeps_frame(given, 4))  # s_v showed the line again: made again
+        self.assertFalse(keeps_frame(Script(frame=[Place("world", "line")]), 3))  # s_v's own
+
+
 class RunGoingOnTest(unittest.TestCase):
     """The script published at the start of a run, while the run goes on."""
 

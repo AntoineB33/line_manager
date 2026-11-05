@@ -268,6 +268,9 @@ class Script:
     on_edit: tuple = ()  # s_u
     on_view: tuple = ()  # s_v
     frame: list[Place] = field(default_factory=list, compare=False)  # s_f
+    # s_f written by the user (script_python.from_python): it stays until s_v makes it again,
+    # that is until the count of ShowLine (Simulation.shown) is past this one; None: s_v's
+    frame_given: int | None = field(default=None, compare=False)
     stretches: list = field(default_factory=list)  # mode_rules.Stretch, in the order of the chip
     covered: list = field(default_factory=list)  # (lo, hi, mode): the positions and modes the run compiled
     origin: object = None  # the chip's position the run compiled from

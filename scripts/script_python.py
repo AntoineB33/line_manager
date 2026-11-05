@@ -31,7 +31,7 @@ from intervals import INF, Interval, IntervalSet, Pos
 from line import Op
 from ratio_plan import cycle, turns
 from region import Region
-from script import (ChangeAction, ChipIn, ConstraintEditAction, Edited, EditAction, Event, Loop, PresenceAbove,
+from script import (ChangeAction, ChipIn, ConstraintEditAction, Edited, EditAction, Event, Loop, Place, PresenceAbove,
                     RerunAction, ScoreBelow, Script, ShowLine, Start, TransitionCount, Uncovered, Viewed)
 """
 
@@ -41,7 +41,9 @@ def py(v) -> str:
     if v is None or isinstance(v, (bool, int, str)):
         return repr(v)
     if isinstance(v, float):
-        return "INF" if v > 0 else "-INF"
+        if v in (float("inf"), float("-inf")):
+            return "INF" if v > 0 else "-INF"
+        return repr(v)
     if isinstance(v, Fraction):
         return f"F({v.numerator})" if v.denominator == 1 else f"F({v.numerator}, {v.denominator})"
     if isinstance(v, Pos):
@@ -127,6 +129,12 @@ def _body(script: Script) -> list[str]:
         if events:
             out += [f"        {py(e)}," for e in events]
             out.append("    ),")
+    # s_f: what each frame places, as the window made it (s_v makes it again when the view
+    # moves or is resized); a frame written here is drawn until then
+    out.append("    frame=[" + ("" if script.frame else "],"))
+    if script.frame:
+        out += [f"        {py(pl)}," for pl in script.frame]
+        out.append("    ],")
     out.append(f"    covered={py(list(script.covered))},")
     if script.live:
         out.append("    live=True,")
@@ -136,7 +144,7 @@ def _body(script: Script) -> list[str]:
     return out
 
 
-def from_python(text: str, previous: Script, rules=None) -> Script:
+def from_python(text: str, previous: Script, rules=None, shown: int = 0) -> Script:
     """The SCRIPT of this Python text, keeping `previous`'s compiled stretches where the
     text still covers them with the same constraints. ScriptError if it does not run, or
     (with `rules`) a constraint keeps a kind the rules do not know."""
@@ -156,8 +164,12 @@ def from_python(text: str, previous: Script, rules=None) -> Script:
             raise ScriptError([(0, f"{k} is not in the rules") for k in unknown])
     same = list(map(str, s.constraints)) == list(map(str, previous.constraints))
     kept = [st for st in previous.stretches if same and any(m in (st.mode, None) and a <= st.a and st.b <= b for a, b, m in s.covered)]
-    return replace(previous, loops=list(s.loops), on_edit=tuple(s.on_edit), on_view=tuple(s.on_view), frame=[], stretches=kept,
-                   covered=list(s.covered), live=s.live, constraints=tuple(s.constraints))
+    # s_f as written: drawn until s_v makes it again (`shown`: how many times s_v has shown
+    # the line so far, Simulation.shown)
+    frame = list(s.frame)
+    return replace(previous, loops=list(s.loops), on_edit=tuple(s.on_edit), on_view=tuple(s.on_view), frame=frame,
+                   frame_given=shown if frame else None, stretches=kept, covered=list(s.covered), live=s.live,
+                   constraints=tuple(s.constraints))
 
 
 def _line(e: Exception) -> int:

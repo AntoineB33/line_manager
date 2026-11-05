@@ -57,6 +57,8 @@ A generated script must never:
 - Remove elements added by the user. It can however remove elements indirectly added by the user through the rules, without removing the user-added elements themselves.
 At the absolute start of the program, the generated script is only an instruction to run the rules generator once as soon as possible. The generated script is changed only when the generator finds a new one or the user or the generated script itself edits it. If the generator is called to run again while it is already running, the previous run is cancelled and the new one starts.
 
+The rules generator must be able to resume its run after a program sleep.
+
 The generated script must be an object with a state and those three elements:
 $S_f$ a set of scripts that is executed in a loop by different threads at different frequencies.
 $s_u$ a script that is executed when there is a user edit.
@@ -78,7 +80,7 @@ else
 
 For different machines, if the same generated script get published at the same time and the same accepted user edits and mode switches occur at the same time, then at any point, if the chip stops and the user does nothing, the same line state must be found, if adding a few more loop iterations on the scripts.
 
-The "allocated resources quantity" hyperparameter in [0, 1] balances between resource usage economy (0) and optimization problem-solving (1). When the hyperparameter is lower, then a rules generator run will be faster and use less CPU resources to solve the optimization problems, and the current generated script will trigger less frequently a new rules generator run. At 1, the generator uses all the time the pace allows finding the best arrangement, and a run ends only when its script never needs a new run and reaches the best possible score in every scenario; if that cannot be established, the run never ends.
+The "allocated resources quantity" hyperparameter in [0, 1] balances between resource usage economy (0) and optimization problem-solving (1). When the hyperparameter is lower, then a rules generator run will be faster and use less CPU resources to solve the optimization problems, and the current generated script will trigger less frequently a new rules generator run. At 1, the generator uses all the time the pace allows finding the best arrangement.
 
 A run of the rules generator is progressive: it publishes a series of generated scripts, each replacing the previous one, and ends after publishing the last one. The generated script is "definitive" up to a position x when every next script of the same run gives the same resulting line for the chip's positions before x, whatever the modes. If a run has made the script definitive up to x, then 10 seconds later it must have made it definitive up to x + 10 units, using an approximation if resources are limited. An approximation may lower the optimization score but never breaks a constraint. At the start of a run, the generator must nearly instantly publish a new script that is definitive on the 10 units on the right of the chip. If the chip is beyond the definitiveness (because the program was put to sleep), then the generator must quickly catch up and publish a new script that is definitive on the 10 units on the right of the chip. The duration of a run of the rules generator depends on the allocated resources quantity hyperparameter.
 To satisfy this pace, the generator can look at the current generated script.

@@ -455,7 +455,10 @@ class WindowTest(unittest.TestCase):
         app = self.app
         for wheel in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.assertTrue(self.root.bind(wheel))
-        with mock.patch.object(self.root, "winfo_containing", return_value=app.canvas):
+        w = max(app.canvas.winfo_width(), 300)
+        over_chip = app.edge[1] + F(w - app.edge[1] - gui.RIGHT, 4)  # (the mouse over the chip: the scroll stays)
+        with mock.patch.object(self.root, "winfo_containing", return_value=app.canvas), \
+                mock.patch.object(app, "_pointer_x", return_value=over_chip):
             app.on_wheel(SimpleNamespace(delta=-120, num="??", state=0))
             self.assertEqual((app.span, app.scrolled), (24, 3))
             app.on_wheel(SimpleNamespace(delta=120, num="??", state=0))
@@ -480,6 +483,30 @@ class WindowTest(unittest.TestCase):
         for _ in range(30):
             app.zoom(F(1, 2))
         self.assertEqual(app.span, gui.MIN_SPAN)
+
+    def test_zooming_keeps_the_position_under_the_mouse_under_it(self):
+        """Ctrl + wheel with the mouse over the chip, the chip not at its usual place: the
+        chip is drawn at the same x after the zoom, in and out."""
+        app, c = self.app, self.app.canvas
+        self.pump(10, lambda: app.snap is not None)
+        frozen = dict(app.snap, wall=None)  # (the chip stays where it is)
+
+        def chip_x():
+            app.draw(frozen)
+            chip = next(i for i in c.find_all() if c.type(i) == "polygon" and c.itemcget(i, "fill") == "#d63031")
+            xs = c.coords(chip)[::2]
+            return (min(xs) + max(xs)) / 2  # (the chip's position: the middle of its triangle)
+
+        app.scrolled = -app.span / 4  # (the chip in the middle of the line)
+        x = chip_x()
+        under = app.at_x(round(x))
+        for up in (True, True, False, False, False):
+            with mock.patch.object(self.root, "winfo_containing", return_value=app.canvas), \
+                    mock.patch.object(app, "_pointer_x", return_value=round(x)):
+                app.on_wheel(SimpleNamespace(delta=120 if up else -120, num="??", state=gui.CONTROL))
+            self.assertEqual(app.at_x(round(x)), under)
+            self.assertAlmostEqual(chip_x(), x, delta=1)
+        self.assertEqual(app.span, 48)
 
     def test_a_chip_scrolled_out_of_view_is_not_drawn(self):
         app, c = self.app, self.app.canvas

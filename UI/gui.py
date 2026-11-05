@@ -227,16 +227,37 @@ class App:
         for m, b in self.mode_buttons.items():
             self._show_choice(b, m == current)
 
-    def zoom(self, factor: F) -> None:
-        self.span = min(max(self.span * factor, MIN_SPAN), MAX_SPAN)
+    def _share(self, x: int) -> F:
+        """Where the canvas's x is on the line's width: 0 at its left end, 1 at its right end
+        (the line is drawn from `left` = chip + scrolled - span / 4, over span: _rebuild)."""
+        w = max(self.canvas.winfo_width(), 300)
+        edge = self.edge[1]  # (as drawn last)
+        return F(x - edge, w - edge - RIGHT)
+
+    def at_x(self, x: int) -> F:
+        """The position of the line at the canvas's x, the chip where it was drawn last."""
+        return self.view.p0 + F(self.view.moved).limit_denominator(1000) + self.scrolled - self.span / 4 + self._share(x) * self.span
+
+    def zoom(self, factor: F, x: int | None = None) -> None:
+        """The span times factor; the position of the line at the canvas's x (the mouse's)
+        stays at x: chip + scrolled - span / 4 + share * span is the same before and after."""
+        span = min(max(self.span * factor, MIN_SPAN), MAX_SPAN)
+        if x is not None:
+            self.scrolled += (self.span - span) * (self._share(x) - F(1, 4))
+        self.span = span
+
+    def _pointer_x(self) -> int:
+        """The mouse's x on the canvas."""
+        return self.root.winfo_pointerx() - self.canvas.winfo_rootx()
 
     def on_wheel(self, event) -> None:
         """Over the line, the wheel scrolls (up: left, down: right), and with Ctrl it zooms
-        (up: in, down: out). The view goes on following the chip."""
+        (up: in, down: out) around the mouse: the position under it stays under it. The view
+        goes on following the chip."""
         if self.root.winfo_containing(*self.root.winfo_pointerxy()) == self.canvas:
             up = event.delta > 0 or event.num == 4
             if event.state & CONTROL:
-                self.zoom(F(1, 2) if up else F(2))
+                self.zoom(F(1, 2) if up else F(2), self._pointer_x())
             else:
                 self.scrolled += -self.span / 8 if up else self.span / 8
 

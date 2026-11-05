@@ -309,12 +309,19 @@ class RulesGenerator:
         edits: list[Event] = []  # one for each stage that edits
         began = time.perf_counter()
         after_edits: list[Event] | None = None
+        published = None
         for i, hi in enumerate(frontiers):
             ctx.state = current
             until = time.perf_counter() + float(SEARCH_TIME) if self.endless else None
+            # the first stage chooses over the whole window, with the whole budget, and keeps
+            # all of its edit: the later ones only make the script definitive further, and
+            # improve on it where they can (cut to its stage, a plan of the window kept only
+            # its first few units, and the budget ran out a few stages on)
+            whole = i == 0
             # an interval reaching this stage's frontier can still grow at the next one (problems.py)
-            ctx.open_end = hi if hi is not None and hi < c + H else None
-            ops, key, label, after = self._stage(ctx, state, current, lo, hi, stats, best_key, len(frontiers) - i, until)
+            ctx.open_end = hi if not whole and hi is not None and hi < c + H else None
+            ops, key, label, after = self._stage(ctx, state, current, lo, hi, stats, best_key, len(frontiers) - i, until,
+                                                 whole=whole)
             ctx.open_end = None
             if ops:
                 best_key, best_label, current = key, label, after
@@ -338,11 +345,15 @@ class RulesGenerator:
                 end = c + D / 6 * Fraction(str(self.q))
                 ahead = [(a, min(b, Pos(end)), m) for a, b, m in predicted if a <= end]
                 stretches, stats.refused = compile_runs(self.rules, current, ahead, self.constraints)
-            done = final and (not self.endless or (best_key == (0,) and all(isinstance(e.trigger, Edited) for e in after_edits)))
+            # (nothing left to improve: the error, not the stretches', which turns of a given
+            # length cannot bring to 0)
+            done = final and (not self.endless or (best_key[0] == 0 and all(isinstance(e.trigger, Edited) for e in after_edits)))
             stats.chosen, stats.key, stats.final, stats.definitive = best_label, best_key, done, hi
-            events = ([Event(ChipIn(c, INF), (keep,))] if keep is not None else []) + carried + edits + after_edits
-            yield Script.of(events, on_view=SHOW, stretches=stretches, covered=covered, origin=c, base=current, live=live,
-                            constraints=self.constraints), replace(stats)
+            if published is None or ops or final:  # (a stage that edits nothing publishes the same script)
+                events = ([Event(ChipIn(c, INF), (keep,))] if keep is not None else []) + carried + edits + after_edits
+                published = Script.of(events, on_view=SHOW, stretches=stretches, covered=covered, origin=c, base=current,
+                                      live=live, constraints=self.constraints)
+            yield published, replace(stats)
             lo = hi
             if final and not done:  # nothing proves it is the best: requirement.md, the run never ends
                 lo = c + max(H, PACE) if hi is None else hi
@@ -404,17 +415,27 @@ class RulesGenerator:
         stats = RunStats(work=1, budget=budget(self.q), valid=1, chosen="perfect script", final=True, definitive=INF)
         return Script.of(events, on_view=SHOW, origin=c, base=after), stats
 
-    def _stage(self, ctx: _Context, state: LineState, base: LineState, lo, hi, stats: RunStats, best_key, left: int, until=None):
+    def _stage(self, ctx: _Context, state: LineState, base: LineState, lo, hi, stats: RunStats, best_key, left: int, until=None,
+               whole: bool = False):
         """The best edit on (lo, hi] of the candidates this stage has budget and time for
         (the budget left, shared with the `left` stages to come; with `until`, all it finds
-        up to that time): (ops, key, label, state)."""
+        up to that time): (ops, key, label, state). `whole`: on everything after lo, with
+        the whole budget left."""
+        if until is None and not whole:
+            # the first stage chose over the whole window: this one only makes the script
+            # definitive further (a run that goes on, `until`, still improves on it)
+            return (), best_key, "no-op", base
         # (scored here: what counts depends on the stage's frontier, problems.MinimumLengthProblem.error)
         best = ((), ctx.score(base), "no-op", base)
         far = self.margin()
         if lo > ctx.c and self.rules.mode_rules:  # (what the mode rules do before lo stays)
             lo = hi if far is None or hi is None else min(lo + far, hi)
-        where = None if hi is None else Region.of(Interval(lo, hi, False, True)) if lo < hi else Region.empty()
-        limit = stats.work + max(1, (stats.budget - stats.work) // left)
+        if whole and hi is not None:
+            where = Region.of(Interval(lo, INF, False, False)) if lo < hi else Region.empty()
+            limit = stats.budget
+        else:
+            where = None if hi is None else Region.of(Interval(lo, hi, False, True)) if lo < hi else Region.empty()
+            limit = stats.work + max(1, (stats.budget - stats.work) // left)
         held = not any(k.ops(base, ctx.c) for k in self.constraints)
         seen = {""}
         for label, ops in itertools.chain(getattr(ctx, "forced", ()), ctx.candidates(until is not None)):
@@ -599,15 +620,32 @@ class _Context:
         return base + adj
 
     def score(self, s: LineState) -> tuple:
-        return (sum((w * p.error(self, s) for p, w in self.gen.problems if w), Fraction(0)),)
+        """(the weighted error of the problems, then how far the shorter stretches from the
+        chip are from the ratio targets: problems.PresenceRatioProblem.stretch_error)."""
+        return (sum((w * p.error(self, s) for p, w in self.gen.problems if w), Fraction(0)),
+                sum((w * p.stretch_error(self, s) for p, w in self.gen.problems if w and hasattr(p, "stretch_error")),
+                    Fraction(0)))
 
     def candidates(self, deep: bool = False):
         """The candidates in their order; `deep`: then finer and finer placements."""
-        yield from self._candidates(STRATEGIES)
+        yield from self._candidates(STRATEGIES + self._by_length())
         if deep:
             # up to 1024 parts: a placement spread over more costs too much to build (it is
             # built before the run's time is checked) for parts 1/1024 of the window wide
             yield from self._candidates(tuple(f"spread{2 ** n}" for n in range(5, 11)))
+
+    def _by_length(self) -> tuple:
+        """The placement that spreads each kind in pieces of its minimum length: over as many
+        parts of the window as its share there allows (turns of A and B of 60, not blocks),
+        when that is finer than the other placements (STRATEGIES: 16 parts at most)."""
+        targets, lengths = {}, {}
+        for p, w in self.gen.problems:
+            if w:
+                targets.update(getattr(p, "targets", {}))
+                lengths.update(getattr(p, "lengths", {}))
+        parts = [int(self.gen.window * targets[k] / L) for k, L in lengths.items() if targets.get(k)]
+        n = min(parts, default=0)
+        return (f"spread{min(n, 64)}",) if n > 16 else ()  # (more parts cost too much to build and score)
 
     def _candidates(self, strategies):
         preds = [p for p in PREDICTIONS if p != "scenario" or self.weights_best]
@@ -620,6 +658,6 @@ class _Context:
                 if len(problems) > 1:
                     for p, ops in zip(problems, parts):
                         yield f"{p.name} alone, {label}", ops
-        if strategies is STRATEGIES:
+        if strategies[:len(STRATEGIES)] == STRATEGIES:
             for p in problems:
                 yield from p.extra(self)

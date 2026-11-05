@@ -112,6 +112,27 @@ class PresenceRatioProblem:
         H, Wset = self.window, _window(ctx.c, self.window)
         return sum((abs(ctx.expected(s, k, ctx.weights_full, Wset) / H - r) for k, r in self.targets.items()), Fraction(0))
 
+    STRETCH_SCALES = 8  # stretches of H/2, H/4, ..., H/256 ...
+    STRETCHES = 8  # ... the first 8 of each length from the chip
+
+    def stretch_error(self, ctx, s) -> Fraction:
+        """How far shorter stretches from the chip are from the targets (the rules
+        generator's logic: every stretch as close as possible, the earlier first): for each
+        length H/2, H/4, ..., the first stretches of that length, each counting less than the
+        one before it, the error of each the sum over the kinds of |its share - r_K|. The
+        generator compares it after `error`: of two lines with the same shares over the
+        window, the one closer on the shorter stretches wins (turns of A and B rather than a
+        block of each). The line as it is, without predicting the modes."""
+        H, c, out = self.window, ctx.c, Fraction(0)
+        for j in range(1, self.STRETCH_SCALES + 1):
+            length = H / 2 ** j
+            n = min(2 ** j, self.STRETCHES)
+            for i in range(n):
+                w = _window(c + i * length, length)
+                weight = Fraction(n - i, n * (n + 1) // 2)  # (the earlier, the more; 1 in all)
+                out += weight * sum((abs(s.line.integral(k, w) / length - r) for k, r in self.targets.items()), Fraction(0))
+        return out / self.STRETCH_SCALES
+
     def proposals(self, ctx, pred: str, strategy: str) -> tuple[Op, ...]:
         weights = {"scenario": ctx.weights_best, "uniform": ctx.weights_uniform, "none": None}[pred]
         H, c, s = self.window, ctx.c, ctx.state

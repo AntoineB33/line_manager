@@ -285,9 +285,9 @@ class ReRunTest(unittest.TestCase):
         g.paced, g.speed = True, F(1000)
         real = g._stage
 
-        def slow(*a):
+        def slow(*a, **k):
             time.sleep(0.05)
-            return real(*a)
+            return real(*a, **k)
 
         g._stage = slow
         script, _ = next(g.stages(LineState.empty(), F(0), ModeTimeline(0, "1").known(0)))

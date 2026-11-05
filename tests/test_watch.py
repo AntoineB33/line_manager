@@ -84,7 +84,8 @@ class CrossingTest(unittest.TestCase):
 class SimulationTest(unittest.TestCase):
     def simulation(self, events):
         s = line_with([Interval.closed(40, 60)])
-        sim = Simulation(s, RulesGenerator(parse_rules([]), PresenceRatioProblem(summing_to_1({"A": F(1, 4)})).with_window(40), 0.5), Chip([(0, 0), (100, 100)]), ModeTimeline(0, "1"))
+        # (a generator with no target: the line is this one, A on [40, 60], whatever its run does)
+        sim = Simulation(s, RulesGenerator(parse_rules([]), PresenceRatioProblem({}).with_window(40), 0.5), Chip([(0, 0), (100, 100)]), ModeTimeline(0, "1"))
         sim.start()
         sim.script = Script.of(events)
         sim._looks = None

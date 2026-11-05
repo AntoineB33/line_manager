@@ -71,7 +71,7 @@ Edits of the user (several in one edit: separate them with ";")
   remove <K> <where>       remove K (K is then absent there)
   remove no <K> <where>    remove the "no K" elements
   <where> is "at x", "on <interval>", "on <interval> U <interval> ...", or
-  "everywhere"; an interval is [a, b], (a, b), [a, b) or (a, b], with fractions,
+  "everywhere" ("at" works before an interval too); an interval is [a, b], (a, b), [a, b) or (a, b], with fractions,
   decimals, -inf and inf, e.g.  on [0, 1/2) U (3, inf)
   "<where> every P" repeats it every P from there on, e.g.  add Sleep on [-3600, 25200) every 86400
 The modes (given externally: by MODES in the script, or by you)
@@ -577,7 +577,8 @@ def parse_op(text: str) -> list[Op]:
 
 
 def parse_where(text: str) -> Region:
-    """at x | on <interval> [U <interval>]... | everywhere, then optionally "every P":
+    """at x | on <interval> [U <interval>]... | everywhere, then optionally "every P" ("at"
+    works for "on" before an interval, as requirement.md writes "A at [x1, x2)"):
     repeated every P from there on, forever (what is given must be bounded and shorter
     than P)."""
     t = text.strip()
@@ -586,6 +587,8 @@ def parse_where(text: str) -> Region:
         return every(parse_where(m.group(1)), number(m.group(2)))
     if t == "everywhere":
         return Region.universe()
+    if t.startswith("at ") and t[3:].lstrip()[:1] in ("[", "("):  # "A at [x1, x2)": requirement.md's way
+        t = "on " + t[3:]
     if t.startswith("at "):
         return Region.point(number(t[3:]))
     if t.startswith("on "):

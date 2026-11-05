@@ -88,6 +88,25 @@ class EveryTest(unittest.TestCase):
                 parse_where(text)
 
 
+class AtAnIntervalTest(unittest.TestCase):
+    """requirement.md writes "A at [x1, x2)": the edit command takes it like "on"."""
+
+    def test_at_an_interval_is_on_it(self):
+        from app import parse_op, parse_where
+        for interval in ("[-2000, 0)", "(1/2, 3]", "[0, 1) U (2, inf)"):
+            self.assertEqual(str(parse_where("at " + interval)), str(parse_where("on " + interval)), interval)
+        self.assertEqual(str(parse_op("add B at [-2000, 0)")[0]), str(parse_op("add B on [-2000, 0)")[0]))
+        self.assertEqual(str(parse_where("at 2")), str(parse_where("on [2, 2]")))
+
+    def test_the_command_adds_it(self):
+        s = session()
+        s.command("add B at [-2000, 0)")
+        line = s.sim.state.line
+        self.assertTrue(line.presence("B").contains(-2000))
+        self.assertTrue(line.presence("B").contains(F(-1, 2)))
+        self.assertFalse(line.presence("B").contains(0))
+
+
 class ParseTest(unittest.TestCase):
     def test_the_same_text_is_the_same_script(self):
         s = session()

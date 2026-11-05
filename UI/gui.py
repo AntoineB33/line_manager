@@ -47,7 +47,7 @@ import traceback
 from fractions import Fraction as F
 from tkinter import font as tkfont, messagebox
 
-from app import EDITS, PAUSED, ScriptError
+from app import EDITS, PAUSED, ScriptError, parse_op
 from intervals import Pos
 from script import STEP
 from script_file import PROJECT, ScriptFile
@@ -273,8 +273,30 @@ class App:
                 return
             at = time.time()
             self.post(lambda: PAUSED if self.paused else self._up_to(at) or self.s.command(cmd))
+            out = self.out_of_view(cmd)
+            if out:
+                self.log(out)
         else:
             self.post(lambda: self.s.command(cmd))
+
+    def out_of_view(self, cmd: str) -> str | None:
+        """For an edit (add, no, remove) none of whose positions the window shows: where
+        they are, and how to see them. None otherwise (in view, or not an edit of the line)."""
+        try:
+            ops = [op for part in cmd.split(";") if part.strip() for op in parse_op(part)]
+        except ValueError:
+            return None  # (the session says what is wrong)
+        if not ops:
+            return None
+        w = max(self.canvas.winfo_width(), 300)
+        lo, hi = self.at_x(self.edge[1]), self.at_x(w - RIGHT)
+        if any(op.region.on(lo, hi).intervals for op in ops):
+            return None
+        right = all(op.region.inf() >= hi for op in ops)
+        zoom = "zoom out with Ctrl + wheel over the line"
+        where, how = ("on its right", f"scroll down with the wheel or {zoom}") if right else \
+            ("on its left", f"scroll up with the wheel or {zoom}") if all(op.region.sup() <= lo for op in ops) else ("on both sides", zoom)
+        return f"(not in view: the window shows [{num(lo)}, {num(hi)}], this edit is {where}: {how})"
 
     def open_script(self) -> None:
         """The generated script's file (script_file.py), in the editor: the one file of the

@@ -508,6 +508,28 @@ class WindowTest(unittest.TestCase):
             self.assertAlmostEqual(chip_x(), x, delta=1)
         self.assertEqual(app.span, 48)
 
+    def test_an_edit_out_of_view_says_where_it_is_and_is_drawn_once_in_view(self):
+        """"add B at [-2000, 0)" with the chip past 0 and the window around the chip: the
+        edit is on the line, but nothing showed it."""
+        app, s = self.app, self.s
+        self.pump(10, lambda: app.snap is not None)
+        app.scrolled = F(100)  # (as if the chip were at 100: the view on [94, 118])
+        app.draw(app.snap)
+        self.assertIn("on its left", app.out_of_view("add NoScreen at [-2000, 0)"))
+        self.assertIn("on its right", app.out_of_view("add NoScreen at 100000"))
+        self.assertIn("on both sides", app.out_of_view("add NoScreen at -2000; add NoScreen at 100000"))
+        self.assertIsNone(app.out_of_view("add NoScreen at [-2000, 100000)"))
+        for cmd in ("mode 2", "rule A → B", "add", "status"):
+            self.assertIsNone(app.out_of_view(cmd), cmd)
+        self.assertIn("done", s.command("add NoScreen at [-2000, 0)"))
+        app.span = F(6000)  # (zoomed out: [-2000, 0) is in view)
+        app.draw(dict(app.snap, line=s.sim.state.line, claims=s.sim.state.claims, wall=None))
+        self.assertIsNone(app.out_of_view("add NoScreen at [-2000, 0)"))
+        x0 = app.edge[1] + float(-app.at_x(app.edge[1])) * app.view.scale  # (where position 0 is drawn)
+        bars = [app.canvas.coords(app.view.ids[k][0]) for k in app.view.ids if k[0] == "bar" and k[1] == "NoScreen"]
+        self.assertTrue(any(abs(c[2] - x0) <= 1 and abs(c[0] - (x0 - 2000 * app.view.scale)) <= 1 for c in bars),
+                        (x0, bars))  # (the bar: from -2000 to 0)
+
     def test_a_chip_scrolled_out_of_view_is_not_drawn(self):
         app, c = self.app, self.app.canvas
         self.pump(10, lambda: app.snap is not None)

@@ -116,7 +116,10 @@ class RunGoingOnTest(unittest.TestCase):
         first = s.sim.request
         self.assertEqual(first.why, "start")
         self.assertIn("Event(trigger=Edited(only=True), actions=(RerunAction(),))", s.script_text())
-        self.assertIn("asked by the start-up script (run the generator once)", s.script_text())
+        # this script is the run's own first one (a run is progressive): no call in it is needed
+        self.assertIn("This script is the one published by the generator run going on, from chip 0, asked by the "
+                      "start-up script (run the generator once) at time 0; the run goes on, and its next script "
+                      "replaces this one.", s.script_text())
         self.assertIn("No generator run has completed yet.", s.script_text())
         s.sim.edit_now([Op.put("NoScreen", Region.of(Interval.closed(50, 60)))])
         self.assertIsNot(s.sim.request, first)  # the run from the line before the edit: replaced

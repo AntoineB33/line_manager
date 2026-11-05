@@ -305,15 +305,18 @@ class Session:
     def running(self) -> str | None:
         """The generator run going on, as text, or None."""
         req = self.sim.request
-        if req is None:
-            return None
+        return None if req is None else f"a generator run is going on, from chip {req.chip}, {self._asked(req)}"
+
+    @staticmethod
+    def _asked(req) -> str:
+        """Who asked for the run, and when, as text."""
         asked = {"start": "by the start-up script (run the generator once)",
                  "user edit": "by the script then in place, at your edit",
                  "script": "by one of the rerun rules of the script then in place",
                  "uncovered": "by the script then in place: the chip left what it compiled",
                  "catch up": "to catch up: the chip went past what was definitive",
                  "rules or problems changed": "because the rules or the problems changed"}.get(req.why, f"({req.why})")
-        return f"a generator run is going on, from chip {req.chip}, asked {asked} at time {req.time}"
+        return f"asked {asked} at time {req.time}"
 
     def tick(self, dt: F) -> bool:
         """Let the time run for dt: the chip moves dt * speed. If solver.STOP is set
@@ -364,7 +367,12 @@ class Session:
         if self.script_edit is not None and self.script_edit[1] is self.sim.script:
             head.append(f"Changed by the user at time {self.script_edit[0]}.")
         if self.running():
-            head.append(self.running().capitalize() + ": its next script replaces this one.")
+            if self.sim.request.published:  # (Simulation.first_script, publish: this script is the run's)
+                req = self.sim.request
+                head.append(f"This script is the one published by the generator run going on, from chip {req.chip}, "
+                            f"{self._asked(req)}; the run goes on, and its next script replaces this one.")
+            else:
+                head.append(self.running().capitalize() + ": its next script replaces this one.")
         if self.sim.definitive is not None:
             head.append(f"Definitive up to {self.sim.definitive}.")
         return to_python(self.sim.script, head)  # the Python that builds the script in place

@@ -852,11 +852,15 @@ class StepByStepTest(unittest.TestCase):
         self.assertIsNotNone(first)
         self.assertNotIn("the program starts", sim.script.text())  # the first script of the run is there at once
         self.assertIsNone(sim.edit_now([Op.put("A", Interval.closed(2, 3))]))
-        self.assertIs(sim.request, first)  # the initial script does not answer edits
+        again = sim.request  # an edit while the first run goes on: a new run, from the line with it
+        self.assertIsNot(again, first)
+        self.assertEqual(again.why, "user edit")
         chip.extend(1, 1)
         sim.advance(1)
         script, stats = first.gen.run(first.state, first.chip, first.known)
-        self.assertTrue(sim.complete(first.id, script, stats))
+        self.assertFalse(sim.complete(first.id, script, stats))  # from the line before the edit: not used
+        script, stats = again.gen.run(again.state, again.chip, again.known)
+        self.assertTrue(sim.complete(again.id, script, stats))
         self.assertEqual(sim.script.events, script.events)
         self.assertEqual([(t, c) for t, c, _, _, _ in sim.log.runs], [(1, 0)])  # completed at time 1, from chip 0
         self.assertIsNone(sim.request)

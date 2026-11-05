@@ -307,6 +307,10 @@ class Simulation:
         events = [e for e in s.events if not isinstance(e.trigger, Start)]
         if constraints and not any(isinstance(a, ConstraintEditAction) for e in events for a in e.actions):
             events.insert(0, Event(ChipIn(req.chip, INF), (ConstraintEditAction(),)))
+        if not any(isinstance(e.trigger, Edited) and any(isinstance(a, RerunAction) for a in e.actions) for e in events):
+            # an edit of the user while this run goes on runs the generator again (the run,
+            # from the line before it, is cancelled): the start-up script had no such rule
+            events.append(Event(Edited(True), (RerunAction(),)))
         covered = [(lo, hi, m) for lo, hi, m in s.covered if m is not None]
         if self.rules.mode_rules:
             covered.insert(0, (Pos(req.chip), Pos(x), None))

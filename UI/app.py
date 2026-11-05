@@ -305,7 +305,15 @@ class Session:
     def running(self) -> str | None:
         """The generator run going on, as text, or None."""
         req = self.sim.request
-        return None if req is None else f"a generator run is going on, from chip {req.chip} ({req.why}, asked at time {req.time})"
+        if req is None:
+            return None
+        asked = {"start": "by the start-up script (run the generator once)",
+                 "user edit": "by the script then in place, at your edit",
+                 "script": "by one of the rerun rules of the script then in place",
+                 "uncovered": "by the script then in place: the chip left what it compiled",
+                 "catch up": "to catch up: the chip went past what was definitive",
+                 "rules or problems changed": "because the rules or the problems changed"}.get(req.why, f"({req.why})")
+        return f"a generator run is going on, from chip {req.chip}, asked {asked} at time {req.time}"
 
     def tick(self, dt: F) -> bool:
         """Let the time run for dt: the chip moves dt * speed. If solver.STOP is set
@@ -352,7 +360,7 @@ class Session:
             t, c, why, _, stats = runs[-1]
             head.append(f"Last generator run: from chip {c} ({why}), completed at time {t}; it chose {stats.chosen}.")
         else:
-            head.append("The generator has not run yet.")
+            head.append("No generator run has completed yet.")
         if self.script_edit is not None and self.script_edit[1] is self.sim.script:
             head.append(f"Changed by the user at time {self.script_edit[0]}.")
         if self.running():

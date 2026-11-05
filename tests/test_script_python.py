@@ -99,5 +99,31 @@ class PythonTest(unittest.TestCase):
         self.assertEqual(from_python(text, script).loops, script.loops)
 
 
+class RunGoingOnTest(unittest.TestCase):
+    """The script published at the start of a run, while the run goes on."""
+
+    def test_an_edit_while_it_runs_runs_it_again(self):
+        """The start-up script asks for one run and has no rule for the user's edits: the
+        stand-in that replaces it keeps one, or an edit during the first run would be
+        answered by nothing (the run computes from the line before it)."""
+        from intervals import Interval
+        from line import Op
+        from region import Region
+        s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2),
+                    [FifteenMinuteBreaks(length=15)])
+        s.sim.background = True
+        s.begin()
+        first = s.sim.request
+        self.assertEqual(first.why, "start")
+        self.assertIn("Event(trigger=Edited(only=True), actions=(RerunAction(),))", s.script_text())
+        self.assertIn("asked by the start-up script (run the generator once)", s.script_text())
+        self.assertIn("No generator run has completed yet.", s.script_text())
+        s.sim.edit_now([Op.put("NoScreen", Region.of(Interval.closed(50, 60)))])
+        self.assertIsNot(s.sim.request, first)  # the run from the line before the edit: replaced
+        self.assertEqual(s.sim.request.why, "user edit")
+        self.assertIn("asked by the script then in place, at your edit", s.script_text())
+        s.close()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,75 @@
+written 2026-11-05 14:09:47, process 23048
+time 0, chip at 0, mode 1, speed 1
+presence ratio, weight 1: A 1/3, B 1/3, C 1/3
+minimum length, weight 1: A 60, B 60
+constraints (from the chip): keep Break15 on (chip, chip + 900] with NoScreen, as early as possible, none within 7200 after as much NoScreen
+the generator searches 16200 units after the chip (its window)
+allocated resources quantity 0.5, 0 generator runs
+a generator run is going on, from chip 0, asked by the start-up script (run the generator once) at time 0
+selectors: computer unlocked, phone unlocked
+modes: 1 on [0, 0)
+--- rules
+1. Break15 → NoScreen
+2. NoScreen → NoComputerUnlocked or NotOnComputer & NoPhoneUnlocked or NotOnPhone & no A & no B & no C
+3. NotOnComputer → no NoComputerUnlocked
+4. NotOnPhone → no NoPhoneUnlocked
+5. mode 1 → no NoScreen
+6. mode 2 → NoScreen & NoComputerUnlocked & NoPhoneUnlocked
+7. mode 3 → NoScreen & NotOnComputer or NotOnPhone
+8. A → no B & no C
+9. B → no C
+--- edits
+no edit
+--- line
+A 100% on ([960+3ε, 1020+2ε] U [1140+3ε, 1200+2ε] U [1320+3ε, 1380+2ε] U [1500+3ε, 1560+2ε] U [1680+3ε, 1740+2ε] U [1860+3ε, 1920+2ε] U [2040+3ε, 2100+2ε] U [2220+3ε, 2280+2ε] U [2400+3ε, 2460+2ε] U [2580+3ε, 2640+2ε] U [2760+3ε, 2820+2ε] U [2940+3ε, 3000+2ε] U [3120+3ε, 3180+2ε] U [3300+3ε, 3360+2ε] U [3480+3ε, 3540+2ε] U [3660+3ε, 3720+2ε] U [3840+3ε, 3900+2ε] U [4020+3ε, 4080+2ε] U [4200+3ε, 4260+2ε] U [4380+3ε, 4440+2ε] U [4560+3ε, 4620+2ε] U [4740+3ε, 4800+2ε] U [4920+3ε, 4980+2ε] U [5100+3ε, 5160+2ε] U [5280+3ε, 5340+2ε] U [5460+3ε, 5520+2ε] U [5640+3ε, 5700+2ε] U [5820+3ε, 5880+2ε] U [6000+3ε, 6060+2ε] U [6180+3ε, 6240+2ε] U [6360+3ε, 6420+2ε] U [6540+3ε, 6600+2ε] U [6720+3ε, 6780+2ε] U [6900+3ε, 6960+2ε] U [7080+3ε, 7140+2ε] U [7260+3ε, 7320+2ε] U [7440+3ε, 7500+2ε] U [7620+3ε, 7680+2ε] U [7800+3ε, 7860+2ε] U [7980+3ε, 8040+2ε]) repeating every 8100 to the right ...
+B 100% on ([1020+3ε, 1080+2ε] U [1200+3ε, 1260+2ε] U [1380+3ε, 1440+2ε] U [1560+3ε, 1620+2ε] U [1740+3ε, 1800+2ε] U [1920+3ε, 1980+2ε] U [2100+3ε, 2160+2ε] U [2280+3ε, 2340+2ε] U [2460+3ε, 2520+2ε] U [2640+3ε, 2700+2ε] U [2820+3ε, 2880+2ε] U [3000+3ε, 3060+2ε] U [3180+3ε, 3240+2ε] U [3360+3ε, 3420+2ε] U [3540+3ε, 3600+2ε] U [3720+3ε, 3780+2ε] U [3900+3ε, 3960+2ε] U [4080+3ε, 4140+2ε] U [4260+3ε, 4320+2ε] U [4440+3ε, 4500+2ε] U [4620+3ε, 4680+2ε] U [4800+3ε, 4860+2ε] U [4980+3ε, 5040+2ε] U [5160+3ε, 5220+2ε] U [5340+3ε, 5400+2ε] U [5520+3ε, 5580+2ε] U [5700+3ε, 5760+2ε] U [5880+3ε, 5940+2ε] U [6060+3ε, 6120+2ε] U [6240+3ε, 6300+2ε] U [6420+3ε, 6480+2ε] U [6600+3ε, 6660+2ε] U [6780+3ε, 6840+2ε] U [6960+3ε, 7020+2ε] U [7140+3ε, 7200+2ε] U [7320+3ε, 7380+2ε] U [7500+3ε, 7560+2ε] U [7680+3ε, 7740+2ε] U [7860+3ε, 7920+2ε] U [8040+3ε, 8100)) repeating every 8100 to the right ...
+Break15 100% on (0, 1] U ((1, 900+ε] U (8100, 8101]) repeating every 8100 to the right ...
+C 100% on ([900+2ε, 960+2ε] U [1080+3ε, 1140+2ε] U [1260+3ε, 1320+2ε] U [1440+3ε, 1500+2ε] U [1620+3ε, 1680+2ε] U [1800+3ε, 1860+2ε] U [1980+3ε, 2040+2ε] U [2160+3ε, 2220+2ε] U [2340+3ε, 2400+2ε] U [2520+3ε, 2580+2ε] U [2700+3ε, 2760+2ε] U [2880+3ε, 2940+2ε] U [3060+3ε, 3120+2ε] U [3240+3ε, 3300+2ε] U [3420+3ε, 3480+2ε] U [3600+3ε, 3660+2ε] U [3780+3ε, 3840+2ε] U [3960+3ε, 4020+2ε] U [4140+3ε, 4200+2ε] U [4320+3ε, 4380+2ε] U [4500+3ε, 4560+2ε] U [4680+3ε, 4740+2ε] U [4860+3ε, 4920+2ε] U [5040+3ε, 5100+2ε] U [5220+3ε, 5280+2ε] U [5400+3ε, 5460+2ε] U [5580+3ε, 5640+2ε] U [5760+3ε, 5820+2ε] U [5940+3ε, 6000+2ε] U [6120+3ε, 6180+2ε] U [6300+3ε, 6360+2ε] U [6480+3ε, 6540+2ε] U [6660+3ε, 6720+2ε] U [6840+3ε, 6900+2ε] U [7020+3ε, 7080+2ε] U [7200+3ε, 7260+2ε] U [7380+3ε, 7440+2ε] U [7560+3ε, 7620+2ε] U [7740+3ε, 7800+2ε] U [7920+3ε, 7980+2ε]) repeating every 8100 to the right ...
+NoComputerUnlocked 100% on (0, 900+ε] U (8100, 9000+ε] repeating every 8100 to the right ...
+NoPhoneUnlocked 100% on (0, 900+ε] U (8100, 9000+ε] repeating every 8100 to the right ...
+NoScreen 100% on (0, 1] U ((1, 900+ε] U (8100, 8101]) repeating every 8100 to the right ...
+--- claims
+A 100% on ([960+3ε, 1020+2ε] U [1140+3ε, 1200+2ε] U [1320+3ε, 1380+2ε] U [1500+3ε, 1560+2ε] U [1680+3ε, 1740+2ε] U [1860+3ε, 1920+2ε] U [2040+3ε, 2100+2ε] U [2220+3ε, 2280+2ε] U [2400+3ε, 2460+2ε] U [2580+3ε, 2640+2ε] U [2760+3ε, 2820+2ε] U [2940+3ε, 3000+2ε] U [3120+3ε, 3180+2ε] U [3300+3ε, 3360+2ε] U [3480+3ε, 3540+2ε] U [3660+3ε, 3720+2ε] U [3840+3ε, 3900+2ε] U [4020+3ε, 4080+2ε] U [4200+3ε, 4260+2ε] U [4380+3ε, 4440+2ε] U [4560+3ε, 4620+2ε] U [4740+3ε, 4800+2ε] U [4920+3ε, 4980+2ε] U [5100+3ε, 5160+2ε] U [5280+3ε, 5340+2ε] U [5460+3ε, 5520+2ε] U [5640+3ε, 5700+2ε] U [5820+3ε, 5880+2ε] U [6000+3ε, 6060+2ε] U [6180+3ε, 6240+2ε] U [6360+3ε, 6420+2ε] U [6540+3ε, 6600+2ε] U [6720+3ε, 6780+2ε] U [6900+3ε, 6960+2ε] U [7080+3ε, 7140+2ε] U [7260+3ε, 7320+2ε] U [7440+3ε, 7500+2ε] U [7620+3ε, 7680+2ε] U [7800+3ε, 7860+2ε] U [7980+3ε, 8040+2ε]) repeating every 8100 to the right ... (generated)
+B 100% on ([1020+3ε, 1080+2ε] U [1200+3ε, 1260+2ε] U [1380+3ε, 1440+2ε] U [1560+3ε, 1620+2ε] U [1740+3ε, 1800+2ε] U [1920+3ε, 1980+2ε] U [2100+3ε, 2160+2ε] U [2280+3ε, 2340+2ε] U [2460+3ε, 2520+2ε] U [2640+3ε, 2700+2ε] U [2820+3ε, 2880+2ε] U [3000+3ε, 3060+2ε] U [3180+3ε, 3240+2ε] U [3360+3ε, 3420+2ε] U [3540+3ε, 3600+2ε] U [3720+3ε, 3780+2ε] U [3900+3ε, 3960+2ε] U [4080+3ε, 4140+2ε] U [4260+3ε, 4320+2ε] U [4440+3ε, 4500+2ε] U [4620+3ε, 4680+2ε] U [4800+3ε, 4860+2ε] U [4980+3ε, 5040+2ε] U [5160+3ε, 5220+2ε] U [5340+3ε, 5400+2ε] U [5520+3ε, 5580+2ε] U [5700+3ε, 5760+2ε] U [5880+3ε, 5940+2ε] U [6060+3ε, 6120+2ε] U [6240+3ε, 6300+2ε] U [6420+3ε, 6480+2ε] U [6600+3ε, 6660+2ε] U [6780+3ε, 6840+2ε] U [6960+3ε, 7020+2ε] U [7140+3ε, 7200+2ε] U [7320+3ε, 7380+2ε] U [7500+3ε, 7560+2ε] U [7680+3ε, 7740+2ε] U [7860+3ε, 7920+2ε] U [8040+3ε, 8100)) repeating every 8100 to the right ... (generated)
+Break15 100% on (0, 1] U ((1, 900+ε] U (8100, 8101]) repeating every 8100 to the right ... (generated)
+C 100% on ([900+2ε, 960+2ε] U [1080+3ε, 1140+2ε] U [1260+3ε, 1320+2ε] U [1440+3ε, 1500+2ε] U [1620+3ε, 1680+2ε] U [1800+3ε, 1860+2ε] U [1980+3ε, 2040+2ε] U [2160+3ε, 2220+2ε] U [2340+3ε, 2400+2ε] U [2520+3ε, 2580+2ε] U [2700+3ε, 2760+2ε] U [2880+3ε, 2940+2ε] U [3060+3ε, 3120+2ε] U [3240+3ε, 3300+2ε] U [3420+3ε, 3480+2ε] U [3600+3ε, 3660+2ε] U [3780+3ε, 3840+2ε] U [3960+3ε, 4020+2ε] U [4140+3ε, 4200+2ε] U [4320+3ε, 4380+2ε] U [4500+3ε, 4560+2ε] U [4680+3ε, 4740+2ε] U [4860+3ε, 4920+2ε] U [5040+3ε, 5100+2ε] U [5220+3ε, 5280+2ε] U [5400+3ε, 5460+2ε] U [5580+3ε, 5640+2ε] U [5760+3ε, 5820+2ε] U [5940+3ε, 6000+2ε] U [6120+3ε, 6180+2ε] U [6300+3ε, 6360+2ε] U [6480+3ε, 6540+2ε] U [6660+3ε, 6720+2ε] U [6840+3ε, 6900+2ε] U [7020+3ε, 7080+2ε] U [7200+3ε, 7260+2ε] U [7380+3ε, 7440+2ε] U [7560+3ε, 7620+2ε] U [7740+3ε, 7800+2ε] U [7920+3ε, 7980+2ε]) repeating every 8100 to the right ... (generated)
+--- script
+# Generated script at time 0, chip at 0 (mode 1).
+# No generator run has completed yet.
+# This script is the one published by the generator run going on, from chip 0, asked by the start-up script (run the generator once) at time 0; the run goes on, and its next script replaces this one.
+# Definitive up to 10.
+
+from fractions import Fraction as F
+
+from constraints import FifteenMinuteBreaks, KeepOn, ScreenBreaks
+from intervals import INF, Interval, IntervalSet, Pos
+from line import Op
+from ratio_plan import cycle, turns
+from region import Region
+from script import (ChangeAction, ChipIn, ConstraintEditAction, Edited, EditAction, Event, Loop, Place, PresenceAbove,
+                    RerunAction, ScoreBelow, Script, ShowLine, Start, TransitionCount, Uncovered, Viewed)
+
+TURNS1 = turns(Region(Pos(1, 1), Pos(1, 1), IntervalSet(), Pos(1), IntervalSet(), Pos(8100), IntervalSet([Interval(Pos(899, 1), Pos(8099, -1), True, True)])), F(0), ['C', 'A', 'B'], {'C': F(60), 'A': F(60), 'B': F(60)}, {'C': F(0), 'A': F(60), 'B': F(60)})
+
+SCRIPT = Script(
+    loops=[
+        Loop(F(1, 20), (
+            Event(trigger=ChipIn(lo=F(0), hi=INF), actions=(ConstraintEditAction(),)),
+            Event(trigger=ChipIn(lo=F(0), hi=F(16200)), actions=(EditAction(ops=(Op.put('C', TURNS1['C']), Op.put('A', TURNS1['A']), Op.put('B', TURNS1['B']))),)),
+            Event(trigger=ChipIn(lo=F(10), hi=INF), actions=(RerunAction(),)),
+        )),
+    ],
+    on_edit=(
+        Event(trigger=Edited(only=True), actions=(RerunAction(),)),
+    ),
+    on_view=(
+        Event(trigger=Viewed(), actions=(ShowLine(),)),
+    ),
+    frame=[
+        Place(item='world', shape='line'),
+    ],
+    covered=[(Pos(0), Pos(10), None)],
+    live=True,
+    constraints=(FifteenMinuteBreaks('Break15', 'NoScreen', length=F(900), pause=F(7200)),),
+)
+

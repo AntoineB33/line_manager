@@ -43,6 +43,8 @@ Triggers
   an element that a rule, a constraint or a problem of the generator reads.
 - Viewed(): the view moves or is resized.
 - Uncovered(): true while the chip is where the script does not apply the mode rules.
+- ChipOn(K, mode): true while the chip is in an interval of K (not where it starts) and (if mode is not None) the mode at the chip is `mode`; its actions fire at each
+  instant it is true (e.g. a break the chip pushes: placed again from the chip at each).
 - PresenceAbove(K, v, y, H, lo, hi, mode): true while the presence ratio of K at v% on
   (chip, chip + H] is above y, the chip in [lo, hi) and the mode at the chip `mode`.
 - ScoreBelow(z): true while the optimization score (`score`) is below z.
@@ -50,9 +52,10 @@ Triggers
 A line with Edited is in s_u and one with Viewed in s_v, wherever it is written.
 
 Actions
-- EditAction(ops): an edit of the line on exact intervals (continuous: any interval
-  of the real line, not a grid), resolved by the fixed rules of resolve.py and applied
-  only if it respects N1 and N2 (guards.py).
+- EditAction(ops, from_chip): an edit of the line on exact intervals (continuous: any
+  interval of the real line, not a grid), resolved by the fixed rules of resolve.py and
+  applied only if it respects N1 and N2 (guards.py); with `from_chip`, its intervals are
+  written from the chip (0: the chip's position where it fires).
 - ConstraintEditAction(): the edits the script's constraints ask for where it fires, on
   the line as it is. Then as EditAction.
 - RerunAction(): runs the rules generator again; its new script replaces this one.
@@ -119,6 +122,35 @@ class ChipIn:
 
 
 @dataclass(frozen=True)
+class ChipOn:
+    """True while the chip is in an interval of `kind`, or one is less than `within` after
+    it, i.e. on [chip, chip + within) (within 0: the chip in it, not where it starts), and
+    (if `mode` is not None) the mode at the chip is `mode`. Its actions fire at each
+    instant it is true: e.g. with within=F(10) and its edit putting the piece at
+    (chip + 10, chip + 910], the chip keeps it 10 ahead as it goes."""
+    kind: str
+    mode: str | None = None
+    within: Num | None = None  # (None: 0)
+
+    def holds(self, state, chip, mode: str) -> bool:
+        if self.mode is not None and self.mode != mode:
+            return False
+        from intervals import Pos
+        from region import Region
+        p = chip if isinstance(chip, Pos) else Pos(chip)
+        pres = state.line.presence(self.kind)
+        d = Fraction(self.within or 0)
+        if not d:
+            return pres.contains(p)
+        return pres.contains(p) or not (pres & Region.of(Interval(p, p + d, False, False))).is_empty()
+
+    def __str__(self) -> str:
+        d = Fraction(self.within or 0)
+        where = f"the chip is on {self.kind}" if not d else f"{self.kind} is less than {_fmt(d)} after the chip"
+        return where + (f" and mode is {self.mode}" if self.mode is not None else "")
+
+
+@dataclass(frozen=True)
 class TransitionCount:
     k: int
 
@@ -181,9 +213,10 @@ class ScoreBelow:
 @dataclass(frozen=True)
 class EditAction:
     ops: tuple[Op, ...]
+    from_chip: bool = False  # the intervals are written from the chip where it fires
 
     def __str__(self) -> str:
-        return ", ".join(map(str, self.ops))
+        return ("from the chip, " if self.from_chip else "") + ", ".join(map(str, self.ops))
 
 
 @dataclass(frozen=True)

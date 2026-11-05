@@ -76,7 +76,7 @@ from region import Region
 from ratio_plan import Fill, NoBestScript, Plan, check_best_exists  # noqa: F401 (NoBestScript: for the callers)
 from resolve import Refused, apply_edit
 from rules import RuleSet
-from script import SHOW, ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Uncovered, Edited, score
+from script import SHOW, ConstraintEditAction, ChipIn, ChipOn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, Uncovered, Edited, score
 from solver import lhs_region
 
 PREDICTIONS = ("scenario", "uniform", "none")
@@ -273,15 +273,16 @@ class RulesGenerator:
         stats = RunStats(budget=budget(self.q), probability_rules=ctx.probability_rules)
         base, keep = state, None
         ops = [o for k in self.constraints for o in k.ops(state, c)]
+        written = self.constraint_events(state, c)  # (the explicit ones: their edits in the script)
         if ops:
-            keep = ConstraintEditAction()
+            keep = ConstraintEditAction() if any(not getattr(k, "explicit", False) for k in self.constraints) else None
             try:
                 base = apply_edit(self.rules, state, ops, GEN)
                 why = check_script_edit(state, base, c)
             except Refused as e:
                 why = str(e)
             if why:
-                base, keep, stats.constraints = state, None, why
+                base, keep, written, stats.constraints = state, None, [], why
         frontiers = self.frontiers(c)
         ctx.forced = []
         if self.fill.ok:  # the best line at once, on the whole line: one stage
@@ -360,7 +361,7 @@ class RulesGenerator:
             done = final and (not self.endless or perfect)
             stats.chosen, stats.key, stats.final, stats.definitive = best_label, best_key, done, INF if perfect else hi
             if published is None or ops or final:  # (a stage that edits nothing publishes the same script)
-                events = ([Event(ChipIn(c, INF), (keep,))] if keep is not None else []) + carried + edits + after_edits
+                events = ([Event(ChipIn(c, INF), (keep,))] if keep is not None else []) + written + carried + edits + after_edits
                 published = Script.of(events, on_view=SHOW, stretches=stretches, covered=covered, origin=c, base=current,
                                       live=live, constraints=self.constraints)
             yield published, replace(stats)
@@ -379,10 +380,31 @@ class RulesGenerator:
                         edits.append(Event(ChipIn(c, INF), (EditAction(tuple(ops)),)))
                     time.sleep(max(0, until - time.perf_counter()))
                     stats.chosen, stats.definitive = best_label, hi
-                    events = ([Event(ChipIn(c, INF), (keep,))] if keep is not None else []) + carried + edits + after_edits
+                    events = ([Event(ChipIn(c, INF), (keep,))] if keep is not None else []) + written + carried + edits + after_edits
                     yield Script.of(events, on_view=SHOW, stretches=stretches, covered=covered, origin=c, base=current, live=live,
                                     constraints=self.constraints), replace(stats)
                     lo = hi
+
+    def constraint_events(self, state: LineState, c) -> list[Event]:
+        """The edits of the constraints written out in the script (those `explicit`), not
+        called while it runs: what they ask for from the chip at c, an edit; and for each
+        AsEarlyAsPossible with a length, in each mode where it cannot be at the chip, what
+        the chip does when it is on one: the pieces from the chip again, written from the
+        chip (the user can change them: (10, 910] instead of (0, 900] moves them on 10)."""
+        from ratio_plan import cycle
+        c = Fraction(c)
+        out = []
+        ops = [o for k in self.constraints if getattr(k, "explicit", False) for o in k.ops(state, c)]
+        if ops:
+            out.append(Event(ChipIn(c, INF), (EditAction(tuple(ops)),)))
+        for k in self.constraints:
+            if getattr(k, "explicit", False) and getattr(k, "length", None) is not None:
+                again = (Op.take(k.kind, Region.of(Interval(0, INF, False, False))),
+                         Op.put(k.kind, cycle(0, k.spacing(), 0, k.length)))
+                # (within 0: the chip in a piece; written out, so that the user sees what to change)
+                out += [Event(ChipOn(k.kind, m, within=Fraction(0)), (EditAction(again, from_chip=True),))
+                        for m in k.pushed_in(self.rules)]
+        return out
 
     def _fill(self, state: LineState, c: Fraction):
         """(the fill's edit or None, the state with the constraints' elements) (ratio_plan.Fill)."""

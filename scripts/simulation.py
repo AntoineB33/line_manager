@@ -52,7 +52,7 @@ from region import Region
 from solver import Line, Undetermined, limited
 from resolve import Refused, apply_edit, flattened, mode_won, owned_by_others, rebuild
 from watch import due, look
-from script import SHOW, ChangeAction, ConstraintEditAction, ChipIn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, ShowLine, Start, TransitionCount, Uncovered, Edited, score
+from script import SHOW, ChangeAction, ConstraintEditAction, ChipIn, ChipOn, EditAction, Event, PresenceAbove, RerunAction, ScoreBelow, Script, ShowLine, Start, TransitionCount, Uncovered, Edited, score
 
 
 EDIT_LIMIT = 2  # the seconds an edit of the user can take: beyond, it is refused
@@ -253,6 +253,7 @@ class Simulation:
         self.flat_to = self.gone_to = None  # the line is simple on the left of the first, empty of the second
         self._edited = False  # the user edited at this instant
         self._read_edited = False  # something that the rules, the constraints or the problems read
+        self.generator_off = False  # switched off by the user (switch_generator): no run
         self._requests = 0
 
     def snapshot(self) -> tuple:
@@ -275,6 +276,9 @@ class Simulation:
 
     def _install(self, t: Fraction, why: str) -> None:
         c = self.chip.position(t)
+        if self.generator_off:  # (switched off by the user: the script in place goes on as it is)
+            self.log.refuse((t, "script", f"the generator is switched off: not run ({why})"))
+            return
         if self.background:
             self._requests += 1
             self.request = RunRequest(self._requests, t, c, why, self.state, self.known(t), self.gen, previous=self.script)
@@ -305,8 +309,11 @@ class Simulation:
         x = req.chip + PACE
         constraints = tuple(getattr(self.gen, "constraints", ())) or s.constraints
         events = [e for e in s.events if not isinstance(e.trigger, Start)]
-        if constraints and not any(isinstance(a, ConstraintEditAction) for e in events for a in e.actions):
+        hidden = [k for k in constraints if not getattr(k, "explicit", False)]
+        if hidden and not any(isinstance(a, ConstraintEditAction) for e in events for a in e.actions):
             events.insert(0, Event(ChipIn(req.chip, INF), (ConstraintEditAction(),)))
+        written = getattr(self.gen, "constraint_events", lambda *_: [])(self.state, req.chip)
+        events = [e for e in written if str(e) not in {str(x) for x in events}] + events
         if not any(isinstance(e.trigger, Edited) and any(isinstance(a, RerunAction) for a in e.actions) for e in events):
             # an edit of the user while this run goes on runs the generator again (the run,
             # from the line before it, is cancelled): the start-up script had no such rule
@@ -460,7 +467,7 @@ class Simulation:
         if isinstance(trig, ChipIn):
             c = self.chip.position(t)
             return trig.holds(c, self.modes.mode_at(c))
-        if isinstance(trig, PresenceAbove):
+        if isinstance(trig, (PresenceAbove, ChipOn)):
             c = self.chip.position(t)
             return trig.holds(self.state, c, self.modes.mode_at(c))
         if isinstance(trig, ScoreBelow):
@@ -518,6 +525,18 @@ class Simulation:
     def _alone(self, ops) -> bool:
         kinds = getattr(self.gen, "kinds_read", lambda: None)()
         return kinds is not None and not any(o.kind in kinds for o in ops)
+
+    def switch_generator(self, on: bool) -> None:
+        """Off: no call runs the generator (the script's, the user's edits, new rules), the run
+        going on is dropped, and the script in place goes on as it is. On again: it runs once,
+        from the line as it is (it may have changed meanwhile)."""
+        if on == (not self.generator_off):
+            return
+        self.generator_off = not on
+        if self.generator_off:
+            self.request = None
+        else:
+            self._install(self.t, "generator on")
 
     def _constraints(self) -> tuple:
         return self.script.constraints or getattr(self.gen, "constraints", ())
@@ -654,8 +673,8 @@ class Simulation:
                 (script.true.add if now else script.true.discard)(key)
                 if isinstance(ev.trigger, TransitionCount):
                     rising = now and key not in script.fired
-                elif isinstance(ev.trigger, Edited):
-                    rising = now  # at each edit
+                elif isinstance(ev.trigger, (Edited, ChipOn)):
+                    rising = now  # at each edit; at each instant the chip is on it
                 if not rising:
                     continue
                 script.fired.add(key)
@@ -663,10 +682,15 @@ class Simulation:
                     self._edited = False  # this edit is answered
                 for a in ev.actions:
                     if isinstance(a, EditAction):
-                        self._edit(t, list(a.ops), GEN, "script", self._frozen)
+                        ops = list(a.ops)
+                        if a.from_chip:  # (written from the chip: where it fires)
+                            c = self.chip.position(t)
+                            ops = [Op(o.action, o.kind, o.region.shift(c), o.value) for o in ops]
+                        self._edit(t, ops, GEN, "script", self._frozen)
                     elif isinstance(a, ConstraintEditAction):
                         c = self.chip.position(t)
-                        self._edit(t, [o for k in script.constraints for o in k.ops(self.state, c)], GEN, "script")
+                        hidden = [k for k in script.constraints if not getattr(k, "explicit", False)]
+                        self._edit(t, [o for k in hidden for o in k.ops(self.state, c)], GEN, "script")
                     elif isinstance(a, RerunAction):
                         rerun = ("start" if a.first else "user edit" if isinstance(ev.trigger, Edited)
                                  else "uncovered" if isinstance(ev.trigger, Uncovered) else "script")

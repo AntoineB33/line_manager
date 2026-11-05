@@ -1,0 +1,90 @@
+written 2026-11-05 16:55:00, process 24404
+time 0, chip at 0, mode 1, speed 1
+no optimization problem
+constraints (from the chip): keep Break15 as early as possible, 900 each, keep Break15 at least 7200 after 900 or more of NoScreen
+the generator searches 16200 units after the chip (its window)
+allocated resources quantity 0.5, 0 generator runs
+selectors: computer unlocked, phone unlocked
+modes: 1 on [0, 0)
+--- rules
+1. Break15 → NoScreen
+2. NoScreen → NoComputerUnlocked or NotOnComputer & NoPhoneUnlocked or NotOnPhone
+3. NotOnComputer → no NoComputerUnlocked
+4. NotOnPhone → no NoPhoneUnlocked
+5. mode 1 → no NoScreen
+6. mode 2 → NoScreen & NoComputerUnlocked & NoPhoneUnlocked
+7. mode 3 → NoScreen & NotOnComputer or NotOnPhone
+--- edits
+no edit
+--- line
+Break15 100% on (0, 1] U ((1, 900] U (8100, 8101]) repeating every 8100 to the right ...
+NoComputerUnlocked 100% on (0, 900] U (8100, 9000] repeating every 8100 to the right ...
+NoPhoneUnlocked 100% on (0, 900] U (8100, 9000] repeating every 8100 to the right ...
+NoScreen 100% on (0, 1] U ((1, 900] U (8100, 8101]) repeating every 8100 to the right ...
+--- claims
+Break15 100% on (0, 1] U ((1, 900] U (8100, 8101]) repeating every 8100 to the right ... (generated)
+--- script
+# Generated script at time 0, chip at 0 (mode 1).
+# No generator run has completed yet.
+# Changed by the user at time 0.
+
+import sys
+
+sys.path.insert(0, 'c:\\code\\line_manager\\scripts')  # (scripts/: this file runs on its own too)
+
+from fractions import Fraction as F
+
+from constraints import AsEarlyAsPossible, Breaks, KeepOn, MinimumGap, ScreenBreaks
+from intervals import INF, Interval, IntervalSet, Pos
+from line import Op
+from ratio_plan import cycle, turns
+from region import Region
+from resolve import Record
+from solver import Line
+from script import (ChangeAction, ChipIn, ChipOn, ConstraintEditAction, Edited, EditAction, Event, Loop, Place, PresenceAbove,
+                    RerunAction, ScoreBelow, Script, ShowLine, Start, TransitionCount, Uncovered, Viewed)
+from script_python import claims, line_state
+
+CONSTRAINTS = (AsEarlyAsPossible('Break15', length=F(900)), MinimumGap('Break15', F(7200), after='NoScreen', at_least=F(900)))
+R1 = cycle(F(0), F(8100), F(0), F(900))
+R2 = cycle(F(0), F(8100), F(10), F(910))
+BASE = line_state(claims(pos={'Break15': {(F(100), 'generated'): R1}}), Line({'NoComputerUnlocked': {F(100): Region(Pos(0, 1), Pos(900, 1), IntervalSet([Interval(Pos(0, 1), Pos(900), True, True)]), Pos(1), IntervalSet(), Pos(8100), IntervalSet([Interval(Pos(7200), Pos(8100, -1), True, True)]))}, 'Break15': {F(100): (R1 | Region.of(IntervalSet()))}, 'NoScreen': {F(100): Region(Pos(0, 1), Pos(1, 1), IntervalSet([Interval(Pos(0, 1), Pos(1), True, True)]), Pos(1), IntervalSet(), Pos(8100), IntervalSet([Interval(Pos(0), Pos(899, -1), True, True), Interval(Pos(8099), Pos(8100, -1), True, True)]))}, 'NoPhoneUnlocked': {F(100): Region(Pos(0, 1), Pos(900, 1), IntervalSet([Interval(Pos(0, 1), Pos(900), True, True)]), Pos(1), IntervalSet(), Pos(8100), IntervalSet([Interval(Pos(7200), Pos(8100, -1), True, True)]))}}))  # the line the run compiled from, its own edits made
+
+E1 = Event(trigger=ChipIn(lo=F(0), hi=INF), actions=(EditAction(ops=(Op.put('Break15', R1),)),))
+E2 = Event(trigger=ChipOn(kind='Break15', mode='1', within=F(0)), actions=(EditAction(ops=(Op.take('Break15', Region.of(Interval(Pos(0, 1), INF, True, False))), Op.put('Break15', R2)), from_chip=True),))
+E3 = Event(trigger=ChipIn(lo=F(0), hi=INF), actions=(EditAction(ops=(Op.put('Break15', R1),)),))
+E4 = Event(trigger=ChipOn(kind='Break15', mode='1', within=F(0)), actions=(EditAction(ops=(Op.take('Break15', Region.of(Interval(Pos(0, 1), INF, True, False))), Op.put('Break15', R1)), from_chip=True),))
+E5 = Event(trigger=ChipIn(lo=F(675), hi=INF), actions=(RerunAction(),))
+E6 = Event(trigger=Edited(only=True), actions=(RerunAction(),))
+E7 = Event(trigger=Viewed(), actions=(ShowLine(),))
+
+SCRIPT = Script(
+    loops=[  # S_f (with s_f, `frame` below): each loop runs its events every `period` seconds
+        Loop(F(1, 20), (
+            E1,
+            E2,
+            E3,
+            E4,
+            E5,
+        )),
+    ],
+    on_edit=(  # s_u: at each edit of the user
+        E6,
+    ),
+    on_view=(  # s_v: when the view moves or is resized
+        E7,
+    ),
+    frame=[  # s_f: at each frame (s_v makes it again)
+        Place(item='world', shape='line'),
+    ],
+    frame_given=0,  # (s_f written by the user, until s_v shows the line again)
+    covered=[(Pos(0), Pos(F(1310581, 81)), None), (Pos(0), Pos(2025), '1')],  # (from, to, mode): where the mode rules are compiled ahead
+    live=True,  # the mode rules apply at the chip elsewhere too
+    constraints=CONSTRAINTS,  # what the script keeps after the chip
+    origin=F(0),  # the chip's position the run compiled from
+    base=BASE,
+    true={str(E1)},  # the events true when last read
+    fired={str(E1)},  # and those that fired
+    since=0,  # the mode transitions since it was put in place
+)
+

@@ -135,9 +135,17 @@ def _built(r: Region, src) -> Built:
     return out
 
 
-def cycle(c, P, lo, hi) -> Region:
-    """(c + lo + nP, c + hi + nP] for every n >= 0, 0 <= lo < hi <= P: a kind's turn in a
-    cycle of period P from c."""
+def cycle(c: Fraction, P: Fraction, lo: Fraction, hi: Fraction) -> Region:
+    """The positions (c + lo + nP, c + hi + nP] for every n >= 0: a piece repeating forever.
+
+    c: where the cycle starts (nothing before it).
+    P: its period, the distance from one piece to the next.
+    lo, hi: the piece within each period, from c + lo (excluded) to c + hi (included);
+        0 <= lo < hi <= P.
+
+    E.g. cycle(F(0), F(8100), F(10), F(910)): (10, 910], (8110, 9010], (16210, 17110], ...
+    In an edit written from the chip (EditAction(..., from_chip=True)), the chip's
+    position is added to them where it fires."""
     from script_python import py
     return _built(_cycle(Fraction(c), Fraction(P), Fraction(lo), Fraction(hi)), f"cycle({py(Fraction(c))}, {py(Fraction(P))}, "
                   f"{py(Fraction(lo))}, {py(Fraction(hi))})")

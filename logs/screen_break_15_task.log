@@ -1,0 +1,162 @@
+2026-11-04 19:11:03 === session started, process 9296 ===
+2026-11-04 19:11:03 Press Play to move the chip. Type "help" below for the commands.
+2026-11-04 19:11:11 [chip 0.000, mode 1] generator at chip 0 (script): prediction=scenario, placement=spread4
+2026-11-04 19:25:04 === session started, process 26716 ===
+2026-11-04 19:25:04 Press Play to move the chip. Type "help" below for the commands.
+2026-11-04 19:25:12 [chip 0.000, mode 1] generator at chip 0 (script): prediction=scenario, placement=spread4
+2026-11-04 20:12:53 === session started, process 37740 ===
+2026-11-04 20:12:53 Press Play to move the chip. Type "help" below for the commands.
+2026-11-04 20:15:01 === session started, process 12136 ===
+2026-11-04 20:15:01 Press Play to move the chip. Type "help" below for the commands.
+2026-11-04 20:29:48 === session started, process 16980 ===
+2026-11-04 20:29:48 Press Play to move the chip. Type "help" below for the commands.
+2026-11-04 20:41:46 === session started, process 42812 ===
+2026-11-04 20:41:46 Press Play to move the chip. Type "help" below for the commands.
+2026-11-04 20:42:00 [chip 0.000, mode 1] generator at chip 0 (start): prediction=scenario, placement=spread4
+2026-11-04 20:43:15 [chip 0.000, mode 1] window closed
+2026-11-04 22:29:18 === session started, process 16236 ===
+2026-11-04 22:29:18 Press Play to move the chip. Type "help" below for the commands.
+2026-11-04 22:30:14 === session started, process 13328 ===
+2026-11-04 22:30:14 Press Play to move the chip. Type "help" below for the commands.
+2026-11-04 22:30:17 [chip 0.000, mode 1] window closed
+2026-11-04 22:33:42 === session started, process 17320 ===
+2026-11-04 22:33:42 Press Play to move the chip. Type "help" below for the commands.
+2026-11-04 22:33:53 [chip 0.000, mode 1] generator at chip 0 (start): prediction=scenario, placement=spread4
+2026-11-04 22:34:57 [chip 0.000, mode 1] window closed
+2026-11-04 23:49:18 === session started, process 37220 ===
+2026-11-04 23:49:18 Press Play to move the chip. Type "help" below for the commands.
+2026-11-04 23:49:24 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-04 23:49:29 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-04 23:49:35 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-04 23:49:40 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-04 23:49:46 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-04 23:49:51 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-04 23:49:57 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-04 23:50:04 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-04 23:50:12 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-04 23:50:17 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-04 23:50:23 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-04 23:50:28 === session started, process 24424 ===
+2026-11-04 23:50:28 Press Play to move the chip. Type "help" below for the commands.
+2026-11-04 23:50:30 [chip 0.000, mode 1] window closed
+2026-11-04 23:55:38 === session started, process 28356 ===
+2026-11-04 23:55:38 Press Play to move the chip. Type "help" below for the commands.
+2026-11-04 23:55:43 [chip 0.000, mode 1] window closed
+2026-11-04 23:56:00 === session started, process 2796 ===
+2026-11-04 23:56:00 Press Play to move the chip. Type "help" below for the commands.
+2026-11-04 23:56:06 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-04 23:56:10 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-04 23:56:15 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-04 23:56:17 [chip 0.000, mode 1] window closed
+2026-11-04 23:57:10 === session started, process 11520 ===
+2026-11-04 23:57:10 Press Play to move the chip. Type "help" below for the commands.
+2026-11-04 23:57:33 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-04 23:57:35 [chip 0.000, mode 1] window closed
+2026-11-05 02:20:59 === session started, process 28664 ===
+2026-11-05 02:20:59 Press Play to move the chip. Type "help" below for the commands.
+2026-11-05 02:21:09 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 02:21:19 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 02:21:20 [chip 0.000, mode 1] window closed
+2026-11-05 02:21:26 === session started, process 33496 ===
+2026-11-05 02:21:26 Press Play to move the chip. Type "help" below for the commands.
+2026-11-05 02:21:28 [chip 0.000, mode 1] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_b4w0cuck.txt
+2026-11-05 02:21:36 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 02:21:46 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 02:21:55 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 02:22:02 [chip 0.000, mode 1] window closed
+2026-11-05 02:22:36 === session started, process 39064 ===
+2026-11-05 02:22:36 Press Play to move the chip. Type "help" below for the commands.
+2026-11-05 02:22:46 [chip 0.000, mode 1] window closed
+2026-11-05 03:17:08 === session started, process 26536 ===
+2026-11-05 03:17:08 Press Play to move the chip. Type "help" below for the commands.
+2026-11-05 03:17:14 [chip 0.000, mode 1] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_h2facdix.txt
+2026-11-05 03:17:21 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 03:17:31 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 03:17:42 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 03:17:49 [chip 0.000, mode 1] window closed
+2026-11-05 12:01:51 === session started, process 27024 ===
+2026-11-05 12:01:51 Press Play to move the chip. Type "help" below for the commands.
+2026-11-05 12:02:00 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:02:09 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:02:17 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:02:26 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:02:34 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:02:42 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:02:51 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:02:59 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:03:04 [chip 0.000, mode 1] window closed
+2026-11-05 12:03:12 === session started, process 41012 ===
+2026-11-05 12:03:12 Press Play to move the chip. Type "help" below for the commands.
+2026-11-05 12:03:21 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:03:28 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:03:37 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:03:45 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:03:52 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:04:01 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:04:09 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:04:17 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:04:25 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:04:31 [chip 0.000, mode 1] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_n9eq8on2.txt
+2026-11-05 12:04:33 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:04:44 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:04:54 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:05:05 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:05:16 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:05:26 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:05:39 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:05:49 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:06:01 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:06:12 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:14:10 === session started, process 2692 ===
+2026-11-05 12:14:10 Press Play to move the chip. Type "help" below for the commands.
+2026-11-05 12:14:11 [chip 0.000, mode 1] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_lt6wfdwc.txt
+2026-11-05 12:14:22 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:14:32 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:14:41 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:14:51 [chip 0.000, mode 1] play
+2026-11-05 12:14:53 [chip 0.050, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:14:55 [chip 3.360, mode 1] pause
+2026-11-05 12:14:55 [chip 3.360, mode 1] paused: the step being computed is undone
+2026-11-05 12:15:07 [chip 3.360, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:15:22 [chip 3.360, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:15:34 [chip 3.360, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:15:46 [chip 3.360, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:16:01 [chip 3.360, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:16:12 [chip 3.360, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:16:23 [chip 3.360, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:16:35 [chip 3.360, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:16:47 [chip 3.360, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:16:58 [chip 3.360, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 12:17:10 [chip 3.360, mode 1] window closed
+2026-11-05 13:30:42 === session started, process 25768 ===
+2026-11-05 13:30:42 Press Play to move the chip. Type "help" below for the commands.
+2026-11-05 13:30:55 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:31:04 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:31:13 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:31:25 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:31:35 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:31:46 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:31:58 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:32:08 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:32:18 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:32:27 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:32:41 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:32:51 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:33:02 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:33:14 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:33:27 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:33:41 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:33:54 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:34:07 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:34:16 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:34:28 [chip 0.000, mode 1] the generator run failed: when serializing tuple item 0
+2026-11-05 13:34:29 [chip 0.000, mode 1] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_i83fm22v.txt
+2026-11-05 13:34:33 [chip 0.000, mode 1] window closed
+2026-11-05 13:46:24 === session started, process 17648 ===
+2026-11-05 13:46:24 Press Play to move the chip. Type "help" below for the commands.
+2026-11-05 13:46:25 [chip 0.000, mode 1] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_ltdwc06_.txt
+2026-11-05 13:46:29 [chip 0.000, mode 1] window closed
+2026-11-05 14:09:42 === session started, process 23048 ===
+2026-11-05 14:09:42 Press Play to move the chip. Type "help" below for the commands.
+2026-11-05 14:09:44 [chip 0.000, mode 1] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_eyu2n_lm.txt
+2026-11-05 14:09:47 [chip 0.000, mode 1] window closed

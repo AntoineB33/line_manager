@@ -609,13 +609,15 @@ def _apply(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> LineStat
     mand_pos: dict[str, dict[Fraction, Region]] = {}
     mand_neg: dict[str, Region] = {}
     temp: dict[str, Region] = {}
-    for op in ops:
+    for op in ops:  # (a later operation of the edit wins where an earlier one acts too, as the user's)
         if op.action == "put":
             c1.add_pos(op.kind, op.region, op.value, owner)
             for v in list(mand_pos.get(op.kind, {})):
                 mand_pos[op.kind][v] = mand_pos[op.kind][v] - op.region
             mand_pos.setdefault(op.kind, {})[op.value] = mand_pos.get(op.kind, {}).get(op.value, EMPTY) | op.region
             mand_neg[op.kind] = mand_neg.get(op.kind, EMPTY) - op.region
+            if op.kind in temp:  # (taken off before: put again here)
+                temp[op.kind] = temp[op.kind] - op.region
         elif op.action == "put_no":
             c1.add_neg(op.kind, op.region, owner)
             mand_neg[op.kind] = mand_neg.get(op.kind, EMPTY) | op.region
@@ -624,6 +626,8 @@ def _apply(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> LineStat
         elif op.action == "take":
             c1.remove_pos(op.kind, op.region)
             temp[op.kind] = temp.get(op.kind, EMPTY) | op.region
+            for v in list(mand_pos.get(op.kind, {})):  # (put before: taken off here)
+                mand_pos[op.kind][v] = mand_pos[op.kind][v] - op.region
         elif op.action == "take_no":
             c1.remove_neg(op.kind, op.region)
         else:

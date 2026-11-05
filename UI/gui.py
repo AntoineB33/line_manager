@@ -36,6 +36,7 @@ the simulation's thread. `run` also writes what happens and the state in logs/
 from __future__ import annotations
 
 import os
+import shutil
 import queue
 import subprocess
 import sys
@@ -59,6 +60,27 @@ CONTROL = 0x4  # in the state of an event
 MIN_SPAN, MAX_SPAN = F(3), F(3 * 2 ** 17)  # the positions the window can show
 MIN_LEFT = 70  # (the captions on the left may need more: `App._edge`)
 _tick = tick
+
+
+PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GENERATED = os.path.join(PROJECT, "generated_scripts")  # the files of the generated script button
+
+
+def open_in_editor(path: str) -> None:
+    """The file in VS Code if it is there (its `code` command), with the project's folder,
+    whose settings let it find what the file imports; else the system's editor (on Windows
+    "edit", not "open": that would run a .py file; else Notepad)."""
+    code = shutil.which("code")
+    if code is not None:
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
+        subprocess.Popen([code, PROJECT, path], creationflags=flags)
+    elif sys.platform.startswith("win"):
+        try:
+            os.startfile(path, "edit")  # noqa: S606 (the user's own editor)
+        except OSError:
+            subprocess.Popen(["notepad.exe", path])
+    else:
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", path])
 
 
 def keeps_frame(script, shown: int) -> bool:
@@ -115,6 +137,8 @@ class App:
         self.speed_label = tk.Label(bar, width=20, anchor="w")
         self.speed_label.pack(side="left", padx=6)
         tk.Button(bar, text="Generated script", command=self.open_script).pack(side="left", padx=(16, 0))
+        self.generator_button = tk.Button(bar, text="Generator: on", width=13, command=self.switch_generator)
+        self.generator_button.pack(side="left", padx=(8, 0))
         self.mode_buttons: dict[str, tk.Button] = {}
         self.selector_buttons: dict[tuple[int, str], tk.Button] = {}  # (selector, option)
         self.button_color = self.play.cget("background")
@@ -159,6 +183,13 @@ class App:
             self.wall = None
         self.play.configure(text="▶ Play" if self.paused else "❚❚ Pause")
         self.journal("pause" if self.paused else "play")
+
+    def switch_generator(self) -> None:
+        """The Generator button: no run of the rules generator while it says off."""
+        off = self.generator_button.cget("text").endswith("on")
+        self.generator_button.configure(text="Generator: off" if off else "Generator: on")
+        self.post(lambda: self.s.switch_generator("off" if off else "on"))
+        self.journal("generator off" if off else "generator on")
 
     def speed(self, factor: F) -> None:
         def change():
@@ -233,20 +264,17 @@ class App:
             return
         # a new file at each click: an editor that has an older one open cannot show it instead
         # the script itself: a Python file whose SCRIPT is it (script_python.py)
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="line_manager_generated_script_", suffix=".py",
+        # in the project (generated_scripts/, not in git): VS Code finds what it imports there
+        # (.vscode/settings.json), so Ctrl+click and hovering work on cycle, turns, Op, ...
+        os.makedirs(GENERATED, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="generated_script_", suffix=".py", dir=GENERATED,
                                          delete=False) as f:
             f.write(self.snap["script"])
             path = f.name
         self.opened[path] = [self.snap["script"], self.snap["script_object"]]
         self.log(f"generated script written to {path}")
         try:
-            if sys.platform.startswith("win"):
-                try:  # to edit it ("open" would run a .py file)
-                    os.startfile(path, "edit")  # noqa: S606 (the user's own editor)
-                except OSError:
-                    subprocess.Popen(["notepad.exe", path])
-            else:
-                subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", path])
+            open_in_editor(path)
         except OSError as e:
             self.log(f"cannot open {path}: {e}")
 
@@ -402,7 +430,7 @@ class App:
         self.snap = {"t": s.sim.t, "x": s.position, "mode": s.mode(), "speed": s.speed, "line": s.sim.state.line,
                      "claims": s.sim.state.claims, "kinds": s.kinds(), "reruns": reruns, "other": other,
                      "past": s.past_runs(), "modes": s.known_modes(), "script": s.script_text(), "script_object": s.sim.script,
-                     "mode_names": list(s.mode_names), "running": s.running() is not None, "ahead": s.sim.ahead(), "wall": self.wall, "shown": s.sim.shown,
+                     "mode_names": list(s.mode_names), "running": s.running() is not None, "generator_off": s.sim.generator_off, "ahead": s.sim.ahead(), "wall": self.wall, "shown": s.sim.shown,
                      "selection": s.selection() if s.selectors else None}
         if self.file is not None and self.file.state_due():
             self.file.state(s.state_text())
@@ -535,6 +563,9 @@ class App:
             self.view.move(p, sn["script_object"].frame)  # s_f
             if self.shown is not None:
                 self.shown = (p, *self.shown[1:])
+        label = "Generator: off" if sn.get("generator_off") else "Generator: on"  # (the command too)
+        if self.generator_button.cget("text") != label:
+            self.generator_button.configure(text=label)
         t = sn["t"] + (p - x) / sn["speed"]
         text = (f"time {float(t):.2f} s    chip at {float(p):.3f}    mode {sn['mode']}    "
                 f"generator runs again: {' or '.join(self.when) if self.when else 'not planned'}"

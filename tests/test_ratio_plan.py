@@ -322,6 +322,16 @@ class SearchTest(unittest.TestCase):
                 self.assertLess(took, 10)
 
 
+class LaterOperationTest(unittest.TestCase):
+    def test_in_an_edit_of_the_generator_a_later_operation_wins(self):
+        """Take A off (0, 10], then put A on (2, 4]: A on (2, 4] (as in an edit of the user)."""
+        from intervals import Interval as Iv2
+        rs = parse_rules(["A → B"])
+        s = apply_edit(rs, LineState.empty(), [Op.put("A", Iv2(0, 10, False, True))], "generated")
+        s = apply_edit(rs, s, [Op.take("A", Iv2(0, 10, False, True)), Op.put("A", Iv2(2, 4, False, True))], "generated")
+        self.assertEqual(s.line.presence("A"), Region.of(Iv2(2, 4, False, True)))
+
+
 class AsEarlyAsPossibleTest(unittest.TestCase):
     def place(self, constraints, chip=0):
         g = RulesGenerator(parse_rules([]), [], 0.5, constraints=constraints)

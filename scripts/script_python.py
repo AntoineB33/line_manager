@@ -44,7 +44,7 @@ from ratio_plan import cycle, turns
 from region import Region
 from resolve import Record
 from solver import Line
-from script import (ChangeAction, ChipIn, ConstraintEditAction, Edited, EditAction, Event, Loop, Place, PresenceAbove,
+from script import (ChangeAction, ChipIn, ChipOn, ConstraintEditAction, Edited, EditAction, Event, Loop, Place, PresenceAbove,
                     RerunAction, ScoreBelow, Script, ShowLine, Start, TransitionCount, Uncovered, Viewed)
 from script_python import claims, line_state
 """
@@ -100,6 +100,10 @@ def py(v) -> str:
             return _names.setdefault(src, f"R{sum(n.startswith('R') for n in _names.values()) + 1}")
         if v.is_bounded() or (not v.left and not v.right):
             return f"Region.of({py(v.core)})"
+        if not v.left and v.right == IntervalSet.of(Interval(0, v.pr.x, True, False)):
+            # its intervals, and everything from v.hi on: as intervals (the last to INF)
+            ivs = (v.core | IntervalSet.of(Interval(v.hi, INF, True, False))).intervals
+            return f"Region.of({py(ivs[0])})" if len(ivs) == 1 else f"Region.of(IntervalSet([{', '.join(py(iv) for iv in ivs)}]))"
         return f"Region({py(v.lo)}, {py(v.hi)}, {py(v.core)}, {py(v.pl)}, {py(v.left)}, {py(v.pr)}, {py(v.right)})"
     if isinstance(v, Op):
         name = {"put": "put", "put_no": "put_no", "take": "take", "take_no": "take_no"}[v.action]

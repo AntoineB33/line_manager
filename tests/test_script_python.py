@@ -146,6 +146,99 @@ class PythonTest(unittest.TestCase):
         self.assertEqual(back.base.line.vals, script.base.line.vals)  # (the line as values)
 
 
+class WrittenOutTest(unittest.TestCase):
+    """The constraints' edits are written in the script, not called while it runs: the
+    breaks of screen_break_15_rules.py, and what the chip does when it is on one in mode 1
+    (it pushes it: the breaks again from the chip), which the user can change."""
+
+    def breaks(self, s):
+        return [(iv.lo.x, iv.hi.x) for iv in s.sim.state.line.presence("Break15").on(-100, 20000).intervals]
+
+    def test_the_breaks_and_the_push_are_in_the_script(self):
+        s = example("screen_break_15_rules")
+        text = s.script_text()
+        self.assertIn("R1 = cycle(F(0), F(8100), F(0), F(900))", text)
+        self.assertIn("EditAction(ops=(Op.put('Break15', R1),))", text)
+        self.assertIn("ChipOn(kind='Break15', mode='1', within=F(0))", text)
+        self.assertIn("from_chip=True", text)
+        self.assertNotIn("ConstraintEditAction()),", text)  # (nothing called while it runs)
+
+    def test_the_chip_pushes_a_break_as_the_hand_written_ones(self):
+        out = []
+        for name in ("screen_break_15", "screen_break_15_rules"):
+            s = example(name)
+            s.tick(F(20))  # mode 1: no "no screen" at the chip
+            out.append(self.breaks(s)[:3])
+        self.assertEqual(out[0], out[1])
+        self.assertEqual(out[1][0], (20, 920))
+
+    def test_a_changed_push_moves_it(self):
+        """(10, 910] from the chip instead of (0, 900]: a pushed break is 10 further."""
+        s = example("screen_break_15_rules")
+        text = s.script_text()
+        edited = text.replace("cycle(F(0), F(8100), F(0), F(900))", "cycle(F(0), F(8100), F(10), F(910))")
+        self.assertNotEqual(edited, text)
+        s.edit_script(edited, s.sim.script)
+        s.tick(F(20))
+        self.assertEqual(self.breaks(s)[0], (30, 930))
+
+    def test_the_user_s_example_a_gap_of_10_kept(self):
+        """(chip + 10, chip + 910] instead of (chip, chip + 900], and the push while the break
+        is less than 10 after the chip (within=F(10)): as the chip goes in mode 1, the break
+        stays 10 ahead of it."""
+        s = example("screen_break_15_rules")
+        text = s.script_text()
+        self.assertIn("ChipOn(kind='Break15', mode='1', within=F(0))", text)  # (what to change: written out)
+        edited = text.replace("Op.put('Break15', R1)), from_chip=True)",
+                              "Op.put('Break15', cycle(F(0), F(8100), F(10), F(910)))), from_chip=True)")
+        edited = edited.replace("mode='1', within=F(0))", "mode='1', within=F(10))")
+        s.edit_script(edited, s.sim.script)
+        for _ in range(5):
+            s.tick(F(5))
+            a, b = self.breaks(s)[0]
+            self.assertEqual((a - s.position, b - s.position), (10, 910), s.position)
+
+
+class GeneratorOffTest(unittest.TestCase):
+    """The Generator button / `generator off`: no run, whatever asks for it; on: one run."""
+
+    def test_switched_off_nothing_runs_it(self):
+        from intervals import Interval
+        from line import Op
+        from region import Region
+        s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2),
+                    [Breaks(length=15)])
+        s.sim.background = True
+        s.begin()
+        self.assertIsNotNone(s.sim.request)
+        self.assertIn("switched off", s.command("generator off"))
+        self.assertIsNone(s.sim.request)  # (the run going on: dropped)
+        before = s.sim.script
+        s.sim.edit_now([Op.put("NoScreen", Region.of(Interval.closed(50, 60)))])  # its edit asks for a run
+        self.assertIsNone(s.sim.request)
+        self.assertIs(s.sim.script, before)  # the script in place goes on as it is
+        self.assertTrue(any("switched off" in str(r) for r in s.sim.log.refused))
+        self.assertIn("switched on", s.command("generator on"))
+        self.assertIsNotNone(s.sim.request)  # once, at once
+        self.assertEqual(s.sim.request.why, "generator on")
+        self.assertIn("usage", s.command("generator maybe"))
+        s.close()
+
+
+class EditorTest(unittest.TestCase):
+    def test_the_file_opens_in_vs_code_when_it_is_there(self):
+        try:
+            import gui
+        except ImportError:
+            self.skipTest("no tkinter")
+        with mock.patch.object(gui.shutil, "which", return_value="C:/VS Code/bin/code.CMD"),                 mock.patch.object(gui.subprocess, "Popen") as popen:
+            gui.open_in_editor("C:/tmp/script.py")
+        self.assertEqual(popen.call_args[0][0], ["C:/VS Code/bin/code.CMD", gui.PROJECT, "C:/tmp/script.py"])  # (its settings)
+        with mock.patch.object(gui.shutil, "which", return_value=None), mock.patch.object(gui.subprocess, "Popen") as popen,                 mock.patch.object(gui.os, "startfile", create=True) as startfile:
+            gui.open_in_editor("C:/tmp/script.py")
+        self.assertTrue(startfile.called or popen.called)  # (the system's editor)
+
+
 class FrameTest(unittest.TestCase):
     """s_f (Script.frame) is part of the script: in its text, and what the user writes there
     is drawn until s_v makes it again (when the view moves or is resized)."""

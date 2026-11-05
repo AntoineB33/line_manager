@@ -77,6 +77,10 @@ Edits of the user (several in one edit: separate them with ";")
 The modes (given externally: by MODES in the script, or by you)
   mode <name>              the mode is <name> from the chip on (the mode buttons or the
                            selectors do it too), until the next transition MODES plans
+The rules generator
+  generator off            no run of the generator (the Generator button does it too): the
+                           script in place goes on as it is, the run going on stops
+  generator on             it runs again: once at once, then when the script asks for it
 Information
   line                     the line, exactly
   claims                   what applies of the edits now, and who made it
@@ -419,8 +423,18 @@ class Session:
                    "unrule": lambda: self.remove_rule(rest),
                    "mode": lambda: self.set_mode(rest),
                    "line": lambda: str(self.sim.state.line), "claims": lambda: str(self.sim.state.claims),
-                   "history": self.show_history, "status": self.status}.get(word)
+                   "history": self.show_history, "status": self.status,
+                   "generator": lambda: self.switch_generator(rest)}.get(word)
         return handler() if handler else f"unknown command {word!r}: type help"
+
+    def switch_generator(self, what: str) -> str:
+        """`generator on` / `generator off`."""
+        if what not in ("on", "off"):
+            return "usage: generator on | generator off"
+        if what == "off":
+            self.close()  # (the run going on in its process: stopped)
+        self.sim.switch_generator(what == "on")
+        return "the generator is switched " + ("on: it runs once now" if what == "on" else "off: it does not run")
 
     def add_rule(self, text: str) -> str:
         return self.set_rules(self.texts + [text]) if text else "usage: rule <rule>"

@@ -72,6 +72,8 @@ class MinimumGap:
     chip (`ops`); an edit of the user that it cannot make hold is refused
     (simulation.against_constraints)."""
 
+    explicit = True  # its edits are written in the script (generator.constraint_events)
+
     def __init__(self, kind: str, gap, after: str | None = None, at_least=0) -> None:
         self.kind, self.gap = kind, Fraction(gap)
         self.after, self.at_least = after or kind, Fraction(at_least)
@@ -146,6 +148,8 @@ class AsEarlyAsPossible:
     every 2h15. Without `length`: in the turns of kinds that exclude each other, it comes
     first (ratio_plan), before the kind with the largest target. Any kind: nothing in it is
     about breaks."""
+
+    explicit = True  # its edits are written in the script (generator.constraint_events)
 
     def __init__(self, kind: str, length=None) -> None:
         self.kind = kind
@@ -232,6 +236,13 @@ class AsEarlyAsPossible:
         while not (dyn & Region.of(Interval._mk(t, t + L))).is_empty():  # (past `end`: the gaps of the last ones)
             t = (dyn & Region.of(Interval._mk(t, t + L))).on(t, t + L + 1).intervals[0].hi + EPS
         spacing = L + max((g.gap for g in counted), default=Fraction(0))
+        starts = [a for a, _ in placed] + [t]
+        if spacing != L and all(b - a == Pos(spacing) for a, b in zip(starts, starts[1:])):
+            # one every `spacing` from the first: that pattern, written as such (ratio_plan.cycle)
+            from ratio_plan import cycle
+            s0 = starts[0] - EPS  # (its pieces (s, s + L]: from the position before its first)
+            if s0.k == 0:
+                return cycle(s0.x, spacing, 0, L) & after
         core = IntervalSet([Interval._mk(a, b) for a, b in placed])
         first = min([a for a, _ in placed] + [t])
         if spacing == L:  # nothing apart: one after the other, everywhere from t
@@ -240,7 +251,23 @@ class AsEarlyAsPossible:
                       IntervalSet._sorted([Interval._mk(ZERO, Pos(L))])) & after
 
     def targets(self, state: LineState, c) -> dict:
-        return {} if self.length is None else {self.kind: self.place(state, c)}
+        return {}  # (where the chip pushes it: written in the script, generator.constraint_events)
+
+    def spacing(self):
+        """From the start of one piece to the start of the next, nothing else in the way."""
+        counted = [g for g in self._gaps() if self._counts(g) and self.length >= g.at_least]
+        return self.length + max((g.gap for g in counted), default=Fraction(0))
+
+    def pushed_in(self, rules) -> list[str]:
+        """The modes in which it cannot be at the chip: a mode rule that rules it out there,
+        or a kind it comes with ("mode 1 → no NoScreen", a break coming with "no screen")."""
+        out = []
+        for r in rules.mode_rules:
+            for o in r.lits():
+                if o.negated and o.where.is_point and o.where.lo == ZERO and (
+                        o.kind == self.kind or self._counts(MinimumGap(self.kind, 1, after=o.kind))):
+                    out.append(r.mode)
+        return sorted(set(out))
 
     def ops(self, state: LineState, c: Fraction) -> list[Op]:
         if self.length is None:

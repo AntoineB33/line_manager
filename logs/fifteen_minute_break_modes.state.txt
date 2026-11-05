@@ -1,0 +1,43 @@
+written 2026-11-04 02:05:21, process 30832
+time 1187/50, chip at 1187/50, mode 1, speed 1
+presence ratio, weight 1, horizon 14400: 
+minimum length, weight 1, horizon 14400: 
+constraints (from the chip): keep Break15 on (chip, chip + 900] with NoScreen, as early as possible, none within 7200 after as much NoScreen
+allocated resources quantity 0.5, 1 generator runs
+selectors: computer unlocked, phone locked
+modes: 1 on [0, 69/20), 3 on [69/20, 207/20), 2 on [207/20, 2777/200), 1 on [2777/200, 1187/50)
+--- rules
+1. Break15 → NoScreen
+2. NoScreen → NoComputerUnlocked or NotOnComputer & NoPhoneUnlocked or NotOnPhone
+3. NotOnComputer → no NoComputerUnlocked
+4. NotOnPhone → no NoPhoneUnlocked
+5. mode 1 → no NoScreen
+6. mode 2 → NoScreen & NoComputerUnlocked & NoPhoneUnlocked
+7. mode 3 → NoScreen & NotOnComputer or NotOnPhone
+--- edits
+no edit
+--- line
+Break15 100% on [69/20, 2777/200) U (1187/50, 307497/2000-4ε] U ([307497/2000-3ε, 46187/50+ε] U (406187/50, 16507497/2000-4ε]) repeating every 8100 to the right ...
+NoComputerUnlocked 100% on [207/20, 2777/200) U (1187/50, 46187/50+ε] U (406187/50, 451187/50+ε] repeating every 8100 to the right ...
+NoPhoneUnlocked 100% on [69/20, 2777/200) U (1187/50, 46187/50+ε] U (406187/50, 451187/50+ε] repeating every 8100 to the right ...
+NoScreen 100% on [69/20, 2777/200) U (1187/50, 307497/2000-4ε] U ([307497/2000-3ε, 46187/50+ε] U (406187/50, 16507497/2000-4ε]) repeating every 8100 to the right ...
+NotOnComputer 100% on [69/20, 207/20)
+--- claims
+Break15 100% on [69/20, 2777/200) U (1187/50, 1237/50] U ((1237/50, 46187/50+ε] U (406187/50, 406237/50]) repeating every 8100 to the right ... (generated)
+NotOnComputer 100% on [69/20, 207/20) (mode)
+no NoScreen on (0, 69/20) U [2777/200, 1187/50] (mode)
+--- script
+Generated script at time 1187/50, chip at 1187/50 (mode 1).
+Last generator run: from chip 0 (start), completed at time 0; it chose no-op.
+Definitive up to 14400.
+
+keep Break15 on (chip, chip + 900] with NoScreen, as early as possible, none within 7200 after as much NoScreen
+every 1/20 s:
+  if the chip is at or after 0, then satisfy the constraints.
+  if the chip is at or after 600, then run the generator again.
+  if the chip is in [0, 1035361/72], then apply the mode rules.
+  if the chip is in [0, 1800] and mode is 1, then apply the mode rules.
+  elsewhere, apply the mode rules.
+if the user edits what the rules, the constraints or the problems read, then run the generator again.
+if the view moves or is resized, then show the line.
+

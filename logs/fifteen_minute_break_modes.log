@@ -1,0 +1,152 @@
+2026-10-31 23:01:48 === session started, process 22180 ===
+2026-10-31 23:01:48 Press Play to move the chip. Type "help" below for the commands.
+2026-10-31 23:24:42 === session started, process 3388 ===
+2026-10-31 23:24:42 Press Play to move the chip. Type "help" below for the commands.
+2026-10-31 23:24:45 [chip 0.051, mode 1] play
+2026-10-31 23:24:47 [chip 2.059, mode 1] computer fake locked: mode 1 stays
+2026-10-31 23:24:48 [chip 3.169, mode 1] phone fake locked: mode 3 from 398/125 on
+2026-10-31 23:24:51 [chip 6.068, mode 3] phone unlocked: mode 1 from 1219/200 on
+2026-10-31 23:24:53 [chip 7.857, mode 1] pause
+2026-10-31 23:26:22 [chip 7.857, mode 1] window closed
+2026-10-31 23:26:26 === session started, process 27880 ===
+2026-10-31 23:26:26 Press Play to move the chip. Type "help" below for the commands.
+2026-10-31 23:26:31 [chip 0.000, mode 1] play
+2026-10-31 23:26:36 [chip 0.527, mode 1] computer fake locked: mode 1 stays
+2026-10-31 23:26:41 [chip 1.097, mode 1] pause
+2026-10-31 23:27:45 [chip 1.097, mode 1] play
+2026-10-31 23:27:46 [chip 1.166, mode 1] phone fake locked: mode 3 from 9367/8000 on
+2026-10-31 23:27:50 [chip 1.630, mode 3] computer unlocked: mode 1 from 13087/8000 on
+2026-10-31 23:27:54 [chip 2.237, mode 1] pause
+2026-10-31 23:27:58 [chip 2.237, mode 1] play
+2026-10-31 23:28:01 [chip 2.633, mode 1] pause
+2026-10-31 23:28:01 [chip 2.633, mode 1] paused: the step being computed is undone
+2026-10-31 23:42:53 === session started, process 2500 ===
+2026-10-31 23:42:53 Press Play to move the chip. Type "help" below for the commands.
+2026-10-31 23:48:39 [chip 2.633, mode 1] window closed
+2026-10-31 23:48:46 [chip 0.000, mode 1] window closed
+2026-11-01 16:07:12 === session started, process 36320 ===
+2026-11-01 16:07:12 Press Play to move the chip. Type "help" below for the commands.
+2026-11-01 16:10:16 === session started, process 32448 ===
+2026-11-01 16:10:16 Press Play to move the chip. Type "help" below for the commands.
+2026-11-01 16:10:25 [chip 0.000, mode 1] window closed
+2026-11-01 16:10:31 [chip 0.050, mode 1] play
+2026-11-01 16:10:39 [chip 399.676, mode 1] phone fake locked: mode 1 stays
+2026-11-01 16:10:44 [chip 551.964, mode 1] computer fake locked: mode 3 from 138311/250 on
+2026-11-01 16:10:58 [chip 938.396, mode 3] computer unlocked: mode 1 from 234943/250 on
+2026-11-01 16:11:06 [chip 1205.276, mode 1] pause
+2026-11-01 16:11:06 [chip 1205.276, mode 1] paused: the step being computed is undone
+2026-11-01 16:11:08 [chip 1205.276, mode 1] play
+2026-11-01 16:11:20 [chip 1472.284, mode 1] pause
+2026-11-01 16:11:20 Traceback (most recent call last):
+  File "C:\Users\antoi\AppData\Local\Python\pythoncore-3.14-64\Lib\threading.py", line 1082, in _bootstrap_inner
+    self._context.run(self.run)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "C:\Users\antoi\AppData\Local\Python\pythoncore-3.14-64\Lib\threading.py", line 1024, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\code\line_manager\UI\examples\..\gui.py", line 312, in _work
+    for msg in self.s.runs():  # start the run asked for, install the completed ones
+               ~~~~~~~~~~~^^
+  File "C:\code\line_manager\UI\examples\..\app.py", line 243, in runs
+    self.sim.publish(rid, script, stats)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\code\line_manager\UI\..\scripts\simulation.py", line 361, in publish
+    self._after_edits(self.t, False, False, req.why)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\code\line_manager\UI\..\scripts\simulation.py", line 586, in _after_edits
+    self._edit(t, [o for k in self.script.constraints for o in k.ops(self.state, c)], GEN, "script")
+                                                               ~~~~~^^^^^^^^^^^^^^^
+  File "C:\code\line_manager\UI\..\scripts\constraints.py", line 152, in ops
+    want = self.breaks(state, c) & _after(c)
+           ~~~~~~~~~~~^^^^^^^^^^
+  File "C:\code\line_manager\UI\..\scripts\constraints.py", line 134, in breaks
+    t = allowed(cp + EPS)
+  File "C:\code\line_manager\UI\..\scripts\constraints.py", line 124, in allowed
+    checkpoint()
+    ~~~~~~~~~~^^
+  File "C:\code\line_manager\UI\..\scripts\solver.py", line 95, in checkpoint
+    raise Interrupted("stopped")
+solver.Interrupted: stopped
+
+2026-11-01 16:11:20 [chip 1472.284, mode 1] paused: the step being computed is undone
+2026-11-01 16:11:23 [chip 1472.284, mode 1] play
+2026-11-01 16:11:32 [chip 1472.284, mode 1] pause
+2026-11-01 16:11:51 [chip 1472.284, mode 1] play
+2026-11-01 16:12:03 [chip 1472.284, mode 1] pause
+2026-11-01 16:18:39 [chip 1472.284, mode 1] window closed
+2026-11-01 16:18:41 === session started, process 35104 ===
+2026-11-01 16:18:41 Press Play to move the chip. Type "help" below for the commands.
+2026-11-01 16:23:23 [chip 0.000, mode 1] play
+2026-11-01 16:23:25 [chip 1.709, mode 1] computer fake locked: mode 1 stays
+2026-11-01 16:23:27 [chip 2.965, mode 1] phone fake locked: mode 3 from 119/40 on
+2026-11-01 16:23:34 [chip 9.401, mode 3] phone unlocked: mode 1 from 9423/1000 on
+2026-11-01 16:23:39 [chip 15.652, mode 1] pause
+2026-11-01 16:23:39 [chip 15.652, mode 1] paused: the step being computed is undone
+2026-11-01 16:39:41 [chip 15.652, mode 1] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_51ad0yrq.txt
+2026-11-01 16:52:57 [chip 15.652, mode 1] window closed
+2026-11-01 17:00:44 === session started, process 27732 ===
+2026-11-01 17:00:44 Press Play to move the chip. Type "help" below for the commands.
+2026-11-01 17:00:48 [chip 0.000, mode 1] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_tpxoy_7s.txt
+2026-11-01 17:29:54 [chip 0.000, mode 1] window closed
+2026-11-01 18:12:55 === session started, process 29312 ===
+2026-11-01 18:12:55 Press Play to move the chip. Type "help" below for the commands.
+2026-11-01 18:12:57 [chip 0.000, mode 1] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_o7yubl32.txt
+2026-11-01 18:13:21 [chip 0.000, mode 1] play
+2026-11-01 18:13:28 [chip 144.393, mode 1] computer fake locked: mode 1 stays
+2026-11-01 18:13:30 [chip 211.913, mode 1] phone fake locked: mode 3 from 213001/1000 on
+2026-11-01 18:13:33 [chip 434.249, mode 3] pause
+2026-11-01 18:13:33 [chip 434.249, mode 3] paused: the step being computed is undone
+2026-11-01 18:13:37 [chip 434.249, mode 3] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_937ygyyq.txt
+2026-11-01 18:13:45 [chip 434.249, mode 3] window closed
+2026-11-01 18:13:45 === session started, process 26556 ===
+2026-11-01 18:13:45 Press Play to move the chip. Type "help" below for the commands.
+2026-11-01 18:13:47 [chip 0.000, mode 1] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_48uv2y8e.txt
+2026-11-01 18:13:50 [chip 0.000, mode 1] play
+2026-11-01 18:13:52 [chip 1.957, mode 1] pause
+2026-11-01 18:13:52 [chip 1.957, mode 1] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_y4yt5hxq.txt
+2026-11-01 18:17:24 [chip 1.957, mode 1] window closed
+2026-11-01 18:17:26 === session started, process 7340 ===
+2026-11-01 18:17:26 Press Play to move the chip. Type "help" below for the commands.
+2026-11-01 18:17:36 [chip 0.000, mode 1] play
+2026-11-01 18:17:46 [chip 905.787, mode 1] pause
+2026-11-01 18:17:46 [chip 905.787, mode 1] computer fake locked: mode 1 stays
+2026-11-01 18:17:46 [chip 905.787, mode 1] the chip is paused: press Play to edit
+2026-11-01 18:17:49 [chip 905.787, mode 1] play
+2026-11-01 18:17:55 [chip 1493.371, mode 1] phone fake locked: mode 3 from 1494011/1000 on
+2026-11-01 18:18:04 [chip 1626.347, mode 3] pause
+2026-11-01 18:18:04 [chip 1626.347, mode 3] paused: the step being computed is undone
+2026-11-01 18:58:14 === session started, process 24216 ===
+2026-11-01 18:58:14 Press Play to move the chip. Type "help" below for the commands.
+2026-11-01 18:58:21 [chip 0.000, mode 1] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_nc2zl_06.txt
+2026-11-01 18:58:28 [chip 0.150, mode 1] play
+2026-11-01 18:58:40 [chip 141.376, mode 1] computer fake locked: mode 1 stays
+2026-11-01 18:58:41 [chip 149.392, mode 1] phone fake locked: mode 3 from 18746/125 on
+2026-11-01 18:58:44 [chip 209.456, mode 3] pause
+2026-11-01 18:58:53 [chip 209.456, mode 3] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_uum5okwo.txt
+2026-11-02 00:03:17 === session started, process 38860 ===
+2026-11-02 00:03:17 Press Play to move the chip. Type "help" below for the commands.
+2026-11-02 00:03:18 [chip 0.000, mode 1] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_htcv9xij.txt
+2026-11-02 00:03:22 [chip 0.000, mode 1] window closed
+2026-11-02 01:24:47 === session started, process 34248 ===
+2026-11-02 01:24:48 Press Play to move the chip. Type "help" below for the commands.
+2026-11-02 01:24:49 [chip 0.000, mode 1] play
+2026-11-02 01:24:53 [chip 4.058, mode 1] computer fake locked: mode 1 stays
+2026-11-02 01:24:55 [chip 5.013, mode 1] phone fake locked: mode 3 from 5059/1000 on
+2026-11-02 01:24:58 [chip 8.447, mode 3] pause
+2026-11-02 01:25:00 [chip 8.447, mode 3] generated script written to C:\Users\antoi\AppData\Local\Temp\line_manager_generated_script_ccvb6pc3.txt
+2026-11-04 02:03:39 === session started, process 30832 ===
+2026-11-04 02:03:39 Press Play to move the chip. Type "help" below for the commands.
+2026-11-04 02:03:43 [chip 0.152, mode 1] play
+2026-11-04 02:03:45 [chip 2.262, mode 1] phone fake locked: mode 1 stays
+2026-11-04 02:03:47 [chip 3.414, mode 1] computer fake locked: mode 3 from 69/20 on
+2026-11-04 02:03:50 [chip 7.313, mode 3] pause
+2026-11-04 02:03:50 [chip 7.313, mode 3] paused: the step being computed is undone
+2026-11-04 02:03:52 [chip 7.313, mode 3] play
+2026-11-04 02:03:53 [chip 8.218, mode 3] computer locked: mode 3 stays
+2026-11-04 02:03:54 [chip 9.226, mode 3] phone fake locked: mode 3 stays
+2026-11-04 02:03:55 [chip 10.486, mode 2] phone locked: mode 2 from 207/20 on
+2026-11-04 02:03:57 [chip 12.393, mode 2] pause
+2026-11-04 02:04:02 [chip 12.393, mode 2] play
+2026-11-04 02:04:06 [chip 13.852, mode 2] computer unlocked: mode 1 from 2777/200 on
+2026-11-04 02:04:14 [chip 23.740, mode 1] pause
+2026-11-04 02:05:22 [chip 23.740, mode 1] window closed

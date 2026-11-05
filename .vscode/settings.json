@@ -1,0 +1,7 @@
+{
+    // the modules the generated scripts import (generated_scripts/*.py): Ctrl+click goes to
+    // their definitions, and hovering shows their documentation
+    "python.analysis.extraPaths": ["scripts", "UI"],
+    // the name of each parameter shown before its argument in a call: cycle(c: F(0), P: F(8100), ...)
+    "python.analysis.inlayHints.callArgumentNames": "all"
+}

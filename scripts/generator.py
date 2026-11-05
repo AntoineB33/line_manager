@@ -103,6 +103,12 @@ PACE_TIME = Fraction(10)  # ... every this many seconds (Simulation.keep_pace se
 SEARCH_TIME = Fraction(6)  # the seconds a stage searches at q = 1: what the pace allows
 
 
+def _within(o: Op, where: Region) -> Op:
+    """The op on `where`; the op itself where it is already within it (a region built from a
+    pattern keeps it: ratio_plan.Built, which the script's text gives as its call)."""
+    return o if o.region.issubset(where) else Op(o.action, o.kind, o.region & where, o.value)
+
+
 def budget(q: float) -> int:
     return 2 + math.floor(36 * q)
 
@@ -440,7 +446,7 @@ class RulesGenerator:
         seen = {""}
         for label, ops in itertools.chain(getattr(ctx, "forced", ()), ctx.candidates(until is not None)):
             if where is not None:
-                ops = tuple(o for o in (Op(o.action, o.kind, o.region & where, o.value) for o in ops) if not o.region.is_empty())
+                ops = tuple(o for o in (_within(o, where) for o in ops) if not o.region.is_empty())
             key = " ; ".join(map(str, ops))
             if key in seen:
                 continue  # the no-op, or an edit already built

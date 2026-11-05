@@ -105,6 +105,127 @@ def _targets(problems) -> tuple[dict, dict] | None:
     return targets, lengths
 
 
+class Built(Region):
+    """A region and the Python call that built it (`src`): the generated script's text
+    gives the call, not its intervals (script_python.py). An operation that changes nothing
+    gives it back; another one gives the call with the operation."""
+    __slots__ = ("src",)
+
+    def __and__(self, other):
+        if self.issubset(other):
+            return self
+        from script_python import py
+        return _built(Region.__and__(self, other), f"({self.src} & {py(other)})")
+
+    def __sub__(self, other):
+        if (Region.__and__(self, other)).is_empty():
+            return self
+        from script_python import py
+        return _built(Region.__sub__(self, other), f"({self.src} - {py(other)})")
+
+    def __or__(self, other):
+        from script_python import py
+        return _built(Region.__or__(self, other), f"({self.src} | {py(other)})")
+
+
+def _built(r: Region, src: str) -> Built:
+    out = Built.__new__(Built)
+    for s in Region.__slots__:
+        setattr(out, s, getattr(r, s))
+    out.src = src
+    return out
+
+
+def cycle(c, P, lo, hi) -> Region:
+    """(c + lo + nP, c + hi + nP] for every n >= 0, 0 <= lo < hi <= P: a kind's turn in a
+    cycle of period P from c."""
+    from script_python import py
+    return _built(_cycle(Fraction(c), Fraction(P), Fraction(lo), Fraction(hi)), f"cycle({py(Fraction(c))}, {py(Fraction(P))}, "
+                  f"{py(Fraction(lo))}, {py(Fraction(hi))})")
+
+
+def turns(free: Region, start, order, lengths: dict, minimum: dict) -> dict | None:
+    """The kinds of `order` taking their turns, one after the other, in the stretches of
+    `free` from `start`, a turn going on from one stretch to the next: each for its length
+    (`lengths`), less at the end of a stretch if that is still its minimum length
+    (`minimum`), else nothing there; the last piece of a stretch stops just before its
+    end (what comes after it, e.g. a break, starts there). What `free` repeats, the turns
+    repeat once a period starts with the same kind. {kind: region}; None if `free`
+    repeats with no position outside it to cut its periods at."""
+    from script_python import py
+    out = _turns(free, Fraction(start), list(order), lengths, minimum)
+    if out is None:
+        return None
+    src = f"turns({py(free)}, {py(Fraction(start))}, {list(order)!r}, {py(dict(lengths))}, {py(dict(minimum))})"
+    return {k: _built(r, f"{src}[{k!r}]") for k, r in out.items()}
+
+
+def _turns(free: Region, start: Fraction, order: list, lengths: dict, minimum: dict) -> dict | None:
+    n = len(order)
+    pieces = {k: [] for k in order}
+
+    def lay(ivs, i):
+        """Turns on these stretches (finite), from the turn i: the turn after them."""
+        for iv in ivs:
+            x, end, closed = iv.lo, iv.hi, True  # (a stretch's first position is in it)
+            while True:
+                k = order[i % n]
+                length = lengths[k]
+                room = (end - x).x
+                if room < length and not (room > 0 and room >= minimum.get(k, Fraction(0))):
+                    break  # too short for its turn: nothing there
+                b = end if room <= length else x + length  # (the ε of x: not past the end)
+                pieces[k].append(Interval(x, b, closed, room > length))
+                x, i, closed = b, i + 1, False
+                if room <= length:
+                    break
+        return i
+
+    free = free & Region.of(Interval(start, INF, False, False))
+    pr, right = free.pr, free.right
+    if not right or right == IntervalSet.of(Interval(0, pr.x, True, False)):
+        # free is a finite union of intervals, and everything from free.hi on if `right`
+        hi = max(free.hi, Pos(start))
+        ivs = list(free.on(start, hi).intervals) if hi > Pos(start) else []
+        x0 = None
+        if right:
+            if ivs and ivs[-1].hi + EPS >= hi:  # the last one goes on forever
+                x0 = ivs.pop().lo
+            else:
+                x0 = hi
+        i = lay(ivs, 0)
+        out = {k: Region.of(IntervalSet(v)) for k, v in pieces.items()}
+        if x0 is not None:
+            P = sum(lengths.values(), Fraction(0))
+            at = Fraction(0)
+            for j in range(n):
+                k = order[(i + j) % n]
+                out[k] = out[k] | _cycle(Fraction(x0.x), P, at, at + lengths[k])
+                at += lengths[k]
+        return out
+    gaps = IntervalSet.of(Interval(0, pr.x, True, False)) - right
+    if not gaps:
+        return None
+    q = free.hi + gaps.intervals[0].lo  # outside free, every pr from there
+    while q < Pos(start):
+        q = q + pr
+    i = lay(free.on(start, q).intervals, 0)
+    seen, j = {}, 0
+    while i % n not in seen:
+        seen[i % n] = j
+        i = lay(free.on(q + pr * j, q + pr * (j + 1)).intervals, i)
+        j += 1
+    j1 = seen[i % n]
+    lo, hi = q + pr * j1, q + pr * j
+    out = {}
+    for k in order:
+        ivs = IntervalSet(pieces[k])
+        core = ivs & IntervalSet.of(Interval(start, lo, False, False))
+        tail = (ivs & IntervalSet.of(Interval(lo, hi, True, False))).shift(-lo)
+        out[k] = Region(start, lo, core, Pos(1), IntervalSet(), hi - lo, tail)
+    return out
+
+
 def _cycle(c: Fraction, P: Fraction, lo: Fraction, hi: Fraction) -> Region:
     """(c + lo + nP, c + hi + nP] for every n >= 0, 0 <= lo < hi <= P."""
     if hi < P:
@@ -214,79 +335,14 @@ class Plan:
         return [k for k in g if k not in last] + last, ops, start
 
     def _laid(self, state: LineState, c: Fraction, g, P, free: Region) -> list[Op] | None:
-        """The kinds of g taking their turns in the stretches of `free` after the chip, a
-        turn going on from one stretch to the next: each for r P, less at the end of a
-        stretch if that is still its minimum length, else nothing there. What `free`
-        repeats, the turns repeat once a period starts with the same kind. None if free
-        repeats with no position outside it to cut its periods at."""
+        """The kinds of g taking their turns in the stretches of `free` after the chip, each
+        for r P (`turns`); None if there are none to take."""
         order, ops, start = self._order(state, c, g)
-        n = len(order)
-        pieces = {k: [] for k in g}
-
-        def lay(ivs, i):
-            """Turns on these stretches (finite), from the turn i: the turn after them."""
-            for iv in ivs:
-                x, end, closed = iv.lo, iv.hi, True  # (a stretch's first position is in it)
-                while True:
-                    k = order[i % n]
-                    length = self.targets[k] * P
-                    room = (end - x).x
-                    if room < length and not (room > 0 and room >= self.lengths.get(k, Fraction(0))):
-                        break  # too short for its turn: nothing there
-                    b = end if room <= length else x + length  # (the ε of x: not past the end)
-                    # the last piece of a stretch stops just before its end: what comes after
-                    # it (e.g. a break) starts there, and nothing may touch it
-                    pieces[k].append(Interval(x, b, closed, room > length))
-                    x, i, closed = b, i + 1, False
-                    if room <= length:
-                        break
-            return i
-
-        free = free & Region.of(Interval(start, INF, False, False))
-        pr, right = free.pr, free.right
-        if not right or right == IntervalSet.of(Interval(0, pr.x, True, False)):
-            # free is a finite union of intervals, and everything from free.hi on if `right`
-            hi = max(free.hi, Pos(start))
-            ivs = list(free.on(start, hi).intervals) if hi > Pos(start) else []
-            x0 = None
-            if right:
-                if ivs and ivs[-1].hi + EPS >= hi:  # the last one goes on forever
-                    x0 = ivs.pop().lo
-                else:
-                    x0 = hi
-            i = lay(ivs, 0)
-            out = {k: Region.of(IntervalSet(v)) for k, v in pieces.items()}
-            if x0 is not None:
-                at = Fraction(0)
-                for j in range(n):
-                    k = order[(i + j) % n]
-                    length = self.targets[k] * P
-                    out[k] = out[k] | _cycle(Fraction(x0.x), P, at, at + length)
-                    at += length
-            return ops + [Op.put(k, r) for k, r in out.items() if not r.is_empty()]
-        gaps = IntervalSet.of(Interval(0, pr.x, True, False)) - right
-        if not gaps:
+        out = turns(free, start, order, {k: self.targets[k] * P for k in order},
+                    {k: self.lengths.get(k, Fraction(0)) for k in order})
+        if out is None:
             return None
-        q = free.hi + gaps.intervals[0].lo  # outside free, every pr from there
-        while q < Pos(start):
-            q = q + pr
-        i = lay(free.on(start, q).intervals, 0)
-        seen, j = {}, 0
-        while i % n not in seen:
-            seen[i % n] = j
-            i = lay(free.on(q + pr * j, q + pr * (j + 1)).intervals, i)
-            j += 1
-        j1 = seen[i % n]
-        lo, hi = q + pr * j1, q + pr * j
-        out = []
-        for k in g:
-            ivs = IntervalSet(pieces[k])
-            core = ivs & IntervalSet.of(Interval(start, lo, False, False))
-            tail = (ivs & IntervalSet.of(Interval(lo, hi, True, False))).shift(-lo)
-            r = Region(start, lo, core, Pos(1), IntervalSet(), hi - lo, tail) & Region.of(Interval(c, INF, False, False))
-            if not r.is_empty():
-                out.append(Op.put(k, r))
-        return ops + out
+        return ops + [Op.put(k, r) for k, r in out.items() if not r.is_empty()]
 
     def _cycle_ops(self, state: LineState, c: Fraction, g, P) -> list[Op]:
         """The kinds of g one after the other every P from the chip, the one at the chip last,
@@ -295,7 +351,7 @@ class Plan:
         at = Fraction(0)
         for k in order:
             length = self.targets[k] * P
-            ops.append(Op.put(k, _cycle(start, P, at, at + length)))
+            ops.append(Op.put(k, cycle(start, P, at, at + length)))
             at += length
         return ops
 

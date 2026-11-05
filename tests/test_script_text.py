@@ -27,6 +27,12 @@ from script_text import ScriptError, _op, parse_script, position, region  # noqa
 RULES = ["Break15 → NoScreen", "mode 1 → no NoScreen", "mode 2 → NoScreen"]
 
 
+def english(s: Session) -> str:
+    """The script in place as its text (script_text.py), as the window showed it before it
+    showed its Python (script_python.py)."""
+    return "Generated script at time 0.\n\n" + s.sim.script.text() + "\n"
+
+
 def session(length=15) -> Session:
     s = Session(RULES, [(0, "1")], 0, 1, [], [(PresenceRatioProblem({}).with_window(240), 1)], F(1, 2), [FifteenMinuteBreaks(length=length)])
     s.sim.background = False
@@ -86,7 +92,7 @@ class ParseTest(unittest.TestCase):
     def test_the_same_text_is_the_same_script(self):
         s = session()
         before = s.sim.script
-        script = parse_script(s.script_text(), before)
+        script = parse_script(english(s), before)
         self.assertEqual(script.text(), before.text())
         self.assertEqual(script.events, before.events)
         self.assertEqual(script.covered, before.covered)
@@ -149,7 +155,7 @@ class ParseTest(unittest.TestCase):
     def test_a_kind_the_rules_do_not_know(self):
         s = session()
         with self.assertRaises(ScriptError) as e:
-            s.edit_script(s.script_text().replace("15", "16"), s.sim.script)
+            s.edit_script(english(s).replace("15", "16"), s.sim.script)
         self.assertIn("Break16 is not in the rules", str(e.exception))
 
     def test_every_line_is_told(self):
@@ -162,7 +168,7 @@ class ReplaceTest(unittest.TestCase):
     def test_the_changed_script_replaces_the_previous_one(self):
         s = session()
         before = s.sim.script
-        text = s.script_text() + "if the chip is at or after 1, then put A 100% on [50, 60].\n"
+        text = english(s) + "if the chip is at or after 1, then put A 100% on [50, 60].\n"
         self.assertIn("replaced", s.edit_script(text, before))
         self.assertIsNot(s.sim.script, before)
         self.assertIn("Changed by the user at time 0.", s.script_text())
@@ -180,7 +186,7 @@ class ReplaceTest(unittest.TestCase):
 
         s = session()
         s.tick(F(3))
-        s.edit_script(s.script_text().replace("chip + 15]", "chip + 16]"), s.sim.script)
+        s.edit_script(english(s).replace("chip + 15]", "chip + 16]"), s.sim.script)
         self.assertIn("chip + 16]", s.sim.script.text())
         s.tick(F(1))
         check(s, 4)
@@ -200,7 +206,7 @@ class ReplaceTest(unittest.TestCase):
         s.tick(F(1))
         s.set_mode("2")
         s.tick(F(1))
-        s.edit_script(s.script_text().replace("chip + 15]", "chip + 16]"), s.sim.script)
+        s.edit_script(english(s).replace("chip + 15]", "chip + 16]"), s.sim.script)
         s.tick(F(1))
         b = s.sim.state.line.presence("Break15")
         self.assertTrue(b.contains(17))
@@ -210,7 +216,7 @@ class ReplaceTest(unittest.TestCase):
         s = session()
         before = s.sim.script
         with self.assertRaises(ScriptError):
-            s.edit_script(s.script_text() + "nonsense\n", before)
+            s.edit_script(english(s) + "nonsense\n", before)
         self.assertIs(s.sim.script, before)
 
     def test_deleted_elsewhere_no_mode_rules_there(self):

@@ -47,6 +47,7 @@ from problems import MinimumLengthProblem, PresenceRatioProblem  # noqa: E402,F4
 from region import Region  # noqa: E402
 from rules import RuleError, is_hidden, parse_rules  # noqa: E402
 from script import ChipIn, Script, TransitionCount  # noqa: E402
+from script_python import from_python, to_python  # noqa: E402
 from script_text import ScriptError, parse_script  # noqa: E402,F401 (ScriptError: for the window)
 from simulation import EDIT_LIMIT, Chip, Simulation  # noqa: E402
 from solver import Interrupted  # noqa: E402
@@ -358,12 +359,13 @@ class Session:
             head.append(self.running().capitalize() + ": its next script replaces this one.")
         if self.sim.definitive is not None:
             head.append(f"Definitive up to {self.sim.definitive}.")
-        return "\n".join(head) + "\n\n" + (self.sim.script.text() or "(empty script)") + "\n"
+        return to_python(self.sim.script, head)  # the Python that builds the script in place
 
     def edit_script(self, text: str, previous: Script) -> str:
         """The text of `previous`, changed by the user, replaces the script in place, and
         the run going on is cancelled. ScriptError if it is not correctly written."""
-        script = parse_script(text, previous, self.rs)
+        # the Python the window shows (script_python.py), or the script's text (script_text.py)
+        script = from_python(text, previous, self.rs) if "SCRIPT" in text else parse_script(text, previous, self.rs)
         newer = self.sim.script is not previous
         self.close()
         self.sim.replace_script(script)

@@ -353,6 +353,8 @@ class App:
         self.stopping = True
         self.s.close()
         self.s.calculator.close()
+        if self.s.preparer is not None:
+            self.s.preparer.close()
         self.root.destroy()
 
     # ------------------------------------------------------------ the simulation (its own thread)

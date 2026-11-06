@@ -240,6 +240,65 @@ class CompiledPushTest(unittest.TestCase):
         self.assertEqual(count[0], 0)
         self.assertEqual([c for c in s.sim.log.changes[n:] if c.source == "script"], [])
 
+    def test_the_line_meets_a_break_no_run_compiled_with_nothing_to_solve(self):
+        """The generator off, the line far past what its last run compiled: the mode rules
+        the chip goes through are checked ahead of it in the edit worker's process
+        (app.Preparer, mode_rules.prepare_ahead), the run where the chip starts to push the
+        break included. The frames around the meeting solve nothing (1.45 s solved in the
+        frame without it), and the break is the same as solved in the frame."""
+        import time
+        import mode_rules
+        import resolve
+        from app import Preparer
+        from intervals import Pos
+
+        def first(s):
+            return s.sim.state.line.presence("Break15").on(s.position - 1, s.position + 20000).intervals[0]
+
+        def near_the_meeting():
+            s = example("screen_break_15_rules")
+            s.sim.background = False
+            s.tick(F(14500))
+            s.command("generator off")
+            while first(s).lo.x - s.position > 30:
+                s.tick(first(s).lo.x - s.position - 30)
+            return s, first(s).lo.x
+        s, meet = near_the_meeting()
+        alone, _ = near_the_meeting()  # (the same, solved in the frames)
+        s.sim.ahead_jobs = Preparer()
+        try:
+            s.tick(F(1, 20))
+            mr = s.sim._live_rules["1"]
+            waited = time.monotonic()  # (the process starts, then answers: the chip waits here, a window would not)
+            while mr.frontier() <= Pos(meet) and time.monotonic() - waited < 60:
+                time.sleep(0.05)
+                s.sim._ahead_of_chip()  # (an answer taken, what follows asked for)
+            self.assertGreater(mr.frontier(), Pos(meet))  # known past the meeting
+            s.tick(meet - s.position - 2)
+            alone.tick(meet - alone.position - 2)
+            count = [0]
+
+            def counted(real):
+                def f(*a, **k):
+                    count[0] += 1
+                    return real(*a, **k)
+                return f
+            with mock.patch.object(mode_rules, "solve", counted(mode_rules.solve)), \
+                    mock.patch.object(resolve, "solve", counted(resolve.solve)):
+                for _ in range(80):
+                    s.tick(F(1, 20))
+                    iv = first(s)
+                    if s.position > meet:
+                        self.assertEqual((iv.lo.x, iv.hi.x), (s.position, s.position + 900), s.position)
+            self.assertEqual(count[0], 0)
+            for _ in range(80):
+                alone.tick(F(1, 20))
+            self.assertEqual(s.sim.state.line.presence("Break15").on(0, 40000),
+                             alone.sim.state.line.presence("Break15").on(0, 40000))
+            self.assertEqual(s.sim.log.refused, alone.sim.log.refused)
+        finally:
+            s.sim.ahead_jobs.close()
+
     def test_the_line_meets_a_break_with_nothing_to_solve(self):
         """Back at the screen after a lock (mode 2, then mode 1 at 14400), the line meets the
         next break while working, as the window runs it (the generator's runs in their own

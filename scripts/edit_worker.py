@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from intervals import Pos  # noqa: E402
 from line import LineState  # noqa: E402
-from mode_rules import ModeRules  # noqa: E402
+from mode_rules import ModeRules, prepare_ahead  # noqa: E402
 from simulation import user_edit  # noqa: E402
 from state_delta import changes, patched  # noqa: E402
 
@@ -29,7 +29,7 @@ def mode_change(rules, state, mode, x, constraints):
         pass
 
 
-JOBS = {"edit": user_edit, "mode": mode_change}
+JOBS = {"edit": user_edit, "mode": mode_change, "ahead": prepare_ahead}  # ("ahead": app.Preparer's process)
 
 if __name__ == "__main__":
     out = sys.stdout.buffer

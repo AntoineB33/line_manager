@@ -602,6 +602,19 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     So the run compiles it ahead with the line an affine function of the chip, and a
     step of the chip costs no edit and no solve (`CompiledPushTest`). Any other edit
     from the chip fires at each instant, as written.
+  - **Checked ahead elsewhere.** Where no stretch a run compiled fits the line (the
+    generator off, or the line changed since its run), the mode rules decide at the
+    chip. A new decision there, such as the chip starting to push a break, would cost
+    the step about ten solves (1.5 s), during which the window has no formula past the
+    old run's end. So the window has a second edit worker process
+    (`app.Preparer`, job "ahead", `mode_rules.prepare_ahead`). When the runs known end
+    less than AHEAD / 2 after the chip, the run the chip is in is sent there, checked
+    up to AHEAD after the chip, and the runs after it are decided and checked
+    (`ModeRules.ready`). The step never waits for it (`Simulation._ahead_of_chip`). A
+    run decided ahead is taken where the chip gets to its start on the line it was
+    decided on (`ModeRules._take_ready`), with nothing to solve; on another line or in
+    another mode it is not, and the step decides itself, as before
+    (`test_the_line_meets_a_break_no_run_compiled_with_nothing_to_solve`).
   - **Moved scripts.** The rules are the same at every position. A script put in
     place with the chip d after the position its run compiled from (the run took
     that long), on the line the run compiled from moved by d, applies its stretches

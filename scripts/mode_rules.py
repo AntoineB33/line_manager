@@ -100,8 +100,12 @@ def compile_runs(rs: RuleSet, state: LineState, segments, constraints=(), pushes
 
 class ModeRules:
     def __init__(self, rs: RuleSet, mode: str, constraints=()) -> None:
-        self.rs = rs
+        self.rs, self.mode = rs, mode
         self.constraints = tuple(constraints)  # kept after the chip (constraints.py): `constrain`
+        # the runs after `plan`, decided and checked ahead in another process (`take_ahead`),
+        # each starting right after the one before: taken where the chip gets to its start
+        # on the line it was decided on, with nothing to solve (`act`)
+        self.ready: list[_Plan] = []
         self.pushes = tuple(k for k in self.constraints if isinstance(k, ChipPush))  # (constraints.ChipPush)
         self.rules = [r for r in rs.mode_rules if r.mode == mode]
         self.items = [(r, it) for r in self.rules for it in r.rhs]
@@ -345,6 +349,8 @@ class ModeRules:
                 nxt = x + EPS
                 if nxt > hi:
                     return
+            elif self._take_ready(state, x):
+                continue  # (decided ahead, elsewhere: it happens now, as decided ahead here)
             else:
                 decision, s1, why = self.decide(state, x)
                 for w in why:
@@ -391,6 +397,51 @@ class ModeRules:
         except _Changes:
             pass  # the chip will refuse there when it gets there
 
+    # ------------------------------------------------------------ checked ahead elsewhere
+
+    def _take_ready(self, state: LineState, x: Pos) -> bool:
+        """The run decided ahead at x on this line (`ready`), if there is one: it becomes
+        `plan`, its decision to happen at x (`act`). The runs decided ahead for positions
+        the chip went past are dropped; one decided on another line is not taken."""
+        while self.ready and self.ready[0].m < x:
+            self.ready.pop(0)
+        if not self.ready or self.ready[0].m != x or not _same_state(self.ready[0].before, state):
+            return False
+        plan = self.plan = self.ready.pop(0)
+        why, s1 = plan.pending
+        if _same_state(s1, state):  # (nothing decided there: the line as it is, the same object)
+            plan.state0 = plan.last = s1 = state
+            plan.pending = (why, s1)
+        plan.before = state
+        return True
+
+    def ahead_target(self):
+        """The run to check further ahead elsewhere: the last of `plan` and `ready`."""
+        return self.ready[-1] if self.ready else self.plan
+
+    def frontier(self) -> Pos | None:
+        """How far the chip's runs are known: the last position checked of the last one."""
+        t = self.ahead_target()
+        return None if t is None else t.checked
+
+    def take_ahead(self, target: _Plan, base: Pos | None, answer) -> bool:
+        """The answer of `prepare_ahead` for `target` (a run of `plan` and `ready`), asked
+        when it was checked up to `base`: its new stretches, and the runs after it. False
+        if that run is gone or was checked further meanwhile (the answer is then of no use)."""
+        if target is not self.plan and target not in self.ready:
+            return False
+        if target.checked != base:
+            return False
+        more, after = answer
+        target.pieces += more["pieces"]
+        target.checked, target.over, target.queue, target.top = more["checked"], more["over"], more["queue"], more["top"]
+        if target is self.plan:
+            self.ready = []
+        else:
+            self.ready = self.ready[:self.ready.index(target) + 1]
+        self.ready += [_Plan.of_data(self, d) for d in after]
+        return True
+
     def _same(self, state: LineState, decision: tuple, lo: Pos, p: Pos,
               pushing: frozenset | None = None) -> tuple[bool, LineState | None]:
         """With the run on [lo, p), is the decision at p the same? And the state with the
@@ -423,6 +474,22 @@ class _Plan:
         self.last, self.next = state0, self.a0  # the state the run made last, and where it goes on
         self.before, self.pending = None, None  # decided ahead of the chip (`prepare`): the state before, (why, after)
         self.pushing = mr.pushing_of(decision)  # the kinds the chip pushes all along the run (`with_run`)
+
+    FIELDS = ("state0", "decision", "m", "a0", "checked", "over", "pieces", "queue", "top", "last", "next", "before",
+              "pending", "pushing")
+
+    def data(self) -> dict:
+        """What it is, without its mode rules: for another process (`prepare_ahead`)."""
+        return {f: getattr(self, f) for f in self.FIELDS}
+
+    @staticmethod
+    def of_data(mr: ModeRules, d: dict) -> _Plan:
+        out = object.__new__(_Plan)
+        out.mr = mr
+        for f in _Plan.FIELDS:
+            setattr(out, f, d[f])
+        out.pieces, out.queue = list(out.pieces), list(out.queue)
+        return out
 
     def extend(self, nxt: Pos, hi: Pos):
         """The last position of [nxt, hi] the run reaches (None: not nxt), checking the
@@ -609,6 +676,50 @@ def _same_line(l1: Line, l2: Line) -> bool:
                    for k in l1.vals)
     except IncompatiblePeriods:
         return False
+
+
+def _same_state(a: LineState, b: LineState) -> bool:
+    """The same line and claims (two copies of a state: one from another process)."""
+    if a is b:
+        return True
+    try:
+        return _same_line(a.line, b.line) and a.claims.same(b.claims) is True
+    except IncompatiblePeriods:
+        return False
+
+
+AHEAD = Fraction(128)  # how far after the chip its runs are checked elsewhere (Simulation.ahead_jobs)
+RUNS_AHEAD = 4  # the runs after the chip's decided elsewhere at once, at most
+
+
+def prepare_ahead(rs: RuleSet, state0: LineState, mode: str, constraints, data: dict, hi: Pos):
+    """In another process (edit_worker.py, job "ahead"): the run `data` (a _Plan of these
+    mode rules, `state0` apart) checked up to hi, and if it ends before, the runs after it,
+    each decided where the one before ends, on the line it makes there, and checked up to
+    hi too. Answers (the run's new stretches and frontier, [the data of the runs after])
+    for ModeRules.take_ahead. Where a check fails between two positions (_Changes) it
+    stops there: the chip refuses the rest itself when it gets there, as it does now."""
+    mr = ModeRules(rs, mode, constraints)
+    plan = _Plan.of_data(mr, dict(data, state0=state0))
+    n = len(plan.pieces)
+    after = []
+    try:
+        while not plan.over and (plan.checked is None or plan.checked < hi):
+            plan._stretch(hi)
+        last = plan
+        while last.over and last.checked is not None and last.checked < hi and len(after) < RUNS_AHEAD:
+            x = last.checked + EPS
+            mr.plan = None
+            mr.prepare(last.state_at(last.checked), x, hi.x - x.x)
+            nxt = mr.plan
+            if nxt is None or nxt.checked is None:
+                break
+            after.append(nxt.data())
+            last = nxt
+    except (_Changes, Conflict, Undetermined, IncompatiblePeriods, Refused):
+        pass
+    more = {"pieces": plan.pieces[n:], "checked": plan.checked, "over": plan.over, "queue": plan.queue, "top": plan.top}
+    return more, after
 
 
 class _Changes(Exception):

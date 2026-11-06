@@ -34,6 +34,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from fractions import Fraction as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
@@ -150,6 +151,66 @@ class Calculator:
             self.proc.kill()
 
 
+AHEAD_LIMIT = 60  # the seconds a job of the Preparer can take: beyond, its process is ended and started again
+
+
+class Preparer(Calculator):
+    """The mode rules checked ahead of the chip (mode_rules.prepare_ahead) in a process of
+    its own, the edit worker's (scripts/edit_worker.py, job "ahead"), apart from the one of
+    the user's edits, which answers them one by one, at once. Nothing waits for it: a job is
+    sent (`submit`) and its answer taken at a later step (`poll`, Simulation.ahead_jobs)."""
+
+    def start(self) -> None:
+        super().start()
+        self.sent = None  # when the job in the process was sent (None: none)
+
+    @property
+    def busy(self) -> bool:
+        return self.sent is not None
+
+    def submit(self, name: str, rules, state: LineState, *args) -> bool:
+        """Send the job; False if it could not be (the process is started again)."""
+        if self.busy:
+            return False
+        if not self.ready:
+            try:
+                answer = self.answers.get_nowait()
+            except queue.Empty:
+                return False  # (not started yet: the next step asks again)
+            self.ready = answer == "ready"
+            if not self.ready:
+                self.close()
+                self.start()
+                return False
+        try:
+            self.proc.stdin.write(pickle.dumps((name, rules, changes(self.state, state), args)))
+            self.proc.stdin.flush()
+        except (OSError, ValueError):
+            self.close()
+            self.start()
+            return False
+        self.state, self.sent = state, time.monotonic()  # (what the process has once it reads it)
+        return True
+
+    def poll(self) -> list:
+        """The answers that came, without waiting; TOO_LONG for a job that failed or went
+        past AHEAD_LIMIT (its process is started again)."""
+        if not self.busy:
+            return []
+        try:
+            answer = self.answers.get_nowait()
+        except queue.Empty:
+            if time.monotonic() - self.sent <= AHEAD_LIMIT:
+                return []
+            answer = FAILED
+        self.sent = None
+        if answer is FAILED:
+            self.close()
+            self.start()
+            return [TOO_LONG]
+        return [answer]
+
+
 class Session:
     def __init__(self, rules=(), modes=((0, "1"),), chip=0, speed=1, line=(), problems=(), q=0.5, constraints=(),
                  selectors=(), selector_modes=()) -> None:
@@ -191,7 +252,7 @@ class Session:
         self.sim.background = True
         self._running = None  # (request id, process): the generator run going on
         self.script_edit = None  # (time, script): the last script the user changed
-        self.calculator = None
+        self.calculator = self.preparer = None
         atexit.register(self.close)
         self._done: queue.Queue = queue.Queue()  # (request id, script, stats or the error) of completed runs
         self._stopped = None  # what `runs` could not install because of Pause, from `_done`
@@ -207,6 +268,9 @@ class Session:
         self.calculator = Calculator()
         atexit.register(self.calculator.close)
         self.sim.calculate = self._calculate
+        self.preparer = Preparer()  # (the mode rules ahead of the chip, in a process of their own)
+        atexit.register(self.preparer.close)
+        self.sim.ahead_jobs = self.preparer
         self.sim.apart = True  # (and the script's loops have threads of their own: gui.App._looper)
 
     def _calculate(self, name: str, *args) -> tuple:

@@ -47,7 +47,7 @@ from generator import PACE, PACE_TIME, RulesGenerator, RunStats
 from guards import check_script_edit
 from intervals import EPS, INF, Interval, Num, Pos
 from line import GEN, USER, Claims, LineState, Op
-from mode_rules import ModeRules, Run
+from mode_rules import AHEAD, ModeRules, Run
 from modes import ModeTimeline
 from region import Region
 from solver import Line, Undetermined, limited
@@ -266,6 +266,11 @@ class Simulation:
         self.request: RunRequest | None = None  # the run asked for and not completed
         self.definitive = None  # how far the run's scripts are definitive
         self.calculate = None  # (job, *args) -> its answer, the user's edits computed elsewhere
+        # a process that checks the mode rules ahead of the chip (app.Preparer: submit(name, rules,
+        # state, *args), poll() -> its answers, busy): the steps never wait for it (`_ahead_of_chip`)
+        self.ahead_jobs = None
+        self._asked = None  # (mode rules, run, how far it was checked): what the job in the process is for
+        self._tried = None  # (run, how far it was checked): the last job asked for
         self.memory_limit = MEMORY_LIMIT
         self.flat_to = self.gone_to = None  # the line is simple on the left of the first, empty of the second
         self._edited = False  # the user edited at this instant
@@ -567,12 +572,46 @@ class Simulation:
         end = Fraction(end_time)
         if not self.started:
             self.start()
+        self._ahead_of_chip()
         while self.t < end:
             t1 = min(self._next_instant(self.t), end)
             self._sweep(self.t, t1)
             self._within_memory(self.chip.position(t1))  # (the mode rules add to the line too)
             self.t = t1
             self._instant(self.t)
+        self._ahead_of_chip()
+
+    def _ahead_of_chip(self) -> None:
+        """The mode rules the chip goes through, checked ahead of it in another process
+        (`ahead_jobs`, mode_rules.prepare_ahead), so that no step solves when the chip gets
+        to where a run ends (a break it starts to push): the answer that came is taken, and
+        when the runs known end less than AHEAD / 2 after the chip, a job asks for them up
+        to AHEAD after it. The step never waits: an answer not there yet, or of no use (the
+        line or the mode changed meanwhile), and the step computes what it needs itself."""
+        jobs = self.ahead_jobs
+        if jobs is None:
+            return
+        for answer in jobs.poll():
+            asked, self._asked = self._asked, None
+            if asked is not None and not isinstance(answer, str):
+                mr, target, base = asked
+                if self._live_rules.get(mr.mode) is mr:
+                    mr.take_ahead(target, base, answer)
+        if self._asked is not None or jobs.busy:
+            return
+        c = self.chip.position(self.t)
+        mode = self.modes.mode_at(c)
+        mr = self._live_rules.get(mode)
+        target = mr.ahead_target() if mr is not None else None
+        if target is None or target.checked is None or target.checked >= Pos(c + AHEAD / 2):
+            return
+        if self._tried == (target, target.checked):
+            return  # (asked already from there, and the process got no further: the chip will see why)
+        data = target.data()
+        state0 = data.pop("state0")
+        if jobs.submit("ahead", self.rules, state0, mode, mr.constraints, data, Pos(c + AHEAD)):
+            self._asked = (mr, target, target.checked)
+            self._tried = (target, target.checked)
 
     def start(self, edits: list[list[Op]] | None = None) -> None:
         """The first instant, with these edits of the user (else those scheduled at 0)."""

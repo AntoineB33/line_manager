@@ -65,6 +65,7 @@ import time
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 
+from constraints import push_of
 from guards import check_script_edit
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import GEN, LineState, Op
@@ -355,7 +356,8 @@ class RulesGenerator:
                 # compiles less (q D(q) grows with q), and the chip computes the rest
                 end = c + D / 6 * Fraction(str(self.q))
                 ahead = [(a, min(b, Pos(end)), m) for a, b, m in predicted if a <= end]
-                stretches, stats.refused = compile_runs(self.rules, current, ahead, self.constraints)
+                pushes = [k for k in map(push_of, written + carried) if k is not None] if live else []
+                stretches, stats.refused = compile_runs(self.rules, current, ahead, self.constraints, pushes)
             # (nothing left to improve: the error, not the stretches', which turns of a given
             # length cannot bring to 0)
             done = final and (not self.endless or perfect)

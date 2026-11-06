@@ -45,6 +45,9 @@ Triggers
 - Uncovered(): true while the chip is where the script does not apply the mode rules.
 - ChipOn(K, mode): true while the chip is in an interval of K (not where it starts) and (if mode is not None) the mode at the chip is `mode`; its actions fire at each
   instant it is true (e.g. a break the chip pushes: placed again from the chip at each).
+  Where the script applies the mode rules everywhere, "if the chip is on K, then from the
+  chip, take K off (0, inf), put K on R" is the same line kept by the mode rules as the
+  chip goes, compiled ahead, with no edit at each instant (`Script.pushes`).
 - PresenceAbove(K, v, y, H, lo, hi, mode): true while the presence ratio of K at v% on
   (chip, chip + H] is above y, the chip in [lo, hi) and the mode at the chip `mode`.
 - ScoreBelow(z): true while the optimization score (`score`) is below z.
@@ -314,6 +317,23 @@ class Script:
     true: set = field(default_factory=set, compare=False)  # the text of the events true when last read
     fired: set = field(default_factory=set, compare=False)  # and of those that fired
     since: int = field(default=0, compare=False)  # the mode transitions since it was put in place
+    _pushes: dict | None = field(default=None, init=False, compare=False, repr=False)  # (`pushes`)
+
+    def pushes(self) -> dict:
+        """{the text of an event: constraints.ChipPush} for each event of the chip pushing a
+        kind ("if the chip is on K, then from the chip ... K", constraints.push_of), where
+        the script applies the mode rules everywhere (`live`): those the mode rules keep as
+        the chip goes, compiled ahead, instead of an edit at each instant (the same line)."""
+        if self._pushes is None:
+            from constraints import push_of
+            out = {}
+            if self.live:
+                for e in self.events:
+                    k = push_of(e)
+                    if k is not None:
+                        out[str(e)] = k
+            self._pushes = out
+        return self._pushes
 
     @staticmethod
     def of(events=(), **fields) -> Script:

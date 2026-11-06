@@ -42,6 +42,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 
+from constraints import pushes_in
 from generator import PACE, PACE_TIME, RulesGenerator, RunStats
 from guards import check_script_edit
 from intervals import EPS, INF, Interval, Num, Pos
@@ -677,8 +678,11 @@ class Simulation:
             script, events = self.script, self._events(period)
             looks = self._looks[1] if self._looks is not None and self._looks[0] is script else {}
             self._looks = (script, looks)
+            pushes = script.pushes()
             for ev in events:
                 key = str(ev)
+                if key in pushes:
+                    continue  # (the mode rules keep it as the chip goes: `_apply_on`)
                 c = self.chip.position(t)
                 mode = self.modes.mode_at(c)
                 if not due(looks.get(key), ev.trigger, self.state, c, mode, problems):
@@ -799,7 +803,8 @@ class Simulation:
                 last = b
 
     def _apply_on(self, t0: Fraction, mode: str, x: Pos, hi: Pos) -> None:
-        mr = self._live_rules.get(mode) or self._live_rules.setdefault(mode, ModeRules(self.rules, mode, self.script.constraints))
+        mr = self._live_rules.get(mode) or self._live_rules.setdefault(mode, ModeRules(
+            self.rules, mode, tuple(self.script.constraints) + pushes_in(self.script.pushes().values(), mode)))
         mr.kept = self._kept
         made = None  # the last state of the run, as the rules made it
         for ev in mr.act(self.state, x, hi):

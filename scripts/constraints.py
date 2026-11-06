@@ -62,6 +62,96 @@ class KeepOn:
         return f"keep {str(self.op).replace(' on ', ' on chip + ', 1)}"
 
 
+class ChipPush:
+    """What a script's event "if the chip is on K (and mode is m), then from the chip, take K
+    off (0, inf), put K on R" does, as the mode rules keep it: K after the chip is R from
+    the chip, at every position the chip goes through in mode m while it is on K (or K is
+    less than `within` after it). The event fires at each instant it is true; here it is
+    the same, continuous, and the mode rules compile it ahead (mode_rules._Plan): the line
+    is a function of the chip's position, with nothing to solve at each step of the chip.
+    Not a constraint of the generator: the script's own (`push_of`)."""
+
+    def __init__(self, kind: str, region: Region, mode: str | None, within) -> None:
+        self.kind, self.region, self.mode, self.within = kind, region, mode, Fraction(within)
+
+    def kinds(self) -> set:
+        return {self.kind}
+
+    def holds_by_itself(self) -> bool:
+        return True
+
+    def on(self, state: LineState, c) -> bool:
+        """The chip at c is on K, or K is less than `within` after it (script.ChipOn), on
+        the line as the chip gets to c (mode_rules.ModeRules.decide: before the mode rules
+        act there). A piece that starts right after the chip is not pushed yet: the chip
+        sitting before a break leaves the breaks where they are. "Less than `within` after"
+        is (c, c + within], its end included: pushed from the position before, K starts
+        right at c + within, and the chip still pushes it there (ChipOn's (c, c + within)
+        is the same between two instants, ε apart only)."""
+        p = c if isinstance(c, Pos) else Pos(c)
+        pres = state.line.presence(self.kind)
+        if pres.contains(p):
+            return True
+        return bool(self.within) and not (pres & Region.of(Interval(p, p + self.within, False, True))).is_empty()
+
+    def targets(self, state: LineState, c) -> dict:
+        return self.from_chip(c) if self.on(state, c) else {}
+
+    def behind(self) -> bool:
+        """What the chip leaves behind it as it pushes: K at each position it went through
+        if R starts right after the chip (R from the position before has it there: (0, 900]),
+        none if R starts further ((10, 910])."""
+        return self.region.contains(EPS)
+
+    def from_chip(self, c) -> dict:
+        """K after the chip at c, pushed: R from c (its ε part kept, so that a run of the mode
+        rules makes the same decision at each of its positions)."""
+        p = c if isinstance(c, Pos) else Pos(c)
+        return {self.kind: self.region.shift(p) & _after(p)}
+
+    def ops(self, state: LineState, c: Fraction) -> list[Op]:
+        return []  # (it acts as the chip goes, in the mode rules)
+
+    def __str__(self) -> str:
+        return f"push {self.kind} on chip + {self.region}" + (f" in mode {self.mode}" if self.mode is not None else "")
+
+
+def push_of(event) -> ChipPush | None:
+    """The ChipPush an event of a script is, if it is one: "if the chip is on K (and mode
+    is m), then from the chip, take K off (0, inf) [or more], put K 100% on R ⊆ (0, inf)"
+    (what generator.constraint_events writes; the user may change R). None otherwise: the
+    event then fires at each instant, as written."""
+    from script import ChipOn, EditAction
+    trig = event.trigger
+    if not isinstance(trig, ChipOn) or len(event.actions) != 1:
+        return None
+    a = event.actions[0]
+    if not isinstance(a, EditAction) or not a.from_chip:
+        return None
+    if any(o.kind != trig.kind or o.action not in ("take", "put") for o in a.ops):
+        return None
+    taken, put = Region.empty(), Region.empty()
+    for o in a.ops:
+        if o.action == "take":
+            if not put.is_empty():
+                return None  # (a take after a put: not "K is R after the chip")
+            taken = taken | o.region
+        elif o.value != 100:
+            return None
+        else:
+            put = put | o.region
+    if put.is_empty() or not (_after(ZERO) - taken).is_empty() or not (put - _after(ZERO)).is_empty():
+        return None
+    lo = put.inf()
+    within = trig.within if trig.within is not None else max(Fraction(0), lo.x if isinstance(lo, Pos) else Fraction(0))
+    return ChipPush(trig.kind, put, trig.mode, within)
+
+
+def pushes_in(pushes, mode: str) -> tuple:
+    """Those of these pushes that act in this mode."""
+    return tuple(k for k in pushes if k.mode in (None, mode))
+
+
 class MinimumGap:
     """No interval of `kind` within `gap` after the end of an interval of `after` (`kind` by
     default) at least `at_least` long: e.g. ("Break15", 7200, after="NoScreen", at_least=900),

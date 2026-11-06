@@ -585,6 +585,23 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     the same is computed on the line as it is. Where the modes differ from what
     the text says, the mode rules do nothing, and the script's `Uncovered` event runs
     the generator again (`test_unpredicted_modes`).
+  - **The chip pushing a kind.** The generator writes what the chip does on a break
+    it cannot be in as an event: "if the chip is on K and mode is m, then from the
+    chip, take K off (0, inf), put K on R" (`generator.constraint_events`). Fired at
+    each instant, it would be an edit and a solve at each step of the chip, and the
+    line it makes would never be the one a run compiled. Where the script applies
+    the mode rules everywhere (`live`), an event of that shape is read as one with
+    them instead (`constraints.push_of`, `ChipPush`). That is the same text, and the
+    same line:
+    - at each position the chip goes through in mode m while K is at it or less
+      than R's start after it, K after the chip is R from the chip, ε part included;
+    - what it leaves behind it is K if R starts right after the chip ((0, 900]),
+      nothing if R starts further ((10, 910]);
+    - a run of the mode rules that starts pushing K keeps pushing it to its end, and
+      the moving ends of K are not positions where its decision can change.
+    So the run compiles it ahead with the line an affine function of the chip, and a
+    step of the chip costs no edit and no solve (`CompiledPushTest`). Any other edit
+    from the chip fires at each instant, as written.
   - **Moved scripts.** The rules are the same at every position. A script put in
     place with the chip d after the position its run compiled from (the run took
     that long), on the line the run compiled from moved by d, applies its stretches

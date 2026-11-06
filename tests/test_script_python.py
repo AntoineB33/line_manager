@@ -8,7 +8,7 @@ import unittest
 from fractions import Fraction as F
 from unittest import mock
 
-from helpers import Interval  # noqa: F401 (the paths of scripts/)
+from helpers import Interval, Region  # noqa: F401 (the paths of scripts/)
 
 UI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "UI")
 sys.path.insert(0, UI)
@@ -197,6 +197,104 @@ class WrittenOutTest(unittest.TestCase):
             s.tick(F(5))
             a, b = self.breaks(s)[0]
             self.assertEqual((a - s.position, b - s.position), (10, 910), s.position)
+
+
+class CompiledPushTest(unittest.TestCase):
+    """The chip pushing a break, "if the chip is on Break15 and mode is 1, then from the
+    chip, take Break15 off (0, inf), put Break15 on R", is the same text, but the mode
+    rules keep it as the chip goes (constraints.ChipPush), compiled ahead: the line is a
+    function of the chip's position. No edit and nothing solved at each step of the chip
+    (an edit and a solve at each step cost about a second each); and the same line as an
+    edit at each instant."""
+
+    def breaks(self, s):
+        return [(iv.lo.x, iv.hi.x) for iv in s.sim.state.line.presence("Break15").on(s.position - 100, s.position + 20000).intervals]
+
+    def start(self):
+        s = example("screen_break_15_rules")
+        s.sim.background = False
+        s.tick(F(1, 20))  # (the chip is on the break: the run starts)
+        return s
+
+    def test_the_push_is_read_as_one(self):
+        pushes = example("screen_break_15_rules").sim.script.pushes()
+        self.assertEqual([(k.kind, k.mode, k.within) for k in pushes.values()], [("Break15", "1", 0)])
+
+    def test_no_edit_and_nothing_solved_as_the_chip_pushes(self):
+        import mode_rules
+        import resolve
+        s = self.start()
+        n, count = len(s.sim.log.changes), [0]
+
+        def counted(real):
+            def f(*a, **k):
+                count[0] += 1
+                return real(*a, **k)
+            return f
+        with mock.patch.object(mode_rules, "solve", counted(mode_rules.solve)), \
+                mock.patch.object(resolve, "solve", counted(resolve.solve)):
+            for _ in range(40):  # two seconds at 20 frames a second
+                s.tick(F(1, 20))
+                a, b = self.breaks(s)[0]
+                self.assertEqual((a - s.position, b - s.position), (0, 900), s.position)
+        self.assertEqual(count[0], 0)
+        self.assertEqual([c for c in s.sim.log.changes[n:] if c.source == "script"], [])
+
+    def test_nothing_solved_as_the_chip_pushes_a_break_10_ahead(self):
+        """(10, 910] from the chip: pushed from the position before, the break starts right
+        at chip + 10, which is still "less than 10 after" the chip: one run, not a run (and
+        a solve) at each position."""
+        import mode_rules
+        s = example("screen_break_15_rules")
+        s.command("generator off")
+        text = s.script_text()
+        s.edit_script(text.replace("Op.put('Break15', R1)), from_chip=True)",
+                                   "Op.put('Break15', cycle(F(0), F(8100), F(10), F(910)))), from_chip=True)"), s.sim.script)
+        s.sim.background = False
+        s.tick(F(1, 20))
+        count = [0]
+        real = mode_rules.solve
+
+        def counted(*a, **k):
+            count[0] += 1
+            return real(*a, **k)
+        with mock.patch.object(mode_rules, "solve", counted):
+            for _ in range(40):
+                s.tick(F(1, 20))
+                a, b = self.breaks(s)[0]
+                self.assertEqual((a - s.position, b - s.position), (10, 910), s.position)
+        self.assertEqual(count[0], 0)
+
+    def test_a_jump_lands_where_the_steps_land(self):
+        """The program put to sleep: the chip 50 further at once, as if it went step by step."""
+        stepped, jumped = self.start(), self.start()
+        for _ in range(100):
+            stepped.tick(F(1, 2))
+        jumped.tick(F(50))
+        self.assertEqual(stepped.position, jumped.position)
+        self.assertEqual(self.breaks(stepped)[:3], self.breaks(jumped)[:3])
+        self.assertEqual(self.breaks(jumped)[0], (jumped.position, jumped.position + 900))
+        self.assertEqual(jumped.sim.log.refused, [])
+
+    def test_another_edit_from_the_chip_is_an_edit_at_each_instant(self):
+        """Only "K is R after the chip" is read as a push: anything else in the event
+        (another kind, a value under 100, a take that leaves some of K after the chip) and
+        it fires at each instant, as written."""
+        from constraints import push_of
+        from intervals import INF
+        from line import Op
+        from script import ChipOn, EditAction, Event
+        R = Region.of(Interval.open_closed(0, 900))
+        after = Region.of(Interval(0, INF, False, False))
+
+        def ev(*ops):
+            return Event(ChipOn("Break15", "1"), (EditAction(ops, from_chip=True),))
+        self.assertIsNotNone(push_of(ev(Op.take("Break15", after), Op.put("Break15", R))))
+        self.assertIsNone(push_of(ev(Op.take("Break15", after), Op.put("Break15", R, 50))))
+        self.assertIsNone(push_of(ev(Op.take("Break15", Region.of(Interval.open_closed(0, 10))), Op.put("Break15", R))))
+        self.assertIsNone(push_of(ev(Op.take("Break15", after), Op.put("Break5", R))))
+        self.assertIsNone(push_of(Event(ChipOn("Break15", "1"), (EditAction((Op.take("Break15", after), Op.put("Break15", R))),))))
+
 
 class GeneratorOffTest(unittest.TestCase):
     """The Generator button / `generator off`: no run, whatever asks for it; on: one run."""

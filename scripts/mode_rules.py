@@ -39,6 +39,7 @@ import math
 from dataclasses import dataclass
 from fractions import Fraction
 
+from constraints import ChipPush, pushes_in
 from guards import check_mode_edit, same_dict, user_claims
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import GEN, MODE, LineState, Op
@@ -48,6 +49,7 @@ from rules import RuleSet, _fgcd
 from solver import Conflict, Line, Undetermined, checkpoint, lhs_region, solve
 
 HOLDS, PUT, NONE = "holds", "put", "none"
+PUSHING = "pushing"  # (the last item of a decision, where the mode rules keep pushes: `decide`)
 
 
 @dataclass
@@ -78,13 +80,14 @@ class Stretch:
         return self.after if self.plan is None or p == self.b else self.plan.state_at(p)
 
 
-def compile_runs(rs: RuleSet, state: LineState, segments, constraints=()) -> tuple[list[Stretch], list[tuple[Pos, str]]]:
+def compile_runs(rs: RuleSet, state: LineState, segments, constraints=(), pushes=()) -> tuple[list[Stretch], list[tuple[Pos, str]]]:
     """The mode rules along the chip's positions [lo, hi] of each (lo, hi, mode) of
-    `segments`, from `state`, the constraints kept after the chip: the stretches they
-    make, and the operands refused."""
+    `segments`, from `state`, the constraints kept after the chip, and the script's
+    pushes (constraints.ChipPush) in their modes: the stretches they make, and the
+    operands refused."""
     out, refused, mrs = [], [], {}
     for lo, hi, mode in segments:
-        mr = mrs.get(mode) or mrs.setdefault(mode, ModeRules(rs, mode, constraints))
+        mr = mrs.get(mode) or mrs.setdefault(mode, ModeRules(rs, mode, tuple(constraints) + pushes_in(pushes, mode)))
         for ev in mr.act(state, lo, hi):
             if isinstance(ev, Run):
                 plan = ev.plan.frozen() if ev.plan is not None else None
@@ -99,6 +102,7 @@ class ModeRules:
     def __init__(self, rs: RuleSet, mode: str, constraints=()) -> None:
         self.rs = rs
         self.constraints = tuple(constraints)  # kept after the chip (constraints.py): `constrain`
+        self.pushes = tuple(k for k in self.constraints if isinstance(k, ChipPush))  # (constraints.ChipPush)
         self.rules = [r for r in rs.mode_rules if r.mode == mode]
         self.items = [(r, it) for r in self.rules for it in r.rhs]
         dists = [abs(e.x) for r in rs.element for o in r.lits() for e in (o.where.lo, o.where.hi) if type(e) is Pos]
@@ -126,6 +130,7 @@ class ModeRules:
     def decide(self, state: LineState, x: Pos) -> tuple[tuple, LineState, list[str]]:
         """The decision at x on this state, the state after it, and why operands were refused."""
         s, out, why = state, [], []
+        pushing = self.pushing(state, x)  # (on the line as the chip gets to x: before the rules act there)
         for r in self.rules:
             met = lhs_region(r.lhs, s.line.vals).contains(x)
             for it in r.rhs:
@@ -153,27 +158,75 @@ class ModeRules:
                     s, choice = after, (PUT, oi, _gone(s, after, x, o.kind))
                     break
                 out.append(choice)
+        if self.pushes:
+            out.append((PUSHING, pushing))  # (a run that starts pushing a kind pushes it all along)
+            return tuple(out), self._constrained(s, x, pushing), why
         return tuple(out), self._constrained(s, x), why
 
-    def with_run(self, state: LineState, decision: tuple, at: Region) -> LineState:
+    def pushing(self, state: LineState, p: Pos) -> frozenset:
+        """The kinds the chip at p pushes on this state (constraints.ChipPush.on)."""
+        return frozenset(k.kind for k in self.pushes if k.on(state, p))
+
+    @staticmethod
+    def pushing_of(decision: tuple) -> frozenset | None:
+        """The kinds a decision pushes (`decide`); None if the mode rules push nothing."""
+        last = decision[-1] if decision else None
+        return last[1] if last and last[0] == PUSHING else None
+
+    def with_run(self, state: LineState, decision: tuple, at: Region, pushing: frozenset | None = None) -> LineState:
         """The state with the decision's edits on `at`: the operands placed, and the older
         claims the edit removed at its position (M1: at that position only) removed on
-        `at` too."""
+        `at` too. `pushing`: the kinds the chip pushes all along the run (where it started:
+        each position of the run pushes them again, so the chip is still on them at the
+        last, whatever the run removed of them behind it); None: read on the state."""
+        p = at.bounded().sup()
+        claims = state.claims
+        if pushing:
+            claims = self.pushed_behind(claims, pushing, at.bounded().inf() - EPS, p)
+            state = LineState(claims, state.line, state.history)  # (its line: solved below)
         c = self.run_claims(state, decision, at)
         if c is None:
-            return state
-        return self._constrained(LineState(c, solve(self.rs, c.problem()), state.history), at.bounded().sup())
+            if not pushing:
+                return state
+            c = claims
+        return self._constrained(LineState(c, solve(self.rs, c.problem()), state.history), p, pushing)
 
-    def constrain(self, claims, line: Line, p: Pos, history=(), give_way: bool = False):
+    def pushed_behind(self, claims, pushing: frozenset, m: Pos, p: Pos):
+        """The claims with what the chip pushing these kinds from m leaves behind it on
+        (m, p] (constraints.ChipPush.behind), before the run's own edits there: each
+        position of it was after the chip, pushed, until the chip went through it."""
+        c = None
+        went = Region.of(Interval(m, p, False, True))
+        for k in self.constraints:
+            if isinstance(k, ChipPush) and k.kind in pushing:
+                c = c or claims.copy()
+                d = c.pos.setdefault(k.kind, {})
+                for key in [key for key in d if key[1] == GEN]:
+                    d[key] = d[key] - went
+                    if not d[key]:
+                        del d[key]
+                if k.behind():
+                    key = (Fraction(100), GEN)
+                    d[key] = d[key] | went if key in d else went
+        return claims if c is None else c
+
+    def _targets(self, k, st: LineState, p: Pos, pushing: frozenset | None) -> dict:
+        if pushing is not None and isinstance(k, ChipPush):
+            return k.from_chip(p) if k.kind in pushing else {}
+        return k.targets(st, p)
+
+    def constrain(self, claims, line: Line, p: Pos, history=(), give_way: bool = False, pushing: frozenset | None = None):
         """The claims with the constraints' elements after p where they want them, as the
         generator's (GEN; its script keeps them as the chip goes): with the chip at p in
         mode 1, the break it would eat moves on after it. `give_way`: the generator's other
-        elements are taken off where those go (the next run places them again)."""
+        elements are taken off where those go (the next run places them again). `pushing`:
+        as `with_run`."""
         if not self.constraints:
             return claims
         st, c = LineState(claims, line, history), claims.copy()
         later = Region.of(Interval(p, INF, False, False))
-        wanted = {kind: want for k in self.constraints for kind, want in k.targets(st, p).items()}
+        targets = [self._targets(k, st, p, pushing) for k in self.constraints]
+        wanted = {kind: want for t in targets for kind, want in t.items()}
         if give_way:
             moved = Region.empty()
             for want in wanted.values():
@@ -184,8 +237,8 @@ class ModeRules:
                         d[key] = d[key] - moved
                         if not d[key]:
                             del d[key]
-        for k in self.constraints:
-            for kind, want in k.targets(st, p).items():
+        for t in targets:
+            for kind, want in t.items():
                 d = c.pos.setdefault(kind, {})
                 for key in list(d):
                     if key[1] == GEN:
@@ -197,17 +250,17 @@ class ModeRules:
                     d[key] = d[key] | want if key in d else want
         return c
 
-    def _constrained(self, state: LineState, p: Pos) -> LineState:
+    def _constrained(self, state: LineState, p: Pos, pushing: frozenset | None = None) -> LineState:
         """The state with the constraints kept after p (`constrain`), solved."""
         if not self.constraints:
             return state
-        c = self.constrain(state.claims, state.line, p, state.history)
+        c = self.constrain(state.claims, state.line, p, state.history, pushing=pushing)
         if c.same(state.claims) is True:
             return state
         try:
             return LineState(c, solve(self.rs, c.problem()), state.history)
         except Conflict:  # the generator's other elements are in the way
-            c = self.constrain(state.claims, state.line, p, state.history, give_way=True)
+            c = self.constrain(state.claims, state.line, p, state.history, give_way=True, pushing=pushing)
             return LineState(c, solve(self.rs, c.problem()), state.history)
 
     def run_claims(self, state: LineState, decision: tuple, at: Region):
@@ -228,20 +281,35 @@ class ModeRules:
 
     # ------------------------------------------------------------ the positions of a sweep
 
-    def candidates(self, state: LineState, m: Pos, lo: Pos, hi: Pos) -> list[Pos]:
+    def candidates(self, state: LineState, m: Pos, lo: Pos, hi: Pos, pushing: frozenset | None = None) -> list[Pos]:
         """The positions of [lo, hi] where a run started at m can change its decision: the
-        ends of the kinds it reads (`reads`; the others cannot change it)."""
+        ends of the kinds it reads (`reads`; the others cannot change it). A kind the chip
+        pushes from m (constraints.ChipPush) is made again from the chip at each position:
+        its ends after m in this state, and those of the line there (what comes with it),
+        move with the chip and are not where the decision changes; the claims of the user
+        and of the mode rules stay where they are, and their ends are looked at."""
         keep = self.reads or (lambda k: True)
-        regions = [r for k, d in state.claims.pos.items() if keep(k) for r in d.values()]
-        regions += [r for k, d in state.claims.neg.items() if keep(k) for r in d.values()]
-        regions += [r for k, d in state.claims.taken.items() if keep(k) for r in d.values()]
-        regions += [r for k, d in state.line.vals.items() if keep(k) for r in d.values()]
         span = self.span
         a, b = lo.x - span - 1, hi.x + span + 1
+        pushed = pushing or frozenset()
+        moving = set()
+        for kind in pushed:
+            for reg in [r for (_, owner), r in state.claims.pos.get(kind, {}).items() if owner == GEN] + \
+                    list(state.line.vals.get(kind, {}).values()):
+                for iv in reg.on(a, b).intervals:
+                    moving.update(e for e in (iv.lo, iv.hi) if type(e) is Pos and e > m)
+        regions = [r for k, d in state.claims.pos.items() if keep(k) for (_, owner), r in d.items()
+                   if not (k in pushed and owner == GEN)]
+        regions += [r for k, d in state.claims.neg.items() if keep(k) for r in d.values()]
+        regions += [r for k, d in state.claims.taken.items() if keep(k) for r in d.values()]
+        fixed = [r for k, d in state.line.vals.items() if keep(k) for r in d.values()]
         ends = {m}
         for reg in regions:
             for iv in reg.on(a, b).intervals:
                 ends.update(e for e in (iv.lo, iv.hi) if type(e) is Pos)
+        for reg in fixed:
+            for iv in reg.on(a, b).intervals:
+                ends.update(e for e in (iv.lo, iv.hi) if type(e) is Pos and e not in moving)
         out = set()
         for e in ends:
             if self.g is None:
@@ -323,11 +391,12 @@ class ModeRules:
         except _Changes:
             pass  # the chip will refuse there when it gets there
 
-    def _same(self, state: LineState, decision: tuple, lo: Pos, p: Pos) -> tuple[bool, LineState | None]:
+    def _same(self, state: LineState, decision: tuple, lo: Pos, p: Pos,
+              pushing: frozenset | None = None) -> tuple[bool, LineState | None]:
         """With the run on [lo, p), is the decision at p the same? And the state with the
-        run on [lo, p]."""
+        run on [lo, p]. `pushing`: as `with_run`."""
         try:
-            before = self.with_run(state, decision, Region.of(_iv(lo, p - EPS))) if lo < p else state
+            before = self.with_run(state, decision, Region.of(_iv(lo, p - EPS)), pushing) if lo < p else state
             d, after, _ = self.decide(before, p)
         except (Conflict, Undetermined, IncompatiblePeriods):
             return False, None
@@ -353,6 +422,7 @@ class _Plan:
         self.top: Pos | None = None  # how far they were looked for
         self.last, self.next = state0, self.a0  # the state the run made last, and where it goes on
         self.before, self.pending = None, None  # decided ahead of the chip (`prepare`): the state before, (why, after)
+        self.pushing = mr.pushing_of(decision)  # the kinds the chip pushes all along the run (`with_run`)
 
     def extend(self, nxt: Pos, hi: Pos):
         """The last position of [nxt, hi] the run reaches (None: not nxt), checking the
@@ -372,7 +442,7 @@ class _Plan:
             # the fewer are checked, and a run that goes on is what mode rules mostly do)
             g = self.mr.g or LOOK_AHEAD * (self.mr.rs.reach or Fraction(1))
             self.top = Pos(max(hi.x, cur.x) + g)
-            self.queue = self.mr.candidates(self.state0, self.m, cur, self.top)
+            self.queue = self.mr.candidates(self.state0, self.m, cur, self.top, self.pushing)
         self.queue = [c for c in self.queue if c >= cur]
         if self.queue and self.queue[0] == cur:
             a = b = self.queue.pop(0)
@@ -381,7 +451,7 @@ class _Plan:
         reps = [a] if a == b else [a] + ([Pos((a.x + b.x) / 2)] if a.x < b.x else []) + [b]
         states = {}
         for i, p in enumerate(reps):
-            ok, st = self.mr._same(self.state0, self.decision, self.a0, p)
+            ok, st = self.mr._same(self.state0, self.decision, self.a0, p, self.pushing)
             if not ok:
                 if i == 0:
                     self.over = True
@@ -410,7 +480,7 @@ class _Plan:
     def state_at(self, p: Pos) -> LineState:
         """The state with the run on [m + ε, p], p checked."""
         s = self.exact(p)
-        return s if s is not None else self.mr.with_run(self.state0, self.decision, Region.of(_iv(self.a0, p)))
+        return s if s is not None else self.mr.with_run(self.state0, self.decision, Region.of(_iv(self.a0, p)), self.pushing)
 
     def formula_until(self, p: Pos) -> Pos | None:
         """Where the formula of the line at p stops; None if there is none at p."""
@@ -427,11 +497,17 @@ class _Plan:
                     return states[p]
                 if line is not None:
                     try:
-                        c = self.mr.run_claims(self.state0, self.decision, Region.of(_iv(self.a0, p)))
+                        s0 = self.state0
+                        if self.pushing:
+                            s0 = LineState(self.mr.pushed_behind(s0.claims, self.pushing, self.m, p), s0.line, s0.history)
+                        c = self.mr.run_claims(s0, self.decision, Region.of(_iv(self.a0, p)))
                         if c is None:
-                            return self.state0
+                            if not self.pushing:
+                                return self.state0
+                            c = s0.claims
                         lp = line(p)
-                        return LineState(self.mr.constrain(c, lp, p, self.state0.history), lp, self.state0.history)
+                        return LineState(self.mr.constrain(c, lp, p, self.state0.history, pushing=self.pushing), lp,
+                                         self.state0.history)
                     except _NotAffine:
                         pass
                 break

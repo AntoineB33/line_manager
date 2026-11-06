@@ -370,6 +370,13 @@ class AsEarlyAsPossible:
         cp = c if isinstance(c, Pos) else Pos(c)
         after = _after(c)
         mine = state.claims.owned(self.kind, GEN) & after  # (its own pieces ahead: placed again here)
+        # its own piece the chip is at the first position of ((c - ε, c - ε + L], pushed or
+        # dragged there from the position before): placed again from the chip too, not a
+        # piece of one position that ended at c (a 20s break dragged in mode 2 until c,
+        # then crossed in mode 1, is not a break of {c} that bars the next 20 minutes)
+        own = state.claims.owned(self.kind, GEN)
+        if own.contains(cp) and any(iv.lo == cp for iv in state.line.presence(self.kind).on(cp - 1, cp + 1).intervals):
+            mine = mine | (own & Region.point(cp))
         no = Region.empty()
         if self.rules is not None:
             from problems import forbidden
@@ -459,11 +466,24 @@ class AsEarlyAsPossible:
                     out.append(r.mode)
         return sorted(set(out))
 
+    def _with(self, rules) -> set:
+        """Its kind and those it comes with at once (`kind → X` at its position, `_counts`)."""
+        return {self.kind} | {k for k in rules.order if k != self.kind and self._counts(MinimumGap(self.kind, 1, after=k))}
+
     def pushed_in(self, rules) -> list[str]:
         """The modes in which it cannot be at the chip: a mode rule that rules it out there,
-        or a kind it comes with ("mode 1 → no NoScreen", a break coming with "no screen")."""
+        or a kind it comes with ("mode 1 → no NoScreen", a break coming with "no screen").
+        Not a rule whose left side its own piece at the chip turns off ("mode 1 & not
+        Break20s → no NoScreen": the chip crosses a 20s break in mode 1, not pushing it)."""
+        from rules import conjuncts
+        from solver import lhs_region
         out = []
         for r in rules.mode_rules:
+            if conjuncts(r.lhs):
+                pt = Region.point(ZERO)
+                vals = {k: {Fraction(100): pt} for k in self._with(rules)}
+                if not lhs_region(r.lhs, vals).contains(ZERO):
+                    continue
             for o in r.lits():
                 if o.negated and o.where.is_point and o.where.lo == ZERO and (
                         o.kind == self.kind or self._counts(MinimumGap(self.kind, 1, after=o.kind))):

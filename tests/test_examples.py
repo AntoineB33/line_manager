@@ -53,6 +53,8 @@ class ExamplesTest(unittest.TestCase):
             "screen_break_15": {(ChipIn, None), Edited},
             # the breaks from rules and constraints (no target): as screen_break_15
             "screen_break_15_rules": {(ChipIn, None), Edited},
+            # the 20s break from rules and constraints (no target): as screen_break_15_rules
+            "screen_break_20s_rules": {(ChipIn, None), Edited},
             # its tasks: the score and their ratios are watched, and each mode, which can
             # forbid them at the chip (the next run makes the turns again)
             "screen_break_15_task": {(ChipIn, None), (ChipIn, "1"), (ChipIn, "2"), (ChipIn, "3"), Edited,
@@ -205,6 +207,85 @@ class ExamplesTest(unittest.TestCase):
                 out.append(ahead[0].lo.x)
             return out
         self.assertEqual(nexts("screen_break_15_rules"), nexts("screen_break_15"))
+
+
+class TwentySecondBreakTest(unittest.TestCase):
+    """screen_break_20s_rules.py: OmniApp's 20s break (the look-away) with rules and
+    constraints only, each requirement checked on the line (docs/scheduler_requirements.md
+    of OmniApp). Its modes: 1, then 2 (locked) from 3000, then 1 again from 6000."""
+
+    @classmethod
+    def setUpClass(cls):
+        from fractions import Fraction as F
+        from test_script_python import example
+        s = example("screen_break_20s_rules")
+        s.sim.background = False
+        cls.at = {}
+        for stop in (5, 1230, 1250, 3700, 5000, 6010, 6030):
+            s.tick(F(stop) - s.position)
+            cls.at[stop] = (s.sim.state.line, s.sim.state.claims)
+        cls.refused = list(s.sim.log.refused)
+
+    def starts(self, stop, a, b):
+        return [iv.lo.x for iv in self.at[stop][0].presence("Break20s").on(a, b).intervals]
+
+    def on(self, stop, kind, x=None):
+        return self.at[stop][0].presence(kind).contains(stop if x is None else x)
+
+    def test_every_20min20s_as_early_as_possible(self):
+        """20 seconds each, the next 20 minutes after the end of the last: every 1220."""
+        self.assertEqual(self.starts(5, 0, 5000), [0, 1220, 2440, 3660, 4880])
+        line = self.at[5][0]
+        self.assertTrue(line.presence("Break20s").contains(1221) and line.presence("Break20s").contains(1240))
+        self.assertFalse(line.presence("Break20s").contains(1241))
+        self.assertEqual(self.refused, [])
+
+    def test_a_mode_1_line_crosses_it_as_in_mode_3(self):
+        """"Can't go in mode 1 during a 20s break": the line in mode 1 enters it and is as in
+        mode 3 ("not on a computer" or "not on a phone", "no screen") until it leaves it; the
+        break stays where it is, and after it the line has no "no screen"."""
+        self.assertTrue(self.on(1230, "Break20s") and self.on(1230, "NoScreen"))
+        self.assertTrue(self.on(1230, "NotOnComputer") or self.on(1230, "NotOnPhone"))
+        self.assertEqual(self.starts(1250, 1000, 1300), [1220])
+        self.assertFalse(self.on(1250, "NoScreen"))
+
+    def test_mode_2_drags_it(self):
+        """"If the now line reaches a 20s break in mode 2, it becomes (now line, now line +
+        20s]": the break of 3660 waits at the line, which stays in "no screen" (all the lock
+        behind it), and the next ones are 20 minutes after it."""
+        self.assertEqual(self.starts(3700, 3500, 6000), [3700, 4920])
+        self.assertFalse(self.on(3700, "Break20s"))
+        line = self.at[3700][0]
+        self.assertTrue(line.presence("NoScreen").contains(3001) and line.presence("NoScreen").contains(3700))
+        self.assertTrue(self.on(3700, "NoComputerUnlocked") and self.on(3700, "NoPhoneUnlocked"))
+        self.assertEqual(self.starts(5000, 4000, 7000), [5000, 6220])
+
+    def test_back_at_the_screen_the_dragged_break_is_crossed(self):
+        """Back in mode 1 at 6000 after 50 minutes locked: the dragged break is entered there
+        (an hour of "no screen" bars no 20s break) and crossed as in mode 3; the next one
+        20 minutes after it."""
+        self.assertEqual(self.starts(6010, 5900, 8000), [6000, 7220])
+        self.assertTrue(self.on(6010, "Break20s") and (self.on(6010, "NotOnComputer") or self.on(6010, "NotOnPhone")))
+        self.assertFalse(self.on(6030, "NoScreen"))
+        self.assertEqual(self.starts(6030, 5900, 8000), [6000, 7220])
+
+    def test_one_that_would_start_inside_no_screen_starts_at_its_start(self):
+        """"No screen" on [1100, 1300]: the break due at 1220 starts at 1100, the next 20
+        minutes after it (2320)."""
+        from intervals import Interval as Iv2
+        from line import Op
+        sim = first_run("screen_break_20s_rules")
+        sim.edit_now([Op.put("NoScreen", Region.of(Iv2(1100, 1300, True, True)))])
+        req = sim.request
+        sim.complete(req.id, *list(req.gen.stages(req.state, req.chip, req.known, req.previous))[-1])
+        self.assertEqual([iv.lo.x for iv in sim.state.line.presence("Break20s").on(0, 3000).intervals], [0, 1100, 2320])
+
+    def test_only_mode_2_pushes_it(self):
+        """Mode 1 does not push it ("mode 1 & not Break20s → no NoScreen": in a 20s break the
+        rule does not act), mode 2 does; and no push from "no screen" that lasted: no "no
+        screen" bars a 20s break."""
+        pushes = first_run("screen_break_20s_rules").script.pushes()
+        self.assertEqual([(k.kind, k.mode, k.on_kind) for k in pushes.values()], [("Break20s", "2", "Break20s")])
 
 
 if __name__ == "__main__":

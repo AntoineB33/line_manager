@@ -161,7 +161,10 @@ percentage rule can have any percentage. Hidden kinds are not elements.
 
 `mode m [& L] → R` is a mode rule. It can add or remove elements only at the
 chip's position, so every location in R must be "at 0 of p"; any other location
-is refused.
+is refused. Its items are decided in order at the chip (`ModeRules.decide`); one
+found already true that a later item made false is decided again, until each holds
+("mode 2 → NoScreen & no Break20s" in a 20s break: "no screen" held by the break,
+which the second item takes off, is put by the mode).
 
 ### No cycle
 
@@ -613,6 +616,10 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     position is a candidate where a run's decision can change (`ChipPush.flips`).
     Without it the next break waited for a run of the generator, and the line broke
     its gap until then.
+  - **Not pushed where the mode rule does not act.** A mode rule with a left side is a
+    push's only where that side holds with K at the chip: "mode 1 & not Break20s → no
+    NoScreen" pushes no 20s break, and the chip crosses it in mode 1
+    (`AsEarlyAsPossible.pushed_in`, `screen_break_20s_rules.py`).
   - **Checked ahead elsewhere.** Where no stretch a run compiled fits the line (the
     generator off, or the line changed since its run), the mode rules decide at the
     chip. A new decision there, such as the chip starting to push a break, would cost

@@ -269,6 +269,37 @@ class CompiledPushTest(unittest.TestCase):
         self.assertEqual(count[0], 0)
         self.assertEqual([c for c in s.sim.log.changes[n:] if c.source == "script"], [])
 
+    def test_nothing_solved_as_the_line_crosses_or_drags_a_20s_break(self):
+        """screen_break_20s_rules.py: the line crossing the break of (1220, 1240] in mode 1
+        (as in mode 3: the break stays), then reaching and dragging the one of 3660 in mode 2
+        (the push "if the chip is on Break20s and mode is 2"): 4 seconds of frames each,
+        nothing solved, no edit of the script."""
+        import mode_rules
+        import resolve
+        count = [0]
+
+        def counted(real):
+            def f(*a, **k):
+                count[0] += 1
+                return real(*a, **k)
+            return f
+        for start, mode, breaks in ((1218, "1", lambda p: [(1220, 1240)]), (3658, "2", lambda p: [(max(p, 3660), max(p, 3660) + 20)])):
+            with self.subTest(start=start):
+                s = example("screen_break_20s_rules")
+                s.sim.background = False
+                s.tick(F(start) - s.position)
+                s.sim.background = True
+                n, count[0] = len(s.sim.log.changes), 0
+                with mock.patch.object(mode_rules, "solve", counted(mode_rules.solve)), \
+                        mock.patch.object(resolve, "solve", counted(resolve.solve)):
+                    for _ in range(80):
+                        s.tick(F(1, 20))
+                        self.assertEqual(s.sim.modes.mode_at(s.position), mode)
+                        got = [(iv.lo.x, iv.hi.x) for iv in s.sim.state.line.presence("Break20s").on(s.position - 30, s.position + 30).intervals]
+                        self.assertEqual(got, breaks(s.position), s.position)
+                self.assertEqual(count[0], 0)
+                self.assertEqual([c for c in s.sim.log.changes[n:] if c.source == "script"], [])
+
     def test_the_line_meets_a_break_no_run_compiled_with_nothing_to_solve(self):
         """The generator off, the line far past what its last run compiled: the mode rules
         the chip goes through are checked ahead of it in the edit worker's process

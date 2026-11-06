@@ -135,33 +135,46 @@ class ModeRules:
         """The decision at x on this state, the state after it, and why operands were refused."""
         s, out, why = state, [], []
         pushing = self.pushing(state, x)  # (on the line as the chip gets to x: before the rules act there)
+
+        def item(r, it, s):
+            """(the choice of an item at x on s, the state after it)."""
+            for oi, o in enumerate(it.options):
+                if _holds(o, s, x):
+                    return (HOLDS, oi), s
+                at = Region.point(x)
+                op = Op.put_no(o.kind, at) if o.negated else Op.put(o.kind, at, o.value or 100)
+                try:
+                    after = apply_edit(self.rs, s, [op], MODE)
+                except Refused as e:
+                    why.append(f"{r}: {o} at {x}: {e}")
+                    continue
+                reason = check_mode_edit(s, after, at, x)
+                if x == self.kept and not same_dict(user_claims(s.claims), user_claims(after.claims)):
+                    reason = "N2: the user edited this position after the chip got there"
+                if reason:
+                    why.append(f"{r}: {o} at {x}: {reason}")
+                    continue
+                return (PUT, oi, _gone(s, after, x, o.kind)), after
+            return (NONE,), s
         for r in self.rules:
             met = lhs_region(r.lhs, s.line.vals).contains(x)
             for it in r.rhs:
                 if not met:
                     out.append(None)
                     continue
-                choice = (NONE,)
-                for oi, o in enumerate(it.options):
-                    if _holds(o, s, x):
-                        choice = (HOLDS, oi)
-                        break
-                    at = Region.point(x)
-                    op = Op.put_no(o.kind, at) if o.negated else Op.put(o.kind, at, o.value or 100)
-                    try:
-                        after = apply_edit(self.rs, s, [op], MODE)
-                    except Refused as e:
-                        why.append(f"{r}: {o} at {x}: {e}")
-                        continue
-                    reason = check_mode_edit(s, after, at, x)
-                    if x == self.kept and not same_dict(user_claims(s.claims), user_claims(after.claims)):
-                        reason = "N2: the user edited this position after the chip got there"
-                    if reason:
-                        why.append(f"{r}: {o} at {x}: {reason}")
-                        continue
-                    s, choice = after, (PUT, oi, _gone(s, after, x, o.kind))
-                    break
+                choice, s = item(r, it, s)
                 out.append(choice)
+        # an item found already true that a later one made false ("mode 2 → NoScreen & no
+        # Break20s" with the chip in a 20s break: "no screen" held by the break, which the
+        # second item takes off): made true again, in order, until each holds
+        for _ in range(len(self.items)):
+            redo = [i for i, ((r, it), choice) in enumerate(zip(self.items, out))
+                    if choice and choice[0] == HOLDS and not _holds(it.options[choice[1]], s, x)]
+            if not redo:
+                break
+            for i in redo:
+                r, it = self.items[i]
+                out[i], s = item(r, it, s)
         if self.pushes:
             out.append((PUSHING, pushing))  # (a run that starts pushing a kind pushes it all along)
             return tuple(out), self._constrained(s, x, pushing), why

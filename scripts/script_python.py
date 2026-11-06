@@ -124,6 +124,7 @@ def py(v) -> str:
         return f"AsEarlyAsPossible({v.kind!r}" + (f", length={py(v.length)})" if v.length is not None else ")")
     if isinstance(v, MinimumGap):
         more = f", after={v.after!r}, at_least={py(v.at_least)}" if v.after != v.kind or v.at_least else ""
+        more += f", pull={v.pull!r}" if v.pull else ""
         return f"MinimumGap({v.kind!r}, {py(v.gap)}{more})"
     if isinstance(v, KeepOn):
         return f"KeepOn({py(v.op)})"

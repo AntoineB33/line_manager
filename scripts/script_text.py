@@ -182,8 +182,9 @@ def _screen_breaks(m, rules) -> ScreenBreaks:
     return ScreenBreaks(breaks, ns, chain, rules=rules)
 
 
-_GAP = re.compile(r"keep (\S+) at least (\S+) apart$")
-_GAP_AFTER = re.compile(r"keep (\S+) at least (\S+) after (\S+) or more of (\S+)$")
+_PULL = r"(?:, a gap ending inside (\S+) ending at its start)?$"
+_GAP = re.compile(r"keep (\S+) at least (\S+) apart" + _PULL)
+_GAP_AFTER = re.compile(r"keep (\S+) at least (\S+) after (\S+) or more of (\S+?)" + _PULL)
 
 
 _EARLY = re.compile(r"keep (\S+) as early as possible(?:, (\S+) each)?$")
@@ -197,13 +198,14 @@ def _constraint(line: str, rules):
         return AsEarlyAsPossible(m[1], None if m[2] is None else _number(m[2]))
     m = _GAP.match(line) or _GAP_AFTER.match(line)
     if m:
-        kinds = [m[1]] + ([m[4]] if m.re is _GAP_AFTER else [])
+        pull = m[5] if m.re is _GAP_AFTER else m[3]
+        kinds = [m[1]] + ([m[4]] if m.re is _GAP_AFTER else []) + ([pull] if pull else [])
         for k in kinds:
             if rules is not None and k not in rules.order:
                 raise ValueError(f"{k} is not in the rules")
         if m.re is _GAP_AFTER:
-            return MinimumGap(m[1], _number(m[2]), after=m[4], at_least=_number(m[3]))
-        return MinimumGap(m[1], _number(m[2]))
+            return MinimumGap(m[1], _number(m[2]), after=m[4], at_least=_number(m[3]), pull=pull)
+        return MinimumGap(m[1], _number(m[2]), pull=pull)
     m = _SCREEN.match(line)
     if m and " (none within " in line:
         return _screen_breaks(m, rules)

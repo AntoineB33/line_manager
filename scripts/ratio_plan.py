@@ -365,7 +365,7 @@ class Plan:
                 # its `after` intervals but those of the generator's turns after the chip (made
                 # again here: "no screen" that comes with a break of its own is not counted)
                 source = state.line.presence(gap.after) - (there if gap.after != k else after)
-                no[k] = no[k] | (gap.apart(source) & after)
+                no[k] = no[k] | (gap.apart(source, gap.pulls_of(state, c)) & after)
             theres[k] = there
         for g, P in self.groups:
             if P is None:

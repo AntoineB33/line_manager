@@ -8,15 +8,15 @@ whole). A break is no task: it has no presence ratio target. The constraints of 
 rules generator place the breaks:
     AsEarlyAsPossible("Break15", length=15 minutes)
         breaks of 15 minutes, each as early as the rules and the other constraints allow
-    MinimumGap("Break15", 2 hours, after="NoScreen", at_least=15 minutes)
+    MinimumGap("Break15", 2 hours, after="NoScreen", at_least=15 minutes, pull="NoScreen")
         no break within 2 hours after 15 minutes or more of "no screen" (a break included:
-        it comes with "no screen"; 30 minutes without screen, or 15 minutes in mode 2, too)
+        it comes with "no screen"; 30 minutes without screen, or 15 minutes in mode 2, too);
+        where those 2 hours would end inside a "no screen" period someone put, they end at
+        its start: a break that would start inside it starts at its start
 So a break of 15 minutes every 2h15 from the chip; in mode 1 ("no screen" ruled out at
 the chip), a break the chip reaches moves on with it.
 
-Not expressed (what the hand-written constraint of screen_break_15.py does and these do
-not say):
-- a break that would start inside a "no screen" period does not start at its start.
+Nothing the hand-written constraint of screen_break_15.py does is left out.
 
 Copy this file to make your own session, change the definitions, and run it:
     python UI/examples/screen_break_15_rules.py
@@ -58,8 +58,9 @@ LINE = []  # the line starts empty
 CONSTRAINTS = [
     # breaks of 15 minutes, each as early as allowed
     AsEarlyAsPossible("Break15", length=15 * MINUTE),
-    # no break within 2 hours after 15 minutes or more of "no screen" (a break included)
-    MinimumGap("Break15", 2 * 60 * MINUTE, after="NoScreen", at_least=15 * MINUTE),
+    # no break within 2 hours after 15 minutes or more of "no screen" (a break included);
+    # a break that would start inside a "no screen" period starts at its start
+    MinimumGap("Break15", 2 * 60 * MINUTE, after="NoScreen", at_least=15 * MINUTE, pull="NoScreen"),
 ]
 PROBLEMS = []  # a break is no task: no target
 Q = 0.5

@@ -160,13 +160,21 @@ class MinimumGap:
     The generator plans with it (the turns of `kind` wait where it is too close to such an
     interval, ratio_plan) and keeps it: its edits are those that make it hold after the
     chip (`ops`); an edit of the user that it cannot make hold is refused
-    (simulation.against_constraints)."""
+    (simulation.against_constraints).
+
+    With `pull`: where the gap would end inside an interval of `pull` put there by
+    someone (the user, a mode, the generator; not one a rule derives), the gap ends at
+    that interval's start instead, so `kind` may start there: OmniApp's "a break that
+    would start inside a no-screen period starts at its start" (pull="NoScreen"). Once
+    per interval: what starts there and comes with `after` makes it a long interval of
+    `after`, which opens the next gap at its end."""
 
     explicit = True  # its edits are written in the script (generator.constraint_events)
 
-    def __init__(self, kind: str, gap, after: str | None = None, at_least=0) -> None:
+    def __init__(self, kind: str, gap, after: str | None = None, at_least=0, pull: str | None = None) -> None:
         self.kind, self.gap = kind, Fraction(gap)
         self.after, self.at_least = after or kind, Fraction(at_least)
+        self.pull = pull
         if self.gap <= 0 or self.at_least < 0:
             raise ValueError("a gap > 0 and a length >= 0")
         self.cycle = self.gap + self.at_least  # (generator.search_window: far enough to see two of them)
@@ -190,14 +198,29 @@ class MinimumGap:
         core = presence.complement().dilate(Interval(ZERO, L, True, False)).complement()  # (x - L, x] all in it
         return core.dilate(Interval(-L, ZERO, False, True)) & presence
 
-    def apart(self, presence: Region) -> Region:
+    def apart(self, presence: Region, pulls: Region | None = None) -> Region:
         """Where `kind` cannot be after these intervals of `after`: (end, end + gap] of each
-        one at least `at_least` long."""
+        one at least `at_least` long, short of what `pulls` (the intervals of `pull`,
+        `pulls_of`) takes off its end."""
         long = self.long(presence)
         if long.is_empty():
             return Region.empty()
         ends = long.complement().left_edges()  # (the first position after each interval)
-        return ends.dilate(Interval(ZERO, Pos(self.gap), True, False))
+        window = ends.dilate(Interval(ZERO, Pos(self.gap), True, False))
+        if pulls:
+            window = window - pulled(window, pulls, self.gap)
+        return window
+
+    def pulls_of(self, state: LineState, c) -> Region | None:
+        """The intervals of `pull` that pull a gap's end to their start: behind the chip as
+        the line has them, after it those someone put (a claim), not those a rule derives
+        (the "no screen" of a break is not a period it is pulled into)."""
+        if self.pull is None:
+            return None
+        put = Region.empty()
+        for (v, owner), r in state.claims.pos.get(self.pull, {}).items():
+            put = put | r
+        return (state.line.presence(self.pull) & _upto(c)) | (put & _after(c))
 
     def ops(self, state: LineState, c: Fraction) -> list[Op]:
         """What makes it hold after the chip: off, an interval of the generator too close
@@ -207,7 +230,8 @@ class MinimumGap:
         refused."""
         pres = state.line.presence(self.kind)
         after = _after(c)
-        bad = pres & self.apart(state.line.presence(self.after)) & after
+        pulls = self.pulls_of(state, c)
+        bad = pres & self.apart(state.line.presence(self.after), pulls) & after
         if bad.is_empty():
             return []
         mine = state.claims.owned(self.kind, GEN)
@@ -217,13 +241,44 @@ class MinimumGap:
             off = off | (mine & theirs.dilate(Interval(-Pos(self.gap + self.at_least), ZERO, True, True)) & after)
         rest = pres - off
         source = state.line.presence(self.after) - (off if self.after == self.kind else Region.empty())
-        off = off | (rest & self.apart(source) & after)
+        off = off | (rest & self.apart(source, pulls) & after)
         return [Op.take(self.kind, off)] if not off.is_empty() else []
 
     def __str__(self) -> str:
+        pull = f", a gap ending inside {self.pull} ending at its start" if self.pull else ""
         if self.after == self.kind and not self.at_least:
-            return f"keep {self.kind} at least {_fmt(self.gap)} apart"
-        return f"keep {self.kind} at least {_fmt(self.gap)} after {_fmt(self.at_least)} or more of {self.after}"
+            return f"keep {self.kind} at least {_fmt(self.gap)} apart{pull}"
+        return f"keep {self.kind} at least {_fmt(self.gap)} after {_fmt(self.at_least)} or more of {self.after}{pull}"
+
+
+def pulled(window: Region, into: Region, reach) -> Region:
+    """The end of each component of `window` that `into` pulls back to its start: from the
+    start of the component of `into` the window's last position is in (or from the
+    window's start, if that is before) to that last position. Nothing for a component
+    whose last position is not in `into`, or without end. Exact on repeating tails: what
+    it takes off a component depends only on what is within that component, so past what
+    is read around the core it repeats with the periods of both."""
+    if window.is_empty() or into.is_empty():
+        return Region.empty()
+    u = window | into
+    tails = bool(u.left or u.right)
+    lo, hi = u.lo, u.hi
+    pl, pr = (u.pl, u.pr) if tails else (ONE, ONE)
+    ws = window.on(lo - 3 * pl - 1, hi + 3 * pr + 1).intervals
+    m = max([Pos(reach)] + [iv.hi - iv.lo for iv in ws if iv.lo != -INF and iv.hi != INF]) + 1
+    lo2, hi2 = lo - m, hi + m
+    a, b = lo2 - pl - m - 1, hi2 + pr + m + 1
+    ins = into.on(a, b)
+    out = []
+    for w in window.on(a, b).intervals:
+        if w.lo <= a or w.hi >= b or not w.hi_closed or not ins.contains(w.hi):
+            continue  # (cut by what is read, without end, or its last position not in `into`)
+        comp = next(iv for iv in ins.intervals if iv.contains(w.hi))
+        out.append(Interval._mk(comp.lo if comp.lo > w.lo else w.lo, w.hi))
+    s = IntervalSet(out)
+    if not tails:
+        return Region.of(s) if s else Region.empty()
+    return Region(lo2, hi2, s, pl, s.shift(-(lo2 - pl)), pr, s.shift(-hi2))._compact()
 
 
 class AsEarlyAsPossible:
@@ -295,9 +350,20 @@ class AsEarlyAsPossible:
             no = forbidden(_Shim(self.rules, state), self.kind, vals)
         gaps = self._gaps()
         counted = [g for g in gaps if self._counts(g) and L >= g.at_least]
+        pulls = {id(g): g.pulls_of(state, c) for g in gaps}
         for g in gaps:
-            no = no | g.apart(state.line.presence(g.after) - mine)
+            no = no | g.apart(state.line.presence(g.after) - mine, pulls[id(g)])
         no = no & after
+
+        def bar(b):
+            """What its piece ending at b bars: (b, b + gap] of each gap it counts in, short of
+            what a pull takes off."""
+            out = Region.empty()
+            for g in counted:
+                w = Region.of(Interval._mk(b + EPS, b + g.gap))
+                p = pulls[id(g)]
+                out = out | ((w - pulled(w, p, g.gap)) if p else w)
+            return out
         # a piece the chip is in, begun before it: whole
         placed = []
         now = state.line.presence(self.kind) - mine
@@ -307,18 +373,19 @@ class AsEarlyAsPossible:
         stop = Region.empty() if no.is_bounded() else None
         end = (no.bounded().sup() if not no.is_empty() else cp) if stop is not None else no.hi  # past it: the pattern
         end = max(end, cp)
+        for p in pulls.values():  # (a period a bar may fall inside: placed one by one up to its end)
+            if p and p.bounded():
+                end = max(end, p.bounded().sup())
         t = (placed[-1][1] + EPS) if placed else cp + EPS
         dyn = Region.empty()
         for a, b in placed:
-            for g in counted:
-                dyn = dyn | Region.of(Interval._mk(b + EPS, b + g.gap))
+            dyn = dyn | bar(b)
         while t <= end:
             checkpoint()
             block = (no | dyn) & Region.of(Interval._mk(t, t + L))
             if block.is_empty():
                 placed.append((t, t + L))
-                for g in counted:
-                    dyn = dyn | Region.of(Interval._mk(t + L + EPS, t + L + g.gap))
+                dyn = dyn | bar(t + L)
                 t = t + L + EPS
             else:
                 first = block.on(t, t + L + 1).intervals[0]

@@ -169,15 +169,20 @@ class ExamplesTest(unittest.TestCase):
     def test_the_same_breaks_as_the_hand_written_ones(self):
         """screen_break_15_rules.py (rules, targets, constraints of the generator) and
         screen_break_15.py (the breaks written in Python, constraints.Breaks): the same line,
-        and the same after 30 minutes without screen (the next break 2 hours after them)."""
+        and the same after 30 minutes without screen (the next break 2 hours after them), and
+        after 10 minutes without screen where a break would start inside them (it starts at
+        their start: OmniApp's "a break that would start inside a no-screen period starts at
+        its start")."""
         def real(breaks):  # (their ends as numbers: the hand-written ones end ε after, at 900+ε)
             return [(iv.lo.x, iv.hi.x) for iv in breaks.intervals]
-        for no_screen in (None, (18000, 19800)):
+        for no_screen in (None, (18000, 19800), (24000, 24600)):
             with self.subTest(no_screen=no_screen):
                 self.assertEqual(real(self.breaks("screen_break_15_rules", no_screen)),
                                  real(self.breaks("screen_break_15", no_screen)))
         starts = [iv.lo.x for iv in self.breaks("screen_break_15_rules", (18000, 19800)).intervals]
         self.assertEqual(starts[:4], [0, 8100, 16200, 27000])
+        starts = [iv.lo.x for iv in self.breaks("screen_break_15_rules", (24000, 24600)).intervals]
+        self.assertEqual(starts[:5], [0, 8100, 16200, 24000, 32100])
 
 if __name__ == "__main__":
     unittest.main()

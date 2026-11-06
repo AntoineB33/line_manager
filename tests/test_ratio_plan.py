@@ -445,6 +445,74 @@ class MinimumGapTest(unittest.TestCase):
             self.assertTrue(b.contains(x + 1) and b.contains(x + 900) and not b.contains(x + 901), n)
         self.assertEqual(MinimumGap("Break15", 7200).ops(after, F(9000)), [])  # kept
 
+    def pulling(self):
+        from constraints import MinimumGap
+        return MinimumGap("Break15", 7200, after="NoScreen", at_least=900, pull="NoScreen")
+
+    def test_a_gap_ending_inside_a_period_ends_at_its_start(self):
+        """pull="NoScreen": the 2 hours after a break of (0, 900] end at 8100; inside a "no
+        screen" period someone put, [7800, 8400], they end at its start, so a break may
+        start at 7800 and not before; a period the 2 hours end before, [8200, 8600], pulls
+        nothing."""
+        from intervals import Interval as Iv2
+        rs = parse_rules(["Break15 → NoScreen"])
+        for (a, b), pulled in (((7800, 8400), True), ((8200, 8600), False)):
+            with self.subTest(no_screen=(a, b)):
+                s = apply_edit(rs, LineState.empty(), [Op.put("Break15", Iv2(0, 900, False, True))], "user")
+                s = apply_edit(rs, s, [Op.put("NoScreen", Iv2(a, b))], "user")
+                gap = self.pulling()
+                apart = gap.apart(s.line.presence("NoScreen"), gap.pulls_of(s, F(0)))
+                self.assertTrue(apart.contains(901) and apart.contains(7799))
+                self.assertEqual(apart.contains(7800) or apart.contains(8100), not pulled)
+                # the generator's break at the period's start is kept; one before it goes
+                for start, kept in ((7800, pulled), (7500, False)):
+                    t = apply_edit(rs, s, [Op.put("Break15", Iv2(start, start + 900, False, True))], "generated")
+                    self.assertEqual(gap.ops(t, F(0)) == [], kept, start)
+
+    def test_a_break_s_own_no_screen_pulls_nothing(self):
+        """The "no screen" a rule derives from a break is not a period the next gap is pulled
+        into: only what someone put (here nothing), so a break too close still goes."""
+        from intervals import Interval as Iv2
+        rs = parse_rules(["Break15 → NoScreen"])
+        s = apply_edit(rs, LineState.empty(), [Op.put("Break15", Iv2(0, 900, False, True))], "user")
+        s = apply_edit(rs, s, [Op.put("Break15", Iv2(7700, 8600, False, True))], "generated")  # its "no screen" holds 8100
+        gap = self.pulling()
+        self.assertTrue(gap.pulls_of(s, F(0)).is_empty())
+        self.assertNotEqual(gap.ops(s, F(0)), [])  # too close: it goes
+
+    def test_pulled_on_repeating_tails(self):
+        """constraints.pulled on a window and periods that repeat (every 100 and every 150):
+        the same as found one by one, however far."""
+        from constraints import pulled
+        from ratio_plan import cycle
+        window = cycle(F(0), F(100), F(0), F(10))  # (100n, 100n + 10]
+        into = cycle(F(0), F(150), F(5), F(20))  # (150n + 5, 150n + 20]
+        p = pulled(window, into, 10)
+        for n in list(range(0, 40)) + [3000, 3001, 3002]:
+            w0, end = 100 * n, 100 * n + 10
+            inside = [m for m in range(n) if 150 * m + 5 < end <= 150 * m + 20] + \
+                [m for m in (n * 2 // 3, n * 2 // 3 + 1) if 150 * m + 5 < end <= 150 * m + 20]
+            if inside:
+                start = max(150 * inside[0] + 5, w0)
+                self.assertTrue(p.contains(end) and p.contains(F(start) + F(1, 2)), n)
+                self.assertFalse(p.contains(F(start) - F(1, 2)), n)
+            else:
+                self.assertFalse(p.contains(end) or p.contains(w0 + 5), n)
+
+    def test_the_pull_is_written_in_both_scripts(self):
+        """The generated script's text and its Python keep the pull."""
+        import script_python
+        import script_text
+        from constraints import MinimumGap
+        rules = parse_rules(["Break15 → NoScreen"])
+        g = self.pulling()
+        back = script_text._constraint(str(g), rules)
+        self.assertEqual((back.kind, back.gap, back.after, back.at_least, back.pull),
+                         (g.kind, g.gap, g.after, g.at_least, g.pull))
+        back = eval(script_python.py(g), {"MinimumGap": MinimumGap, "F": F, "Fraction": F})
+        self.assertEqual(back.pull, "NoScreen")
+        self.assertIsNone(script_text._constraint(str(MinimumGap("Break15", 7200)), rules).pull)
+
 
 BREAK_RULES = ["Break15 → NoScreen",
                "NoScreen → (NoComputerUnlocked or NotOnComputer) & (NoPhoneUnlocked or NotOnPhone)",

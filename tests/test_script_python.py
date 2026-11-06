@@ -240,6 +240,43 @@ class CompiledPushTest(unittest.TestCase):
         self.assertEqual(count[0], 0)
         self.assertEqual([c for c in s.sim.log.changes[n:] if c.source == "script"], [])
 
+    def test_the_line_meets_a_break_with_nothing_to_solve(self):
+        """Back at the screen after a lock (mode 2, then mode 1 at 14400), the line meets the
+        next break while working, as the window runs it (the generator's runs in their own
+        process, `background`): the run the generator compiled ahead takes the break from
+        the first frame inside it, with nothing solved in the frames around it. (A rerun
+        falls due at that same instant, 21600: a request, not a calculation of the frame.)"""
+        import mode_rules
+        import resolve
+        s = example("screen_break_15_rules")
+        s.sim.background = False
+
+        def first():
+            return s.sim.state.line.presence("Break15").on(s.position - 1, s.position + 20000).intervals[0]
+        s.tick(F(14500))
+        while first().lo.x - s.position > 2:  # (the runs during the jump can move it)
+            s.tick(first().lo.x - s.position - 2)
+        meet = first().lo.x
+        s.sim.background = True
+        count = [0]
+
+        def counted(real):
+            def f(*a, **k):
+                count[0] += 1
+                return real(*a, **k)
+            return f
+        with mock.patch.object(mode_rules, "solve", counted(mode_rules.solve)), \
+                mock.patch.object(resolve, "solve", counted(resolve.solve)):
+            for _ in range(80):  # 4 s at 20 frames a second, the meeting in the middle
+                s.tick(F(1, 20))
+                iv = first()
+                if s.position > meet:
+                    self.assertEqual((iv.lo.x, iv.hi.x), (s.position, s.position + 900), s.position)
+                else:
+                    self.assertEqual(iv.lo.x, meet, s.position)
+        self.assertEqual(count[0], 0)
+        self.assertEqual(s.sim.log.refused, [])
+
     def test_nothing_solved_as_the_chip_pushes_a_break_10_ahead(self):
         """(10, 910] from the chip: pushed from the position before, the break starts right
         at chip + 10, which is still "less than 10 after" the chip: one run, not a run (and

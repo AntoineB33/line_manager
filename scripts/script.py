@@ -131,10 +131,18 @@ class ChipOn:
     (if `mode` is not None) the mode at the chip is `mode`. Its actions fire at each
     instant it is true. With no `within`: as far after the chip as its event's edit
     written from the chip puts `kind` (simulation._reach): with that edit putting the
-    piece at (chip + 10, chip + 910], the chip keeps it 10 ahead as it goes."""
+    piece at (chip + 10, chip + 910], the chip keeps it 10 ahead as it goes.
+
+    With `lasted`: instead of the chip in it, `kind` has been on the chip for `lasted`, on
+    [chip - lasted, chip) (what is behind it: the same before and after the mode rules act
+    at the chip). With `unless`: and the chip is not on `unless`. "If the chip has been on
+    NoScreen for 900 and is not on Break15, and mode is 2": locked for 15 minutes, out of a
+    break."""
     kind: str
     mode: str | None = None
     within: Num | None = None  # (None: 0)
+    lasted: Num | None = None
+    unless: str | None = None
 
     def holds(self, state, chip, mode: str) -> bool:
         if self.mode is not None and self.mode != mode:
@@ -142,7 +150,11 @@ class ChipOn:
         from intervals import Pos
         from region import Region
         p = chip if isinstance(chip, Pos) else Pos(chip)
+        if self.unless is not None and state.line.presence(self.unless).contains(p):
+            return False
         pres = state.line.presence(self.kind)
+        if self.lasted is not None:
+            return Region.of(Interval(p - Fraction(self.lasted), p, True, False)).issubset(pres)
         d = Fraction(self.within or 0)
         if not d:
             return pres.contains(p)
@@ -150,7 +162,11 @@ class ChipOn:
 
     def __str__(self) -> str:
         d = Fraction(self.within or 0)
-        where = f"the chip is on {self.kind}" if not d else f"{self.kind} is less than {_fmt(d)} after the chip"
+        if self.lasted is not None:
+            where = f"the chip has been on {self.kind} for {_fmt(Fraction(self.lasted))}"
+        else:
+            where = f"the chip is on {self.kind}" if not d else f"{self.kind} is less than {_fmt(d)} after the chip"
+        where += f" and is not on {self.unless}" if self.unless is not None else ""
         return where + (f" and mode is {self.mode}" if self.mode is not None else "")
 
 

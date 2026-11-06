@@ -71,11 +71,24 @@ class ChipPush:
     is a function of the chip's position, with nothing to solve at each step of the chip.
     Not a constraint of the generator: the script's own (`push_of`)."""
 
-    def __init__(self, kind: str, region: Region, mode: str | None, within) -> None:
+    def __init__(self, kind: str, region: Region, mode: str | None, within, on: str | None = None,
+                 lasted=None, unless: str | None = None) -> None:
         self.kind, self.region, self.mode, self.within = kind, region, mode, Fraction(within)
+        # (another trigger than K at the chip: script.ChipOn's kind, `lasted`, `unless`)
+        self.on_kind = on or kind
+        self.lasted = None if lasted is None else Fraction(lasted)
+        self.unless = unless
 
     def kinds(self) -> set:
-        return {self.kind}
+        return {self.kind, self.on_kind} | ({self.unless} if self.unless else set())
+
+    def flips(self, line, a, b) -> set:
+        """Where `on` can change without an end of the line there (`lasted` after the start
+        of each interval of the trigger's kind), on [a, b): mode_rules.ModeRules.candidates."""
+        if self.lasted is None:
+            return set()
+        return {iv.lo + self.lasted for iv in line.presence(self.on_kind).on(a - self.lasted, b).intervals
+                if type(iv.lo) is Pos}
 
     def holds_by_itself(self) -> bool:
         return True
@@ -89,6 +102,10 @@ class ChipPush:
         right at c + within, and the chip still pushes it there (ChipOn's (c, c + within)
         is the same between two instants, ε apart only)."""
         p = c if isinstance(c, Pos) else Pos(c)
+        if self.unless is not None and state.line.presence(self.unless).contains(p):
+            return False
+        if self.lasted is not None:  # (behind the chip: what the mode rules do at c changes nothing)
+            return Region.of(Interval(p - self.lasted, p, True, False)).issubset(state.line.presence(self.on_kind))
         pres = state.line.presence(self.kind)
         if pres.contains(p):
             return True
@@ -113,14 +130,19 @@ class ChipPush:
         return []  # (it acts as the chip goes, in the mode rules)
 
     def __str__(self) -> str:
-        return f"push {self.kind} on chip + {self.region}" + (f" in mode {self.mode}" if self.mode is not None else "")
+        when = f" when on {self.on_kind} for {_fmt(self.lasted)}" if self.lasted is not None else ""
+        when += f" and not on {self.unless}" if self.unless else ""
+        return f"push {self.kind} on chip + {self.region}{when}" + (f" in mode {self.mode}" if self.mode is not None else "")
 
 
 def push_of(event) -> ChipPush | None:
     """The ChipPush an event of a script is, if it is one: "if the chip is on K (and mode
     is m), then from the chip, take K off (0, inf) [or more], put K 100% on R ⊆ (0, inf)"
-    (what generator.constraint_events writes; the user may change R). None otherwise: the
-    event then fires at each instant, as written."""
+    (what generator.constraint_events writes; the user may change R). The trigger may read
+    another kind than K, with `lasted` and `unless` ("if the chip has been on NoScreen for
+    900 and is not on Break15, and mode is 2, then from the chip, take Break15 off (0, inf),
+    put it on (7200, 8100] every 8100"). None otherwise: the event then fires at each
+    instant, as written."""
     from script import ChipOn, EditAction
     trig = event.trigger
     if not isinstance(trig, ChipOn) or len(event.actions) != 1:
@@ -128,8 +150,11 @@ def push_of(event) -> ChipPush | None:
     a = event.actions[0]
     if not isinstance(a, EditAction) or not a.from_chip:
         return None
-    if any(o.kind != trig.kind or o.action not in ("take", "put") for o in a.ops):
+    kind = a.ops[0].kind if a.ops else trig.kind
+    if any(o.kind != kind or o.action not in ("take", "put") for o in a.ops):
         return None
+    if kind != trig.kind and trig.lasted is None:
+        return None  # (another kind than K at the chip: only as long as it has lasted)
     taken, put = Region.empty(), Region.empty()
     for o in a.ops:
         if o.action == "take":
@@ -144,7 +169,9 @@ def push_of(event) -> ChipPush | None:
         return None
     lo = put.inf()
     within = trig.within if trig.within is not None else max(Fraction(0), lo.x if isinstance(lo, Pos) else Fraction(0))
-    return ChipPush(trig.kind, put, trig.mode, within)
+    if trig.lasted is not None:
+        within = Fraction(0)  # (read behind the chip: nothing ahead)
+    return ChipPush(kind, put, trig.mode, within, on=trig.kind, lasted=trig.lasted, unless=trig.unless)
 
 
 def pushes_in(pushes, mode: str) -> tuple:
@@ -414,6 +441,23 @@ class AsEarlyAsPossible:
         """From the start of one piece to the start of the next, nothing else in the way."""
         counted = [g for g in self._gaps() if self._counts(g) and self.length >= g.at_least]
         return self.length + max((g.gap for g in counted), default=Fraction(0))
+
+    def counted_gaps(self) -> list:
+        """The gaps its own pieces open (`_counts`) and that it waits for."""
+        return [g for g in self._gaps() if self._counts(g) and self.length is not None and self.length >= g.at_least]
+
+    def puts_at_chip(self, rules, kind: str) -> list[str]:
+        """The modes whose rules put `kind` at the chip, not as one choice of several ("mode
+        2 → NoScreen & ..."): there, the stretch of `kind` grows with the chip."""
+        out = []
+        for r in rules.mode_rules:
+            for it in r.rhs:
+                if it.is_or:
+                    continue
+                o = it.options[0]
+                if not o.negated and o.kind == kind and o.where.is_point and o.where.lo == ZERO:
+                    out.append(r.mode)
+        return sorted(set(out))
 
     def pushed_in(self, rules) -> list[str]:
         """The modes in which it cannot be at the chip: a mode rule that rules it out there,

@@ -602,6 +602,17 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     So the run compiles it ahead with the line an affine function of the chip, and a
     step of the chip costs no edit and no solve (`CompiledPushTest`). Any other edit
     from the chip fires at each instant, as written.
+  - **Pushed by what has lasted.** In a mode whose rules put a gap's kind at the chip
+    ("mode 2 → NoScreen"), the stretch of that kind grows with the chip, and so the
+    gap after it (`MinimumGap`) starts at the chip. The generator writes that as a push
+    of K read from the other kind: "if the chip has been on NoScreen for 900 and is not
+    on Break15, and mode is 2, then from the chip, take Break15 off (0, inf), put it on
+    (7200, 8100] every 8100" (`ChipOn.lasted`, `ChipOn.unless`). Its trigger reads what
+    is behind the chip, so the mode rules acting at the chip do not change it; it flips
+    `lasted` after the start of the stretch, which is no end of the line, so that
+    position is a candidate where a run's decision can change (`ChipPush.flips`).
+    Without it the next break waited for a run of the generator, and the line broke
+    its gap until then.
   - **Checked ahead elsewhere.** Where no stretch a run compiled fits the line (the
     generator off, or the line changed since its run), the mode rules decide at the
     chip. A new decision there, such as the chip starting to push a break, would cost

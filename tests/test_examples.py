@@ -184,13 +184,14 @@ class ExamplesTest(unittest.TestCase):
         starts = [iv.lo.x for iv in self.breaks("screen_break_15_rules", (24000, 24600)).intervals]
         self.assertEqual(starts[:5], [0, 8100, 16200, 24000, 32100])
 
-    @unittest.expectedFailure
     def test_the_same_breaks_as_the_hand_written_ones_through_mode_2(self):
         """The examples' modes (mode 2 from 12000 to 14400) run as the window runs them: at
         each position the next break is 2 hours after "no screen" ends, so in mode 2 it moves
-        on with the chip (21500 at 14300), as the hand-written breaks do. Not yet: with rules
-        only, the next break waits for a run of the generator (21375 at 14300, from a run
-        at 14175), and the line breaks its MinimumGap until then."""
+        on with the chip (21500 at 14300), as the hand-written breaks do. With rules only, it
+        is the script's push "once on NoScreen for 900, out of a break, in mode 2"
+        (generator.constraint_events); without it the next break waited for a run of the
+        generator (21375 at 14300, from a run at 14175), and the line broke its MinimumGap
+        until then."""
         from fractions import Fraction as F
         from test_script_python import example
 

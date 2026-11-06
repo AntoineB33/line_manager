@@ -314,6 +314,8 @@ class ModeRules:
         for reg in fixed:
             for iv in reg.on(a, b).intervals:
                 ends.update(e for e in (iv.lo, iv.hi) if type(e) is Pos and e not in moving)
+        for k in self.pushes:  # (a push that starts once its trigger has lasted: no end of the line there)
+            ends.update(k.flips(state.line, a, b))
         out = set()
         for e in ends:
             if self.g is None:

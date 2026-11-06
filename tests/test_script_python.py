@@ -218,7 +218,9 @@ class CompiledPushTest(unittest.TestCase):
 
     def test_the_push_is_read_as_one(self):
         pushes = example("screen_break_15_rules").sim.script.pushes()
-        self.assertEqual([(k.kind, k.mode, k.within) for k in pushes.values()], [("Break15", "1", 0)])
+        self.assertEqual([(k.kind, k.mode, k.within, k.on_kind) for k in pushes.values()],
+                         [("Break15", "1", 0, "Break15"),  # the chip in a break in mode 1
+                          ("Break15", "2", 0, "NoScreen"), ("Break15", "3", 0, "NoScreen")])  # locked 15 minutes
 
     def test_no_edit_and_nothing_solved_as_the_chip_pushes(self):
         import mode_rules
@@ -237,6 +239,33 @@ class CompiledPushTest(unittest.TestCase):
                 s.tick(F(1, 20))
                 a, b = self.breaks(s)[0]
                 self.assertEqual((a - s.position, b - s.position), (0, 900), s.position)
+        self.assertEqual(count[0], 0)
+        self.assertEqual([c for c in s.sim.log.changes[n:] if c.source == "script"], [])
+
+    def test_nothing_solved_as_mode_2_keeps_the_next_break_2_hours_ahead(self):
+        """Locked (mode 2 from 12000), out of the break since 12900: "no screen" grows with
+        the chip, so the next break is 2 hours after it at each position, the script's push
+        from "no screen" (generator.constraint_events), with nothing solved and no edit of
+        the script in the frames (as the window runs it: the runs in their own process)."""
+        import mode_rules
+        import resolve
+        s = example("screen_break_15_rules")
+        s.sim.background = False
+        s.tick(F(13400) - s.position)
+        s.sim.background = True
+        n, count = len(s.sim.log.changes), [0]
+
+        def counted(real):
+            def f(*a, **k):
+                count[0] += 1
+                return real(*a, **k)
+            return f
+        with mock.patch.object(mode_rules, "solve", counted(mode_rules.solve)), \
+                mock.patch.object(resolve, "solve", counted(resolve.solve)):
+            for _ in range(40):
+                s.tick(F(1, 20))
+                a, b = self.breaks(s)[0]
+                self.assertEqual((a - s.position, b - s.position), (7200, 8100), s.position)
         self.assertEqual(count[0], 0)
         self.assertEqual([c for c in s.sim.log.changes[n:] if c.source == "script"], [])
 
@@ -390,6 +419,37 @@ class CompiledPushTest(unittest.TestCase):
         self.assertIsNone(push_of(ev(Op.take("Break15", Region.of(Interval.open_closed(0, 10))), Op.put("Break15", R))))
         self.assertIsNone(push_of(ev(Op.take("Break15", after), Op.put("Break5", R))))
         self.assertIsNone(push_of(Event(ChipOn("Break15", "1"), (EditAction((Op.take("Break15", after), Op.put("Break15", R))),))))
+
+    def test_a_push_once_the_trigger_has_lasted(self):
+        """"If the chip has been on NoScreen for 900 and is not on Break15, and mode is 2,
+        then from the chip, take Break15 off (0, inf), put it on (7200, 8100]": a push of
+        Break15 read from another kind, only with `lasted` (else that kind at the chip would
+        push K at once). Its trigger reads what is behind the chip, and not inside K."""
+        from constraints import push_of
+        from intervals import INF
+        from intervals import Interval as Iv2
+        from line import LineState, Op
+        from rules import parse_rules
+        from resolve import apply_edit
+        from script import ChipOn, EditAction, Event
+        R = Region.of(Interval.open_closed(7200, 8100))
+        after = Region.of(Interval(0, INF, False, False))
+        ops = (Op.take("Break15", after), Op.put("Break15", R))
+        trig = ChipOn("NoScreen", "2", lasted=900, unless="Break15")
+        push = push_of(Event(trig, (EditAction(ops, from_chip=True),)))
+        self.assertEqual((push.kind, push.on_kind, push.lasted, push.unless, push.within), ("Break15", "NoScreen", 900, "Break15", 0))
+        self.assertIsNone(push_of(Event(ChipOn("NoScreen", "2"), (EditAction(ops, from_chip=True),))))
+        rs = parse_rules(["Break15 → NoScreen"])
+        s = apply_edit(rs, LineState.empty(), [Op.put("NoScreen", Iv2(1000, 2000))], "user")
+        s = apply_edit(rs, s, [Op.put("Break15", Iv2(1940, 1970, False, True))], "generated")
+        for c, on in ((1899, False), (1900, True), (1960, False), (2000, True)):  # (in the break at 1960)
+            with self.subTest(chip=c):
+                self.assertEqual(trig.holds(s, F(c), "2"), on)
+                self.assertEqual(push.on(s, F(c)), on)
+        self.assertFalse(trig.holds(s, F(1900), "1"))
+        self.assertEqual(str(trig), "the chip has been on NoScreen for 900 and is not on Break15 and mode is 2")
+        from script_python import py
+        self.assertEqual(py(trig), "ChipOn(kind='NoScreen', mode='2', lasted=900, unless='Break15')")
 
 
 class GeneratorOffTest(unittest.TestCase):

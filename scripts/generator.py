@@ -406,6 +406,17 @@ class RulesGenerator:
                 # (no `within`: as far after the chip as the edit puts it, so changing the edit
                 # alone moves where the chip pushes it: simulation._reach)
                 out += [Event(ChipOn(k.kind, m), (EditAction(again, from_chip=True),)) for m in k.pushed_in(self.rules)]
+                # in each mode that puts a gap's kind at the chip ("mode 2 → NoScreen"), once it has
+                # lasted long enough to open the gap and the chip is out of a piece: the gap starts
+                # at the chip at each position, so the pieces go on from it
+                for g in k.counted_gaps():
+                    later = (Op.take(k.kind, Region.of(Interval(0, INF, False, False))),
+                             Op.put(k.kind, cycle(g.gap, k.spacing(), 0, k.length)))
+                    trig = dict(lasted=g.at_least or None, unless=k.kind)
+                    if trig["lasted"] is None:
+                        continue  # (a gap after any of its kind: at once, nothing to wait for)
+                    out += [Event(ChipOn(g.after, m, **trig), (EditAction(later, from_chip=True),))
+                            for m in k.puts_at_chip(self.rules, g.after)]
         return out
 
     def _fill(self, state: LineState, c: Fraction):

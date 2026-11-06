@@ -33,6 +33,7 @@ def first_run(name):
     s.begin()
     req = s.sim.request
     s.sim.complete(req.id, *list(req.gen.stages(req.state, req.chip, req.known, req.previous))[-1])
+    s.sim.session = s  # (for the tests that type commands)
     return s.sim
 
 
@@ -90,6 +91,34 @@ class ExamplesTest(unittest.TestCase):
                     runpy.run_path(os.path.join(UI, "examples", f"{name}.py"), run_name="__main__")
                 self.assertFalse(run.called)
                 self.assertIn(why, out.getvalue())
+
+    def test_the_breaks_are_right_when_an_edit_or_a_mode_change_returns(self):
+        """OmniApp's three screen breaks with sleep: after each kind of event, the breaks hold
+        (ScreenBreaks.ops asks for nothing) as soon as the command returns, generator on or
+        off, without waiting for a run. Each command took 0.07 to 0.32 s of processor time
+        when this was written, 0.42 to 0.67 s before the sweep read only what is near where
+        it is ("no screen" forever ahead after the 7th: the sweep must not read far into it)."""
+        import time
+        from fractions import Fraction
+        s = first_run("screen_breaks_sleep_tasks").session
+        sb = next(k for k in s.sim._constraints() if hasattr(k, "breaks"))
+
+        def holds():
+            return sb.ops(s.sim.state, s.sim.chip.position(s.sim.t)) == []
+        self.assertTrue(holds())
+        c = s.sim.chip.position(s.sim.t)
+        b15 = s.sim.state.line.presence("Break15").on(c, c + 20000).intervals[0]
+        events = [f"add NoScreen on [{c + 600}, {c + 1500})", "mode 2", "mode 1",
+                  f"remove Break15 on [{b15.lo.x}, {b15.hi.x}]", f"add Sleep on [{c + 3000}, {c + 4000})",
+                  "generator off", f"add NoScreen on [{c + 9000}, {c + 9900})", "mode 3", "mode 1"]
+        for cmd in events:
+            s.tick(Fraction(1, 2))
+            t0 = time.process_time()  # (this process's time: other programs running do not count)
+            out = s.command(cmd)
+            took = time.process_time() - t0
+            self.assertTrue(holds(), (cmd, out))
+            self.assertLess(took, 0.5, (cmd, out))
+        s.close()
 
     def test_the_tasks_take_turns_between_the_breaks(self):
         """A, B, C at 1/3, excluding each other, none during "no screen", A and B at least

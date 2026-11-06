@@ -565,10 +565,48 @@ class ScreenBreaks:
                 p = r.pr if p is None else plcm(p, r.pr)
         Wc = W + (p if p is not None else 0)
 
+        # what the sweep reads again and again, near where it is: the breaks placed (by
+        # start; they never overlap, so scanning back from the last one stops early) and
+        # the whole intervals of known (read once per stretch, then looked up)
+        longest = [max([pe - pa for _, pa, pe in placed], default=ZERO)]
+
+        def recent(bound):
+            """The breaks placed that end at or after bound."""
+            out = []
+            for b in reversed(placed):
+                if b[2] >= bound:
+                    out.append(b)
+                elif b[1] + longest[0] < bound:
+                    break
+            out.reverse()
+            return out
+
+        kn = {"lo": None, "hi": None, "ivs": []}
+
+        def known_near(a, b):
+            """The whole intervals of known that meet [a, b) (_around, looked up)."""
+            if kn["lo"] is None or a < kn["lo"] or b > kn["hi"]:
+                lo = a if kn["lo"] is None else min(a, kn["lo"])
+                hi = b if kn["hi"] is None else max(b, kn["hi"])
+                ahead = hi + 4 * W  # (read ahead a little: the sweep goes right; not past where
+                if stop is not None:  # the breaks stop, where "no screen" may go on forever)
+                    ahead = min(ahead, max(stop + W, hi))
+                hi = max(hi, ahead)
+                kn["lo"], kn["hi"], kn["ivs"] = lo, hi, self._around(known, lo, hi)
+            return [(x, y) for x, y in kn["ivs"] if x < b and y >= a]
+
         def periods(a, b):
-            """The maximal "no screen" periods near [a, b) with the breaks placed."""
-            mine = IntervalSet([Interval._mk(pa, pe) for _, pa, pe in placed if pe >= a - W])
-            return self._around(known | Region.of(mine), a, b) if mine else self._around(known, a, b)
+            """The maximal "no screen" periods near [a, b) with the breaks placed. Made of the
+            intervals near the window only: known's whole intervals that meet the window
+            and the breaks (two intervals of known never touch, so a period that meets
+            [a, b) is all there); `known | breaks` on the whole region gives the same, slower."""
+            mine = [Interval._mk(pa, pe) for _, pa, pe in recent(a - W)]
+            if not mine:
+                return known_near(a, b)
+            lo = min(a, mine[0].lo) - 1
+            hi = max(b, max(iv.hi for iv in mine)) + 1
+            near = IntervalSet([Interval._mk(x, y) for x, y in known_near(lo, hi)]) | IntervalSet(mine)
+            return [(iv.lo, iv.hi) for iv in near.intervals if iv.lo < b and iv.hi >= a]
 
         def allowed(i, t):
             """The first start from t that no pause, ban or break already there excludes."""
@@ -581,17 +619,17 @@ class ScreenBreaks:
                     long = (e - a).x >= L
                     if long and e < t < e + P:
                         t, changed = e + P, True
-                    elif a < t <= e and any(a <= pa and pe <= e for _, pa, pe in placed if pe >= a):
+                    elif a < t <= e and any(a <= pa and pe <= e for _, pa, pe in recent(a)):
                         t, changed = (e + P if long else e + EPS), True
                 bans = ruled[i].on(t, t + L + W).intervals if ruled[i] else []
-                for a, e in [(iv.lo, iv.hi) for iv in bans] + [(pa, pe) for _, pa, pe in placed if pe >= t]:
+                for a, e in [(iv.lo, iv.hi) for iv in bans] + [(pa, pe) for _, pa, pe in recent(t)]:
                     if a <= t + L and e >= t:
                         t, changed = e + EPS, True
             return t
 
         def moved(t):
             """Inside a "no screen" period: its start (or right after the chip)."""
-            for a, e in self._around(known, t - 1, t + 1):
+            for a, e in known_near(t - 1, t + 1):
                 if a < t <= e:
                     return a if a > cp else cp + EPS
             return t
@@ -613,12 +651,13 @@ class ScreenBreaks:
             if stop is None and s >= H0 + Wc:  # what follows depends on what is near only
                 ph = (s - H0) % p if p is not None else ZERO
                 sig = ((ph.x, ph.k), tuple((j, (a - s).x, (a - s).k, (e - s).x, (e - s).k)
-                                            for j, a, e in placed if e >= s - Wc))
+                                            for j, a, e in recent(s - Wc)))
                 if sig in seen:
                     tail = seen[sig]
                     break
                 seen[sig] = len(placed)
             placed.append((i, s, s + K[i][1]))
+            longest[0] = max(longest[0], K[i][1])
             frm = s + EPS
 
         out = {}

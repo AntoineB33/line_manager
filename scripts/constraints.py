@@ -30,7 +30,8 @@ def constraint_ops(rules, state: LineState, c, constraints) -> list[Op]:
     """The edits that make these constraints hold after the chip at c. The constraints of
     one kind (its AsEarlyAsPossible, its MinimumGap) are computed together on the same
     line; each kind on the line the kinds before it made, in the order they first appear:
-    the 5min breaks placed where the 15min ones leave room, not on them."""
+    the 5min breaks placed where the 15min ones leave room, not on them. (A kind placed
+    later can still change what an earlier one reads: gaps_to_solve_later.md.)"""
     from resolve import Refused, apply_edit
     groups: dict = {}
     for k in constraints:
@@ -389,30 +390,75 @@ class AsEarlyAsPossible:
                         return True
         return False
 
-    def place(self, state: LineState, c) -> Region:
-        """Where its pieces are after the chip at c."""
-        L = self.length
-        cp = c if isinstance(c, Pos) else Pos(c)
+    def fixed_of(self, state: LineState, c, kind: str) -> Region:
+        """What stays of `kind` whatever this one's pieces after the chip at c: behind the
+        chip, the line; after it, what was put of it (a claim of anyone) and what the other
+        kinds bring with them ("B → N"), not what its own pieces bring."""
+        out = state.line.presence(kind) & _upto(c)
+        for (v, owner), r in state.claims.pos.get(kind, {}).items():
+            out = out | (r & _after(c))
+        for r in getattr(self.rules, "element", ()):
+            ks = r.lhs.kinds()
+            if len(ks) == 1 and ks[0] != self.kind and getattr(r.lhs, "op", None) == "present" and                     any(not it.is_or and it.options[0].kind == kind and not it.options[0].negated for it in r.rhs):
+                out = out | (state.line.presence(ks[0]) & _after(c))
+        return out
+
+    def obstacles(self, state: LineState, c, also: Region | None = None) -> tuple:
+        """(where what stays keeps its pieces away after the chip at c: what the rules forbid
+        of it and the gaps after what is not its own pieces ahead; the pulls of its gaps).
+        `also`: more of its own pieces that move (the one the chip pushes, at the chip)."""
         after = _after(c)
         mine = state.claims.owned(self.kind, GEN) & after  # (its own pieces ahead: placed again here)
+        if also:
+            mine = mine | also
         no = Region.empty()
         if self.rules is not None:
             from problems import forbidden
             vals = {k: ({v: r - mine for v, r in d.items()} if k == self.kind else d) for k, d in state.line.vals.items()}
             no = forbidden(_Shim(self.rules, state), self.kind, vals)
         gaps = self._gaps()
-        counted = [g for g in gaps if self._counts(g) and L >= g.at_least]
         pulls = {id(g): g.pulls_of(state, c) for g in gaps}
         for g in gaps:
-            no = no | g.apart(state.line.presence(g.after) - mine, pulls[id(g)])
-        no = no & after
+            # (after its own kind: the line without its pieces ahead; after another kind: what
+            # stays of it, `fixed_of`, not hidden under its own pieces placed on it before)
+            src = state.line.presence(g.after) - mine if g.after == self.kind else self.fixed_of(state, c, g.after)
+            no = no | g.apart(src, pulls[id(g)])
+        return no & after, pulls
+
+    def place(self, state: LineState, c, forced=None, also: Region | None = None) -> Region:
+        """Where its pieces are after the chip at c. `forced`: its first piece (a, b), where
+        the chip pushes it, the others placed after it (mode_rules: a push that would run
+        into what stays); `also`: as `obstacles`."""
+        L = self.length
+        cp = c if isinstance(c, Pos) else Pos(c)
+        after = _after(c)
+        no, pulls = self.obstacles(state, c, also)
+        counted = [g for g in self._gaps() if self._counts(g) and L >= g.at_least]
+        fixed = {id(g): self.fixed_of(state, c, g.after) for g in counted}
+
+        def stretch_end(b, f: Region):
+            """The end of the stretch of `after` a piece ending at b is part of: it goes on
+            through what stays of that kind right after it (the user's "no screen" against a
+            break makes one longer stretch, and the gap follows its end)."""
+            e = b
+            for _ in range(64):
+                nxt = [iv for iv in f.on(e, e + 2).intervals if iv.lo <= e + EPS <= iv.hi]
+                if not nxt or nxt[0].hi <= e:
+                    return e
+                e = nxt[0].hi
+                if e == INF:
+                    return e
+            return e
 
         def bar(b):
-            """What its piece ending at b bars: (b, b + gap] of each gap it counts in, short of
-            what a pull takes off."""
+            """What its piece ending at b bars: (end, end + gap] of each gap it counts in, from
+            the end of the stretch it is part of, short of what a pull takes off."""
             out = Region.empty()
             for g in counted:
-                w = Region.of(Interval._mk(b + EPS, b + g.gap))
+                e = stretch_end(b, fixed[id(g)])
+                if e == INF:
+                    continue
+                w = Region.of(Interval._mk(e + EPS, e + g.gap))
                 p = pulls[id(g)]
                 out = out | ((w - pulled(w, p, g.gap)) if p else w)
             return out
@@ -420,10 +466,11 @@ class AsEarlyAsPossible:
         # included: (c - ε, c - ε + L], placed after a gap ending at c - ε, or dragged there
         # as the mode changed at c; not a piece of one position {c} that bars a gap)
         placed = []
-        now = state.line.presence(self.kind) - mine
-        for iv in (state.line.presence(self.kind)).on(cp - L - 1, cp + L + 1).intervals:
+        for iv in (state.line.presence(self.kind)).on(cp - L - 1, cp + L + 1).intervals if forced is None else ():
             if iv.lo <= cp < iv.hi + EPS and iv.lo + L > cp:
                 placed.append((iv.lo, iv.lo + L - EPS))  # (its pieces (s, s + L]: [s + ε, s + L])
+        if forced is not None:
+            placed.append(forced)
         stop = Region.empty() if no.is_bounded() else None
         end = (no.bounded().sup() if not no.is_empty() else cp) if stop is not None else no.hi  # past it: the pattern
         end = max(end, cp)

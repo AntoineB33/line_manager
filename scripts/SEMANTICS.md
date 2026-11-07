@@ -620,6 +620,18 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     push's only where that side holds with K at the chip: "mode 1 & not Break20s → no
     NoScreen" pushes no 20s break, and the chip crosses it in mode 1
     (`AsEarlyAsPossible.pushed_in`, `screen_break_20s_rules.py`).
+  - **What stays is not pushed.** A push's pattern moves with the chip; what the user
+    put, the other kinds' pieces and the gaps after them stay. Where the pattern would
+    meet or touch them (`ModeRules._touches`: touching "no screen" makes one longer
+    stretch, whose end the gap follows), the pushed piece stays at the chip and the
+    later pieces are placed as the kind's AsEarlyAsPossible places them
+    (`ModeRules._targets`, `AsEarlyAsPossible.place(forced=...)`). A kind that reads a
+    pushed one ("B → N", a gap of A after N) is placed again on the line the push made
+    (`_placed_after_pushes`): the 5min break whose hour follows a pushed 15min break
+    moves with it. Runs split where an end of the pattern meets an edge of what stays
+    (`candidates`). What stays of a kind is what was put of it, behind the chip the
+    line, and what the other kinds bring (`AsEarlyAsPossible.fixed_of`), never what its
+    own earlier pieces covered. Found by random rule sets (`tests/fuzz_rules.py`).
   - **Checked ahead elsewhere.** Where no stretch a run compiled fits the line (the
     generator off, or the line changed since its run), the mode rules decide at the
     chip. A new decision there, such as the chip starting to push a break, would cost

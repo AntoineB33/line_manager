@@ -1,8 +1,8 @@
 """Any rule set: random break-like rule sets and scenarios, each run twice, the fast way
-(the stretches the generator compiled, the pushes the mode rules keep) and the slow
-reference (the mode rules decided at the chip at each step, each push an edit at each
-instant, as the script's text says), the two compared at each step on the line ahead of
-the chip. The fast run is also checked to keep every MinimumGap, and to raise nothing.
+(the stretches the generator compiled ahead) and the slow reference (the mode rules,
+their pushes included, decided at the chip at each step), the two compared at each step
+on the line ahead of the chip. The fast run is also checked to keep every MinimumGap,
+and to raise nothing.
 
     python tests/fuzz_rules.py [first seed] [how many] [steps]
 
@@ -100,8 +100,7 @@ def run(sc: dict, reference: bool) -> list:
     error string at the end if the run raised or broke a MinimumGap."""
     patches = []
     if reference:
-        patches = [mock.patch.object(simulation.Simulation, "_stretch_at", lambda self, mode, x, hi: None),
-                   mock.patch.object(Script, "pushes", lambda self: {})]
+        patches = [mock.patch.object(simulation.Simulation, "_stretch_at", lambda self, mode, x, hi: None)]
     for p in patches:
         p.start()
     out = []

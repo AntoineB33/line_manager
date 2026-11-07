@@ -22,14 +22,28 @@ constraints of one kind are computed on the same line (`constraint_ops`). Pullin
 gap by its own end is the fix; it needs the pieces' length exact, which they now are
 ((s, s + L]).
 
-## Found by the random rule sets (tests/fuzz_rules.py), seeds 0 to 19
-- A push moves every later piece with the line, at fixed offsets from it, while the
-  user's edits and the other kinds stay where they are: in mode 1 the line pushing A
-  forever slides the following A's into the gap after a "no screen" the user put
-  (seeds 3, 4, 5, 6: a MinimumGap broken, in the reference too). The same flaw as the
-  chain. A push should move only what is relative to the line; the later pieces are
-  placed again where the pushed pattern meets something that stays.
-- The reference (each push an edit at each instant) misses a break the line starts
-  exactly at: the event fires only once the line is inside it, and the mode rules eat
-  it before (seed 18). A difference there is the reference's.
-- Seeds 0, 13, 15, 16: the fast run and the reference differ, not classified yet.
+## A push's text is no longer all it does
+Where a push's pattern would meet what stays (the user's "no screen", another kind's
+pieces, a gap after them), the mode rules place the later pieces with the kind's
+AsEarlyAsPossible instead of moving them (`ModeRules._targets`), and the kinds that read
+a pushed one are placed again after it (`_placed_after_pushes`). The event's text, "take
+K off (0, inf), put R", still says only the pattern: a script read as text, or the
+same events fired at each instant without the mode rules, does not do that part.
+
+## Pieces of a kind back to back inside a "no screen" period
+A gap only follows the end of a "no screen" stretch, so AsEarlyAsPossible places its
+pieces one after the other inside a long "no screen" the user put (a 20s break every 20
+seconds through it). That is what MinimumGap says; OmniApp takes a break once per
+"no screen" period (`State.taken`). The same question as a break due during a lock.
+
+## Two kinds of breaks: seeds 20-59 of tests/fuzz_rules.py
+33 of 40 hold; the 7 that do not (20, 26, 27, 33, 35, 42, 56) all have two kinds.
+- A kind placed later can change what an earlier one reads: B placed at (0, 30], then A
+  right after it at (30, 50] ("B → no A" allows it), and B's "no screen" now ends at 50,
+  so B's next piece falls in its gap (seed 33). Placing the kinds in rounds until they
+  stop changing fixes that seed and breaks seed 5: not kept.
+- What a pushed piece leaves behind the chip in mode 1. The push says K stays behind
+  (`ChipPush.behind`), mode 1 says no "no screen" at the chip; a point of K is left where
+  a run begins to push (seed 20: {100/3}), and a gap after K reads it as a piece that just
+  ended. Taking K off that point in `decide` makes holes in the trail at every run
+  boundary instead: not kept. What a pushed break leaves behind needs deciding first.

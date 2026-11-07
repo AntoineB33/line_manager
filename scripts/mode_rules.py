@@ -39,11 +39,11 @@ import math
 from dataclasses import dataclass
 from fractions import Fraction
 
-from constraints import ChipPush, pushes_in
+from constraints import AsEarlyAsPossible, ChipPush, pushes_in
 from guards import check_mode_edit, same_dict, user_claims
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import GEN, MODE, LineState, Op
-from region import IncompatiblePeriods, Region
+from region import ZERO, IncompatiblePeriods, Region
 from resolve import Refused, apply_edit
 from rules import RuleSet, _fgcd
 from solver import Conflict, Line, Undetermined, checkpoint, lhs_region, solve
@@ -107,6 +107,10 @@ class ModeRules:
         # on the line it was decided on, with nothing to solve (`act`)
         self.ready: list[_Plan] = []
         self.pushes = tuple(k for k in self.constraints if isinstance(k, ChipPush))  # (constraints.ChipPush)
+        # the placement of each pushed kind, for where its push would run into what stays
+        # (`_targets`): its AsEarlyAsPossible with a length
+        self.placers = {k.kind: k for k in self.constraints
+                        if isinstance(k, AsEarlyAsPossible) and k.length is not None}
         self.rules = [r for r in rs.mode_rules if r.mode == mode]
         self.items = [(r, it) for r in self.rules for it in r.rhs]
         dists = [abs(e.x) for r in rs.element for o in r.lits() for e in (o.where.lo, o.where.hi) if type(e) is Pos]
@@ -229,8 +233,44 @@ class ModeRules:
 
     def _targets(self, k, st: LineState, p: Pos, pushing: frozenset | None) -> dict:
         if pushing is not None and isinstance(k, ChipPush):
-            return k.from_chip(p) if k.kind in pushing else {}
+            if k.kind not in pushing:
+                return {}
+            free = k.from_chip(p)  # (its pattern from the chip: what moves with it)
+            a = self.placers.get(k.kind)
+            if a is None:
+                return free
+            moving = self._moving(k, st, p)
+            no, _ = a.obstacles(st, p, moving)
+            if (free[k.kind] & no).is_empty() and not self._touches(a, st, p, free[k.kind], moving):
+                return free
+            # it would run into what stays (the user's "no screen", another kind's pieces, a
+            # gap after them): the pushed piece where the chip pushes it, the others placed
+            # after it as its AsEarlyAsPossible places them
+            forced = None
+            if k.behind():
+                iv = free[k.kind].on(p, p + _first_end(k.region) + 1).intervals[0]
+                forced = (iv.lo, iv.hi)
+            return {k.kind: a.place(st, p, forced, moving) & Region.of(Interval(p, INF, False, False))}
         return k.targets(st, p)
+
+    @staticmethod
+    def _touches(a, st: LineState, p: Pos, pattern: Region, moving: Region) -> bool:
+        """Whether a piece of the pattern meets or touches what stays of a kind one of a's gaps
+        counts after (the two make one longer stretch, whose end the gap follows)."""
+        near = pattern.dilate(Interval(-EPS, EPS, True, True))
+        for g in a._gaps():
+            if g.after != a.kind and not (near & a.fixed_of(st, p, g.after)).is_empty():
+                return True
+        return False
+
+    @staticmethod
+    def _moving(k, st: LineState, p: Pos) -> Region:
+        """The piece of a pushed kind the chip is in or right before: it moves with the chip,
+        it is no obstacle to the push."""
+        pres = st.line.presence(k.kind)
+        out = [iv for iv in pres.on(p - 1 - _first_end(k.region), p + 1).intervals
+               if iv.lo <= p + EPS and iv.hi + EPS >= p]
+        return Region.of(IntervalSet(out)) if out else Region.empty()
 
     def constrain(self, claims, line: Line, p: Pos, history=(), give_way: bool = False, pushing: frozenset | None = None):
         """The claims with the constraints' elements after p where they want them, as the
@@ -265,7 +305,52 @@ class ModeRules:
                 if want:
                     key = (Fraction(100), GEN)
                     d[key] = d[key] | want if key in d else want
+        if pushing:
+            c = self._placed_after_pushes(c, p, pushing, history)
         return c
+
+    def _placed_after_pushes(self, c, p: Pos, pushing: frozenset, history):
+        """The claims with the kinds that read a pushed one placed again on the line the push
+        made, in the constraints' order (constraints.constraint_ops): a 15min break the chip
+        pushes moves its "no screen", so the 5min break whose hour follows it moves too."""
+        later = Region.of(Interval(p, INF, False, False))
+        for kind, a in self.placers.items():
+            if kind in pushing or not any(self._reads_pushed(a, k) for k in pushing):
+                continue
+            try:
+                st = LineState(c, solve(self.rs, c.problem()), history)
+            except Conflict:
+                return c
+            want = a.place(st, p) & later
+            d = c.pos.setdefault(kind, {})
+            have = Region.empty()
+            for key in d:
+                if key[1] == GEN:
+                    have = have | (d[key] & later)
+            if have == want:
+                continue
+            c = c.copy()
+            d = c.pos.setdefault(kind, {})
+            for key in list(d):
+                if key[1] == GEN:
+                    d[key] = d[key] - later
+                    if not d[key]:
+                        del d[key]
+            if want:
+                key = (Fraction(100), GEN)
+                d[key] = d[key] | want if key in d else want
+        return c
+
+    def _reads_pushed(self, a, k: str) -> bool:
+        """Whether placer `a` reads pushed kind k: a gap after k or after what k comes with
+        ("B → N", a gap after N), or a rule that forbids a's kind where k is."""
+        brought = {k}
+        for r in self.rs.element:
+            if r.lhs.kinds() == [k]:
+                brought |= {o.kind for o in r.lits()}
+        if any(g.after in brought for g in a._gaps()):
+            return True
+        return a.kind in brought
 
     def _constrained(self, state: LineState, p: Pos, pushing: frozenset | None = None) -> LineState:
         """The state with the constraints kept after p (`constrain`), solved."""
@@ -335,6 +420,22 @@ class ModeRules:
                 ends.update(e for e in (iv.lo, iv.hi) if type(e) is Pos and e not in moving)
         for k in self.pushes:  # (a push that starts once its trigger has lasted: no end of the line there)
             ends.update(k.flips(state.line, a, b))
+        out_cross = set()
+        for k in self.pushes:
+            # where an end of a pushed pattern meets an edge of what stays (`_targets`: from
+            # there the pieces after the pushed one are placed, not moved)
+            pl = self.placers.get(k.kind)
+            if k.kind not in pushed or pl is None:
+                continue
+            no, _ = pl.obstacles(state, m, self._moving(k, state, m))
+            edges = {e for iv in no.on(lo, hi + span + 1).intervals for e in (iv.lo, iv.hi) if type(e) is Pos}
+            offsets = {e for iv in k.region.on(ZERO, Pos(span) + 1).intervals for e in (iv.lo, iv.hi) if type(e) is Pos}
+            for e in edges:
+                for o in offsets:
+                    for j in (-1, 0, 1):
+                        x = e - o + EPS * j
+                        if lo <= x <= hi:
+                            out_cross.add(x)
         out = set()
         for e in ends:
             if self.g is None:
@@ -348,7 +449,7 @@ class ModeRules:
                     c = base + EPS * j
                     if lo <= c <= hi:
                         out.add(c)
-        return sorted(out)
+        return sorted(out | out_cross)
 
     def act(self, state: LineState, lo: Pos, hi: Pos):
         """The chip goes through [lo, hi]: yields Run (a change) and (position, reason)
@@ -603,6 +704,12 @@ class _Plan:
 
 class _NotAffine(Exception):
     pass
+
+
+def _first_end(r: Region) -> Pos:
+    """The end of the first piece of a pattern written from the chip (after 0)."""
+    ivs = r.on(ZERO, r.hi + 2 * r.pr + 1).intervals
+    return ivs[0].hi if ivs else Pos(0)
 
 
 def _affine(l1: Line, l2: Line, p1: Pos, s):

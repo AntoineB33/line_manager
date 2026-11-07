@@ -126,7 +126,10 @@ class ChipPush:
         right at c + within, and the chip still pushes it there (ChipOn's (c, c + within)
         is the same between two instants, ε apart only)."""
         p = c if isinstance(c, Pos) else Pos(c)
-        if self.unless is not None and state.line.presence(self.unless).contains(p):
+        # (not on it: neither at the chip nor starting right after it, where it goes on
+        # what the chip is on: a 20s break dragged at (chip, chip + 20] in mode 2)
+        if self.unless is not None and (state.line.presence(self.unless).contains(p)
+                                    or state.line.presence(self.unless).contains(p + EPS)):
             return False
         if self.lasted is not None:  # (behind the chip: what the mode rules do at c changes nothing)
             return Region.of(Interval(p - self.lasted, p, True, False)).issubset(state.line.presence(self.on_kind))
@@ -392,13 +395,6 @@ class AsEarlyAsPossible:
         cp = c if isinstance(c, Pos) else Pos(c)
         after = _after(c)
         mine = state.claims.owned(self.kind, GEN) & after  # (its own pieces ahead: placed again here)
-        # its own piece the chip is at the first position of ((c - ε, c - ε + L], pushed or
-        # dragged there from the position before): placed again from the chip too, not a
-        # piece of one position that ended at c (a 20s break dragged in mode 2 until c,
-        # then crossed in mode 1, is not a break of {c} that bars the next 20 minutes)
-        own = state.claims.owned(self.kind, GEN)
-        if own.contains(cp) and any(iv.lo == cp for iv in state.line.presence(self.kind).on(cp - 1, cp + 1).intervals):
-            mine = mine | (own & Region.point(cp))
         no = Region.empty()
         if self.rules is not None:
             from problems import forbidden
@@ -420,12 +416,14 @@ class AsEarlyAsPossible:
                 p = pulls[id(g)]
                 out = out | ((w - pulled(w, p, g.gap)) if p else w)
             return out
-        # a piece the chip is in, begun before it: whole
+        # a piece the chip is in, begun before it: whole (the chip at its first position
+        # included: (c - ε, c - ε + L], placed after a gap ending at c - ε, or dragged there
+        # as the mode changed at c; not a piece of one position {c} that bars a gap)
         placed = []
         now = state.line.presence(self.kind) - mine
         for iv in (state.line.presence(self.kind)).on(cp - L - 1, cp + L + 1).intervals:
-            if iv.lo < cp < iv.hi + EPS and iv.lo + L > cp:
-                placed.append((iv.lo, iv.lo + L))
+            if iv.lo <= cp < iv.hi + EPS and iv.lo + L > cp:
+                placed.append((iv.lo, iv.lo + L - EPS))  # (its pieces (s, s + L]: [s + ε, s + L])
         stop = Region.empty() if no.is_bounded() else None
         end = (no.bounded().sup() if not no.is_empty() else cp) if stop is not None else no.hi  # past it: the pattern
         end = max(end, cp)
@@ -438,11 +436,11 @@ class AsEarlyAsPossible:
             dyn = dyn | bar(b)
         while t <= end:
             checkpoint()
-            block = (no | dyn) & Region.of(Interval._mk(t, t + L))
+            block = (no | dyn) & Region.of(Interval._mk(t, t + L - EPS))
             if block.is_empty():
-                placed.append((t, t + L))
-                dyn = dyn | bar(t + L)
-                t = t + L + EPS
+                placed.append((t, t + L - EPS))  # (L long from its first position t: [t, t + L - ε])
+                dyn = dyn | bar(t + L - EPS)
+                t = t + L
             else:
                 first = block.on(t, t + L + 1).intervals[0]
                 t = first.hi + EPS
@@ -451,8 +449,8 @@ class AsEarlyAsPossible:
             # 5min ones): the sweep goes on until its pieces repeat with it, the same phase
             # in its period and the same bars ahead of the sweep
             return self._repeating(no, dyn, bar, placed, t, L, counted) & after
-        while not (dyn & Region.of(Interval._mk(t, t + L))).is_empty():  # (past `end`: the gaps of the last ones)
-            t = (dyn & Region.of(Interval._mk(t, t + L))).on(t, t + L + 1).intervals[0].hi + EPS
+        while not (dyn & Region.of(Interval._mk(t, t + L - EPS))).is_empty():  # (past `end`: the gaps of the last ones)
+            t = (dyn & Region.of(Interval._mk(t, t + L - EPS))).on(t, t + L + 1).intervals[0].hi + EPS
         spacing = L + max((g.gap for g in counted), default=Fraction(0))
         starts = [a for a, _ in placed] + [t]
         if spacing != L and all(b - a == Pos(spacing) for a, b in zip(starts, starts[1:])):
@@ -466,7 +464,7 @@ class AsEarlyAsPossible:
         if spacing == L:  # nothing apart: one after the other, everywhere from t
             return (Region.of(core) | Region.of(Interval(t, INF, True, False))) & after
         return Region(first, t, core, ONE, IntervalSet(), Pos(spacing),
-                      IntervalSet._sorted([Interval._mk(ZERO, Pos(L))])) & after
+                      IntervalSet._sorted([Interval._mk(ZERO, Pos(L) - EPS)])) & after  # (from t: [t, t + L - ε])
 
     MAX_STEPS = 20000  # of the sweep past what repeats, before it gives up: none further
 
@@ -490,11 +488,11 @@ class AsEarlyAsPossible:
                     first = min([a for a, _ in placed] + [t0])
                     return Region(first, t0, before, ONE, IntervalSet(), per, pattern)
                 seen[key] = (len(placed), t)
-            block = (no | dyn) & Region.of(Interval._mk(t, t + L))
+            block = (no | dyn) & Region.of(Interval._mk(t, t + L - EPS))
             if block.is_empty():
-                placed.append((t, t + L))
-                dyn = dyn | bar(t + L)
-                t = t + L + EPS
+                placed.append((t, t + L - EPS))
+                dyn = dyn | bar(t + L - EPS)
+                t = t + L
             else:
                 t = block.on(t, t + L + 1).intervals[0].hi + EPS
         return Region.of(IntervalSet([Interval._mk(a, b) for a, b in placed])) if placed else Region.empty()

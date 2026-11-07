@@ -150,7 +150,11 @@ class ChipOn:
         from intervals import Pos
         from region import Region
         p = chip if isinstance(chip, Pos) else Pos(chip)
-        if self.unless is not None and state.line.presence(self.unless).contains(p):
+        # (not on it: neither at the chip nor starting right after it, where it goes on
+        # what the chip is on: a 20s break dragged at (chip, chip + 20] in mode 2)
+        from intervals import EPS
+        if self.unless is not None and (state.line.presence(self.unless).contains(p)
+                                    or state.line.presence(self.unless).contains(p + EPS)):
             return False
         pres = state.line.presence(self.kind)
         if self.lasted is not None:

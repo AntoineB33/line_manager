@@ -24,7 +24,7 @@ import re
 from dataclasses import replace
 from fractions import Fraction
 
-from constraints import AsEarlyAsPossible, Breaks, KeepOn, MinimumGap, ScreenBreaks
+from constraints import AsEarlyAsPossible, Breaks, KeepOn, MaximumGap, MinimumGap, ScreenBreaks
 from intervals import INF, Interval, IntervalSet, Pos
 from line import Claims, LineState, Op
 from region import Region
@@ -37,7 +37,7 @@ sys.path.insert(0, {os.path.dirname(os.path.abspath(__file__))!r})  # (scripts/:
 
 from fractions import Fraction as F
 
-from constraints import AsEarlyAsPossible, Breaks, KeepOn, MinimumGap, ScreenBreaks
+from constraints import AsEarlyAsPossible, Breaks, KeepOn, MaximumGap, MinimumGap, ScreenBreaks
 from intervals import INF, Interval, IntervalSet, Pos
 from line import Op
 from ratio_plan import cycle, turns
@@ -122,6 +122,10 @@ def py(v) -> str:
         return f"ScreenBreaks([{breaks}], {v.ns!r}, chain={tuple(sorted(v.chain))!r})"
     if isinstance(v, AsEarlyAsPossible):
         return f"AsEarlyAsPossible({v.kind!r}" + (f", length={py(v.length)})" if v.length is not None else ")")
+    if isinstance(v, MaximumGap):
+        more = f", after={v.after!r}, at_least={py(v.at_least)}" if v.after != v.kind or v.at_least else ""
+        more += f", length={py(v.length)}" if v.length != v.at_least else ""
+        return f"MaximumGap({v.kind!r}, {py(v.gap)}{more})"
     if isinstance(v, MinimumGap):
         more = f", after={v.after!r}, at_least={py(v.at_least)}" if v.after != v.kind or v.at_least else ""
         more += f", pull={v.pull!r}" if v.pull else ""

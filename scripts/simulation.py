@@ -84,7 +84,12 @@ def against_constraints(rules, state: LineState, c: Fraction, constraints) -> st
     if not ops:
         return None
     try:
-        why = check_script_edit(state, apply_edit(rules, state, ops, GEN), c)
+        after = apply_edit(rules, state, ops, GEN)
+        why = check_script_edit(state, after, c)
+        if not why and any(type(k).__name__ == "MaximumGap" for k in constraints) and                 any(k.ops(after, c) for k in constraints if type(k).__name__ == "MaximumGap"):
+            # (the obligation on the line the edits made; not the MinimumGaps: one with a pull
+            # read again on its own edits can take a piece it just let be, gaps_to_solve_later.md)
+            why = "an obligation (MaximumGap) cannot be met with the other constraints"
     except Refused as e:
         why = str(e)
     return f"it contradicts the constraints: {why}" if why else None

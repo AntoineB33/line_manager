@@ -5,7 +5,10 @@ with whatever they are. One unit is one second, and the chip is the now line.
 The requirements, and the rule or constraint that says each:
 - a 20s break lasts 20 seconds and comes with "no screen":
       "Break20s → NoScreen", "Break20s is always 100%"
-- the breaks are placed as early as possible:
+- never more than 20 minutes without a 20s break (the obligation):
+      MaximumGap("Break20s", 20 minutes, length=20)
+- the breaks are placed as early as possible (the preference: without it, the
+  obligation alone places each as late as it allows, here the same place):
       AsEarlyAsPossible("Break20s", length=20)
 - after the end of a 20s break, no 20s break in the next 20 minutes (only a 20s break
   does: "no screen", however long, bars none):
@@ -32,7 +35,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from app import AsEarlyAsPossible, MinimumGap, start  # noqa: E402
+from app import AsEarlyAsPossible, MaximumGap, MinimumGap, start  # noqa: E402
 
 RULES = [
     # A break comes with "no screen"; "no screen" is each device locked or not used.
@@ -68,6 +71,8 @@ CONSTRAINTS = [
     # no 20s break within 20 minutes after one; one that would start inside a "no screen"
     # period starts at its start
     MinimumGap("Break20s", 20 * MINUTE, pull="NoScreen"),
+    # never more than 20 minutes without one
+    MaximumGap("Break20s", 20 * MINUTE, length=20),
 ]
 PROBLEMS = []  # a break is no task: no target
 Q = 0.5

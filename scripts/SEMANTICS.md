@@ -750,6 +750,29 @@ mode rules, which each run compiles for the modes it predicts (`Script.stretches
     as they were, and the next run replaces the rest.
   - **Edits against the constraints.** A user's edit after which the constraints cannot
     hold (what they ask for would be refused) is refused (`Simulation._against_constraints`).
+  - **An obligation, and where it goes.** "At least a gap" (`MinimumGap`) only forbids,
+    so it asks for no piece at all; "as early as possible" (`AsEarlyAsPossible`) is where
+    the pieces go, not that there are any. The obligation is a constraint of its own,
+    `MaximumGap`: never more than `gap` without a piece of the kind or an interval of
+    `after` at least `at_least` long ("keep Break5 at most 3600 after 300 or more of
+    NoScreen"). A stretch runs from the first position after what counts to the next
+    position that counts, and is at most `gap` long; a line with nothing that counts
+    behind the chip has its first stretch from the chip. Each rule says one thing, so
+    the user can remove any of them and the rest still mean what they said:
+    - with an AsEarlyAsPossible of its kind, that one places the pieces and the
+      obligation checks them on what it put (`constraint_ops`: an obligation is computed
+      after the other constraints of its kind);
+    - without one, the generator gives it one (`constraints.expand`): an
+      AsEarlyAsPossible after a wait as long as the obligation's gap
+      (`MinimumGap.soft`), which puts each piece as late as the obligation allows and is
+      pushed and kept as the chip goes as any other. A wait is not a rule: where its end
+      is taken (a rule forbids the kind there), the piece comes sooner, at the latest
+      position before it that the rules leave free (`AsEarlyAsPossible.place`, `sooner`);
+    - where nothing can meet it (the user's "no X" over the only place a piece can be),
+      the edit is refused (`simulation.against_constraints`).
+    With an "at least" and an "at most" of the same gap there is one place for each
+    piece, so removing "as early as possible" from OmniApp's breaks changes nothing on
+    the line (`MaximumGapTest`).
   - **Stopped.** A step of the simulation, a generator run included, can be
     stopped from another thread (`solver.STOP`, Pause in the window): the long
     loops raise `Interrupted`, and the step is undone (`Simulation.snapshot`,

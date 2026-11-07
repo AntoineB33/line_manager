@@ -5,7 +5,12 @@ whatever they are. One unit is one second, and the chip is the now line.
 The requirements, and the rule or constraint that says each:
 - a break lasts as long as its name says and comes with "no screen":
       "Break5 → NoScreen", "Break15 → NoScreen", "Break5 is always 100%", ...
-- the breaks are placed as early as possible:
+- never more than an hour without 5 minutes of "no screen" (a 5min break, or any 5
+  minutes of it), never more than 2 hours without 15 minutes of it: the obligation
+      MaximumGap("Break5", 1 hour, after="NoScreen", at_least=5 minutes)
+      MaximumGap("Break15", 2 hours, after="NoScreen", at_least=15 minutes)
+- the breaks are placed as early as possible (the preference: without it, the
+  obligation alone places each as late as it allows, here the same place):
       AsEarlyAsPossible("Break15", length=15 minutes), AsEarlyAsPossible("Break5", ...)
 - after 5 minutes or more of "no screen", no 5min break in the next hour; after 15
   minutes or more, no 15min break in the next 2 hours; a break that would start inside
@@ -32,7 +37,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from app import AsEarlyAsPossible, MinimumGap, start  # noqa: E402
+from app import AsEarlyAsPossible, MaximumGap, MinimumGap, start  # noqa: E402
 
 MINUTE = 60  # units
 RULES = [
@@ -67,8 +72,10 @@ LINE = []  # the line starts empty
 CONSTRAINTS = [
     AsEarlyAsPossible("Break15", length=15 * MINUTE),
     MinimumGap("Break15", 2 * 60 * MINUTE, after="NoScreen", at_least=15 * MINUTE, pull="NoScreen"),
+    MaximumGap("Break15", 2 * 60 * MINUTE, after="NoScreen", at_least=15 * MINUTE),
     AsEarlyAsPossible("Break5", length=5 * MINUTE),
     MinimumGap("Break5", 60 * MINUTE, after="NoScreen", at_least=5 * MINUTE, pull="NoScreen"),
+    MaximumGap("Break5", 60 * MINUTE, after="NoScreen", at_least=5 * MINUTE),
 ]
 PROBLEMS = []  # a break is no task: no target
 Q = 0.5

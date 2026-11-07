@@ -65,7 +65,7 @@ import time
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 
-from constraints import constraint_ops, push_of
+from constraints import constraint_ops, expand, push_of
 from guards import check_script_edit
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import GEN, LineState, Op
@@ -151,7 +151,7 @@ class RulesGenerator:
         problems = [(problems, Fraction(1))] if hasattr(problems, "error") else [(p, Fraction(w)) for p, w in problems]
         if any(w < 0 for _, w in problems):
             raise ValueError("the weights of the problems are >= 0")
-        self.constraints = tuple(constraints)
+        self.constraints = expand(constraints)  # (what places the pieces of an obligation alone)
         targets = {}
         for p, _ in problems:
             targets.update(getattr(p, "targets", {}))
@@ -400,7 +400,7 @@ class RulesGenerator:
         if ops:
             out.append(Event(ChipIn(c, INF), (EditAction(tuple(ops)),)))
         for k in self.constraints:
-            if getattr(k, "explicit", False) and getattr(k, "length", None) is not None:
+            if getattr(k, "explicit", False) and getattr(k, "length", None) is not None and hasattr(k, "spacing"):
                 again = (Op.take(k.kind, Region.of(Interval(0, INF, False, False))),
                          Op.put(k.kind, cycle(0, k.spacing(), 0, k.length)))
                 # (no `within`: as far after the chip as the edit puts it, so changing the edit

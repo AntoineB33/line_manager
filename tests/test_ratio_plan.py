@@ -514,6 +514,122 @@ class MinimumGapTest(unittest.TestCase):
         self.assertIsNone(script_text._constraint(str(MinimumGap("Break15", 7200)), rules).pull)
 
 
+class MaximumGapTest(unittest.TestCase):
+    """constraints.MaximumGap: never more than `gap` without a piece of a kind (or a long
+    enough interval of `after`). The obligation; with an AsEarlyAsPossible, that one says
+    where; without it, each piece as late as the obligation allows (constraints.expand)."""
+
+    def place(self, rules, constraints, kind="X", upto=60, state=None):
+        g = RulesGenerator(parse_rules(rules), [], 0.5, constraints=constraints)
+        script, _ = g.run(state or LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
+        return script.base.line.presence(kind).on(0, upto)
+
+    def test_alone_it_places_its_pieces(self):
+        """At most 10 apart, 2 each, nothing else: (0, 2] (due at once on an empty line),
+        then each as late as allowed: (12, 14], (24, 26], ..."""
+        from constraints import MaximumGap
+        x = self.place([], [MaximumGap("X", 10, length=2)])
+        self.assertEqual(str(x), "(0, 2] U (12, 14] U (24, 26] U (36, 38] U (48, 50]")
+
+    def test_as_late_as_allowed_between_at_least_and_at_most(self):
+        """At least 10 and at most 15 apart, no AsEarlyAsPossible: 15 apart (as late as the
+        obligation allows); with AsEarlyAsPossible: 10 apart (as early as the gap allows)."""
+        from constraints import AsEarlyAsPossible, MaximumGap, MinimumGap
+        late = self.place([], [MinimumGap("X", 10), MaximumGap("X", 15, length=2)])
+        self.assertEqual(str(late), "(0, 2] U (17, 19] U (34, 36] U (51, 53]")
+        early = self.place([], [AsEarlyAsPossible("X", length=2), MinimumGap("X", 10), MaximumGap("X", 15, length=2)])
+        self.assertEqual(str(early), "(0, 2] U (12, 14] U (24, 26] U (36, 38] U (48, 50]")
+
+    def test_the_breaks_without_as_early_as_possible(self):
+        """The 5min and 15min breaks (screen_breaks_5_15_rules.py), "as early as possible"
+        removed from one or both: the obligation of the same gap gives the same breaks,
+        from an empty line and around a "no screen" period of the user."""
+        from constraints import AsEarlyAsPossible, MaximumGap, MinimumGap
+        M = 60
+        rules = ["Break5 → NoScreen", "Break15 → NoScreen", "Break5 is always 100%", "Break15 is always 100%",
+                 "Break15 → no Break5", "mode 1 → no NoScreen"]
+        early = {"Break15": AsEarlyAsPossible("Break15", length=15 * M), "Break5": AsEarlyAsPossible("Break5", length=5 * M)}
+        rest = {"Break15": [MinimumGap("Break15", 120 * M, after="NoScreen", at_least=15 * M, pull="NoScreen"),
+                            MaximumGap("Break15", 120 * M, after="NoScreen", at_least=15 * M)],
+                "Break5": [MinimumGap("Break5", 60 * M, after="NoScreen", at_least=5 * M, pull="NoScreen"),
+                           MaximumGap("Break5", 60 * M, after="NoScreen", at_least=5 * M)]}
+
+        def lines(without, state):
+            cs = []
+            for k in ("Break15", "Break5"):
+                cs += ([] if k in without else [early[k]]) + rest[k]
+            return [str(self.place(rules, cs, k, 30000, state)) for k in ("Break15", "Break5")]
+        rs = parse_rules(rules)
+        user = apply_edit(rs, LineState.empty(), [Op.put("NoScreen", Iv(10000, 11000, False, True))], "user")
+        for state in (None, user):
+            every = lines((), state)
+            for without in (("Break5",), ("Break15",), ("Break5", "Break15")):
+                with self.subTest(without=without, user=state is not None):
+                    self.assertEqual(lines(without, state), every)
+
+    def test_it_is_checked_on_what_the_others_put(self):
+        """With an AsEarlyAsPossible that keeps it, it adds nothing."""
+        from constraints import AsEarlyAsPossible, MaximumGap, MinimumGap, constraint_ops
+        cs = [AsEarlyAsPossible("X", length=2), MinimumGap("X", 10), MaximumGap("X", 10, length=2)]
+        g = RulesGenerator(parse_rules([]), [], 0.5, constraints=cs)
+        script, _ = g.run(LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
+        self.assertEqual(constraint_ops(g.rules, script.base, F(0), g.constraints), [])
+
+    def test_an_edit_that_leaves_no_room_is_refused(self):
+        """At most 10 apart and at least 10 apart: one place each; the user's "no X" over
+        where one is due leaves it none: refused."""
+        from constraints import AsEarlyAsPossible, MaximumGap, MinimumGap, constraint_ops, expand
+        from simulation import user_edit
+        rules = parse_rules(["Y → no X"])
+        cs = expand([AsEarlyAsPossible("X", length=2), MinimumGap("X", 10), MaximumGap("X", 10, length=2)])
+        for k in cs:
+            if hasattr(k, "bind"):
+                k.bind(rules)
+            if hasattr(k, "bind_all"):
+                k.bind_all(cs)
+        s = LineState.empty()
+        s = apply_edit(rules, s, constraint_ops(rules, s, F(0), cs), "generated")
+        _, why = user_edit(rules, s, [Op.put("Y", Iv(10, 16, False, True))], "user", F(0), cs)
+        self.assertIsNotNone(why)
+
+    def test_where_it_is_due_is_taken_it_comes_sooner(self):
+        """At least 10 and at most 15 apart, no AsEarlyAsPossible: (0, 2], (17, 19], ...; the
+        user's Y ("Y -> no X") on (14, 19] takes where the second is due: it comes sooner,
+        (12, 14], as late as it can be, and the next ones from it."""
+        from constraints import MaximumGap, MinimumGap, constraint_ops, expand
+        from simulation import user_edit
+        rules = parse_rules(["Y → no X"])
+        cs = expand([MinimumGap("X", 10), MaximumGap("X", 15, length=2)])
+        for k in cs:
+            if hasattr(k, "bind"):
+                k.bind(rules)
+            if hasattr(k, "bind_all"):
+                k.bind_all(cs)
+        s = LineState.empty()
+        s = apply_edit(rules, s, constraint_ops(rules, s, F(0), cs), "generated")
+        after, why = user_edit(rules, s, [Op.put("Y", Iv(14, 19, False, True))], "user", F(0), cs)
+        self.assertIsNone(why)
+        after = apply_edit(rules, after, constraint_ops(rules, after, F(0), cs), "generated")
+        self.assertEqual(str(after.line.presence("X").on(0, 50)), "(0, 2] U (12, 14] U (29, 31] U (46, 48]")
+
+    def test_at_least_more_than_at_most_is_refused(self):
+        from constraints import MaximumGap, MinimumGap
+        with self.assertRaises(ValueError):
+            RulesGenerator(parse_rules([]), [], 0.5, constraints=[MinimumGap("X", 20), MaximumGap("X", 10, length=2)])
+
+    def test_text_and_python(self):
+        from constraints import MaximumGap
+        from script_python import py
+        from script_text import _constraint
+        for k in (MaximumGap("Break5", 3600, after="NoScreen", at_least=300), MaximumGap("X", 10, length=2),
+                  MaximumGap("Break20s", 1200, length=20)):
+            with self.subTest(k=str(k)):
+                back = _constraint(str(k), None)
+                self.assertEqual((back.kind, back.gap, back.after, back.at_least, back.length),
+                                 (k.kind, k.gap, k.after, k.at_least, k.length))
+                self.assertTrue(py(k).startswith("MaximumGap("))
+
+
 BREAK_RULES = ["Break15 → NoScreen",
                "NoScreen → (NoComputerUnlocked or NotOnComputer) & (NoPhoneUnlocked or NotOnPhone)",
                "NotOnComputer → no NoComputerUnlocked", "NotOnPhone → no NoPhoneUnlocked",

@@ -36,6 +36,33 @@ pieces one after the other inside a long "no screen" the user put (a 20s break e
 seconds through it). That is what MinimumGap says; OmniApp takes a break once per
 "no screen" period (`State.taken`). The same question as a break due during a lock.
 
+## The obligation checked as the chip goes: seeds 5 and 16
+`tests/fuzz_rules.py <seed> 1 12 max` (each kind's AsEarlyAsPossible and MinimumGap, and a
+MaximumGap of the same gap) gives the same lines as the default variant, and checks
+MaximumGap after each step too, which the default variant never checked. Two seeds break
+it for a step, both from what a push leaves behind, not from the obligation:
+- seed 5 (two kinds): A pushed ahead of B at the chip in mode 1, B's piece cut, nothing of
+  B behind the chip; the line has B's next piece only at (30, 60].
+- seed 16 (one kind): mode 2 drags A, mode 3 follows; the dragged piece is dropped at the
+  change, and the "no screen" of the modes is 58 long at the check, 2 short of counting
+  as the break. AsEarlyAsPossible's own edits disagree with that line too.
+With `obligation` (no AsEarlyAsPossible, the obligation alone) seed 16 holds, and seed 5
+does not end: its second step decides the mode rules position by position (the run's
+window covers past the change to mode 2, where nothing was compiled), with two kinds and
+the points of B the push leaves behind; minutes per step. The "max" variant had the same
+until MaximumGap stopped widening the search window (`MaximumGap.cycle` = 0). The slow
+path itself is older than the obligation: any window that ends past a mode change on
+that line would meet it.
+
+An edit is refused when the obligation does not hold on the line the constraints' edits
+make (`simulation.against_constraints`), not when a MinimumGap does not: a MinimumGap with a
+pull, read again on the line its own edits made, can take the piece it just let be (the
+20s break pulled to the start of the user's "no screen" at 1100, `TwentySecondBreakTest`).
+The obligation places nothing inside a gap that is a rule (`MaximumGap.place`), and an
+"at least" longer than the "at most" of the same kind is refused when the generator is made
+(`constraints.expand`); a gap of another `after` or `at_least` that leaves the obligation
+no place is not checked that way.
+
 ## Two kinds of breaks: seeds 20-59 of tests/fuzz_rules.py
 33 of 40 hold; the 7 that do not (20, 26, 27, 33, 35, 42, 56) all have two kinds.
 - A kind placed later can change what an earlier one reads: B placed at (0, 30], then A

@@ -1,10 +1,14 @@
 """Any rule set: random break-like rule sets and scenarios, each run twice, the fast way
 (the stretches the generator compiled ahead) and the slow reference (the mode rules,
 their pushes included, decided at the chip at each step), the two compared at each step
-on the line ahead of the chip. The fast run is also checked to keep every MinimumGap,
-and to raise nothing.
+on the line ahead of the chip. The fast run is also checked to keep every MinimumGap
+and MaximumGap, and to raise nothing.
 
-    python tests/fuzz_rules.py [first seed] [how many] [steps]
+    python tests/fuzz_rules.py [first seed] [how many] [steps] [variant]
+
+variant: "early" (each kind as early as possible, kept apart: the default), "max" (the
+same and an obligation, MaximumGap, of the same gap: the same lines), "obligation" (no
+AsEarlyAsPossible: the obligation, at most a gap as long or longer, places them).
 
 Prints one line per scenario and, for a failing one, how to rerun it. test_fuzz.py runs a
 few fixed seeds.
@@ -27,7 +31,7 @@ from helpers import Interval  # noqa: E402,F401 (the paths of scripts/)
 
 import gui  # noqa: E402
 import simulation  # noqa: E402
-from app import AsEarlyAsPossible, MinimumGap, Session  # noqa: E402
+from app import AsEarlyAsPossible, MaximumGap, MinimumGap, Session  # noqa: E402
 from constraints import MinimumGap as _Gap  # noqa: E402
 from intervals import Interval as Iv  # noqa: E402
 from line import Op  # noqa: E402
@@ -35,9 +39,11 @@ from region import Region  # noqa: E402
 from script import Script  # noqa: E402
 
 
-def scenario(seed: int, steps: int = 24) -> dict:
-    """A random rule set of 1 or 2 break kinds that come with N, and what happens to it."""
+def scenario(seed: int, steps: int = 24, variant: str = "early") -> dict:
+    """A random rule set of 1 or 2 break kinds that come with N, and what happens to it
+    (`variant`: the top of this file; the same rules and scenario whatever it is)."""
     r = random.Random(seed)
+    rv = random.Random(seed * 7919 + 1)  # (the variant's own draws: the rest as in "early")
     n = r.choice([1, 1, 2])
     kinds = ["A", "B"][:n]
     lengths = sorted(r.sample([10, 20, 30, 60], n))  # (the longer one is B)
@@ -51,8 +57,11 @@ def scenario(seed: int, steps: int = 24) -> dict:
         gap = r.choice([100, 200, 400])
         after, at_least = r.choice([(k, 0), ("N", L)])
         pull = r.choice([None, "N"])
-        constraints += [AsEarlyAsPossible(k, length=L),
-                        MinimumGap(k, gap, after=after if after != k else None, at_least=at_least, pull=pull)]
+        early = [AsEarlyAsPossible(k, length=L)] if variant != "obligation" else []
+        constraints += early + [MinimumGap(k, gap, after=after if after != k else None, at_least=at_least, pull=pull)]
+        if variant in ("max", "obligation"):
+            most = gap if variant == "max" else gap + rv.choice([0, 0, 50, 150])
+            constraints.append(MaximumGap(k, most, after=after if after != k else None, at_least=at_least, length=L))
     # the modes: 1 has no N at the chip (but a kind it crosses), 2 puts N and drags a kind, 3 puts N
     crossed = r.choice([None] + kinds)
     if crossed:
@@ -74,7 +83,7 @@ def scenario(seed: int, steps: int = 24) -> dict:
         a = r.randint(50, 1500)
         edits.append((r.randint(1, steps // 2), (a, a + r.choice([5, 40, 120]))))
     ticks = [F(r.choice([1, 3, 10, 25, 60])) for _ in range(steps)]
-    return dict(seed=seed, rules=rules, constraints=constraints, modes=modes, edits=edits, ticks=ticks)
+    return dict(seed=seed, rules=rules, constraints=constraints, modes=modes, edits=edits, ticks=ticks, variant=variant)
 
 
 def session(sc: dict) -> Session:
@@ -89,6 +98,8 @@ def session(sc: dict) -> Session:
 def _copy(k):
     if isinstance(k, AsEarlyAsPossible):
         return AsEarlyAsPossible(k.kind, length=k.length)
+    if isinstance(k, MaximumGap):
+        return MaximumGap(k.kind, k.gap, after=k.after if k.after != k.kind else None, at_least=k.at_least, length=k.length)
     return _Gap(k.kind, k.gap, after=k.after if k.after != k.kind else None, at_least=k.at_least, pull=k.pull)
 
 
@@ -107,7 +118,7 @@ def run(sc: dict, reference: bool) -> list:
     try:
         s = session(sc)
         kinds = sorted({k.kind for k in sc["constraints"]} | {"N"})
-        gaps = [k for k in s.sim.script.constraints if isinstance(k, _Gap)]
+        gaps = [k for k in s.sim.script.constraints if isinstance(k, (_Gap, MaximumGap))]
         for i, dt in enumerate(sc["ticks"]):
             for at, (a, b) in sc["edits"]:
                 if at == i:
@@ -158,10 +169,11 @@ if __name__ == "__main__":
     first = int(sys.argv[1]) if len(sys.argv) > 1 else 0
     count = int(sys.argv[2]) if len(sys.argv) > 2 else 20
     steps = int(sys.argv[3]) if len(sys.argv) > 3 else 24
+    variant = sys.argv[4] if len(sys.argv) > 4 else "early"
     bad = 0
     with mock.patch.object(gui, "run"):
         for seed in range(first, first + count):
-            sc = scenario(seed, steps)
+            sc = scenario(seed, steps, variant)
             t = time.perf_counter()
             why = compare(sc)
             took = time.perf_counter() - t

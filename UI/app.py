@@ -39,7 +39,7 @@ from fractions import Fraction as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 
-from constraints import AsEarlyAsPossible, Breaks, KeepOn, MinimumGap, ScreenBreaks  # noqa: E402,F401 (for the example scripts)
+from constraints import AsEarlyAsPossible, Breaks, KeepOn, MaximumGap, MinimumGap, ScreenBreaks  # noqa: E402,F401 (for the example scripts)
 from generator import RulesGenerator  # noqa: E402
 from intervals import INF, Interval, IntervalSet  # noqa: E402
 from line import LineState, Op  # noqa: E402

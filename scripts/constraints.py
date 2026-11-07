@@ -9,6 +9,8 @@ is put in place (script.ConstraintEditAction). As the chip goes, the mode rules 
 generator compiles keep the targets too (mode_rules.ModeRules.constrain): a break the
 chip reaches in mode 1 moves on with it.
 
+- MinimumGap / MaximumGap: at least / at most a gap between the pieces of a kind.
+- AsEarlyAsPossible: a kind placed as early as the rest allows.
 - KeepOn(op): an edit written from the chip (`Future on (0, inf)`: Future on (c, inf)).
 - Breaks: the 15-minute screen breaks of OmniApp
   (docs/scheduler_requirements.md of OmniApp).
@@ -39,7 +41,16 @@ def constraint_ops(rules, state: LineState, c, constraints) -> list[Op]:
     ops, s = [], state
     gs = list(groups.values())
     for i, g in enumerate(gs):
-        mine = [o for k in g for o in k.ops(s, c)]
+        mine = [o for k in g if not isinstance(k, MaximumGap) for o in k.ops(s, c)]
+        late = [k for k in g if isinstance(k, MaximumGap)]
+        if late:  # (an obligation checked on what the others of its kind put: MaximumGap)
+            t = s
+            if mine:
+                try:
+                    t = apply_edit(rules, s, mine, GEN)
+                except Refused:
+                    pass
+            mine += [o for k in late for o in k.ops(t, c)]
         if not mine:
             continue
         ops += mine
@@ -225,6 +236,7 @@ class MinimumGap:
     `after`, which opens the next gap at its end."""
 
     explicit = True  # its edits are written in the script (generator.constraint_events)
+    soft = False  # (True: only where an AsEarlyAsPossible waits, not a rule: `expand`)
 
     def __init__(self, kind: str, gap, after: str | None = None, at_least=0, pull: str | None = None) -> None:
         self.kind, self.gap = kind, Fraction(gap)
@@ -281,6 +293,8 @@ class MinimumGap:
         interval of the user (the user's edit wins); an interval of the user too close that
         nothing else makes hold is off too, which the script cannot do: the user's edit is
         refused."""
+        if self.soft:
+            return []  # (a wait, not a rule: nothing to make hold)
         pres = state.line.presence(self.kind)
         after = _after(c)
         pulls = self.pulls_of(state, c)
@@ -403,20 +417,22 @@ class AsEarlyAsPossible:
                 out = out | (state.line.presence(ks[0]) & _after(c))
         return out
 
-    def obstacles(self, state: LineState, c, also: Region | None = None) -> tuple:
+    def obstacles(self, state: LineState, c, also: Region | None = None, soft=None) -> tuple:
         """(where what stays keeps its pieces away after the chip at c: what the rules forbid
         of it and the gaps after what is not its own pieces ahead; the pulls of its gaps).
-        `also`: more of its own pieces that move (the one the chip pushes, at the chip)."""
+        `also`: more of its own pieces that move (the one the chip pushes, at the chip).
+        `soft`: False, what the rules forbid and the gaps that are rules; True, the waits
+        alone (MinimumGap.soft); None, all."""
         after = _after(c)
         mine = state.claims.owned(self.kind, GEN) & after  # (its own pieces ahead: placed again here)
         if also:
             mine = mine | also
         no = Region.empty()
-        if self.rules is not None:
+        if self.rules is not None and soft is not True:
             from problems import forbidden
             vals = {k: ({v: r - mine for v, r in d.items()} if k == self.kind else d) for k, d in state.line.vals.items()}
             no = forbidden(_Shim(self.rules, state), self.kind, vals)
-        gaps = self._gaps()
+        gaps = [g for g in self._gaps() if soft is None or g.soft == soft]
         pulls = {id(g): g.pulls_of(state, c) for g in gaps}
         for g in gaps:
             # (after its own kind: the line without its pieces ahead; after another kind: what
@@ -435,6 +451,10 @@ class AsEarlyAsPossible:
         no, pulls = self.obstacles(state, c, also)
         counted = [g for g in self._gaps() if self._counts(g) and L >= g.at_least]
         fixed = {id(g): self.fixed_of(state, c, g.after) for g in counted}
+        waits = any(g.soft for g in self._gaps())
+        if waits:  # (a wait it ends sooner where its end is taken: the obligation's due, `expand`)
+            hard = {"no": self.obstacles(state, c, also, soft=False)[0], "dyn": Region.empty()}
+            soft_no = self.obstacles(state, c, also, soft=True)[0]
 
         def stretch_end(b, f: Region):
             """The end of the stretch of `after` a piece ending at b is part of: it goes on
@@ -450,11 +470,14 @@ class AsEarlyAsPossible:
                     return e
             return e
 
-        def bar(b):
+        def bar(b, which=None):
             """What its piece ending at b bars: (end, end + gap] of each gap it counts in, from
-            the end of the stretch it is part of, short of what a pull takes off."""
+            the end of the stretch it is part of, short of what a pull takes off (`which`:
+            the waits alone, True, or the rules alone, False)."""
             out = Region.empty()
             for g in counted:
+                if which is not None and g.soft != which:
+                    continue
                 e = stretch_end(b, fixed[id(g)])
                 if e == INF:
                     continue
@@ -481,21 +504,47 @@ class AsEarlyAsPossible:
         dyn = Region.empty()
         for a, b in placed:
             dyn = dyn | bar(b)
+            if waits:
+                hard["dyn"] = hard["dyn"] | bar(b, False)
+
+        def sooner(t, dyn):
+            """Where a wait ends too late: t inside a wait whose end is taken by what is a rule,
+            the latest first position from t to that end out of the rules (None: as usual)."""
+            w = soft_no | (dyn - hard["dyn"])
+            if not w.contains(t):
+                return None
+            d = MaximumGap._end(w, t) + EPS
+            if d == INF:
+                return None  # (a wait without end: no due to come sooner for)
+            rule = hard["no"] | hard["dyn"]
+            if (rule & Region.of(Interval._mk(d, d + L - EPS))).is_empty():
+                return None  # (its end free: the sweep gets there)
+            return MaximumGap._latest(rule, t, d, L)
+
+        def put(t, dyn):
+            placed.append((t, t + L - EPS))  # (L long from its first position t: [t, t + L - ε])
+            if waits:
+                hard["dyn"] = hard["dyn"] | bar(t + L - EPS, False)
+            return dyn | bar(t + L - EPS)
         while t <= end:
             checkpoint()
             block = (no | dyn) & Region.of(Interval._mk(t, t + L - EPS))
             if block.is_empty():
-                placed.append((t, t + L - EPS))  # (L long from its first position t: [t, t + L - ε])
-                dyn = dyn | bar(t + L - EPS)
+                dyn = put(t, dyn)
                 t = t + L
             else:
+                p = sooner(t, dyn) if waits else None
+                if p is not None:
+                    dyn = put(p, dyn)
+                    t = p + L
+                    continue
                 first = block.on(t, t + L + 1).intervals[0]
                 t = first.hi + EPS
         if stop is None and no.right:
             # what keeps it away repeats past no.hi (the 15min breaks every 8100, for the
             # 5min ones): the sweep goes on until its pieces repeat with it, the same phase
             # in its period and the same bars ahead of the sweep
-            return self._repeating(no, dyn, bar, placed, t, L, counted) & after
+            return self._repeating(no, dyn, bar, placed, t, L, counted, (sooner, put) if waits else None) & after
         while not (dyn & Region.of(Interval._mk(t, t + L - EPS))).is_empty():  # (past `end`: the gaps of the last ones)
             t = (dyn & Region.of(Interval._mk(t, t + L - EPS))).on(t, t + L + 1).intervals[0].hi + EPS
         spacing = L + max((g.gap for g in counted), default=Fraction(0))
@@ -515,7 +564,7 @@ class AsEarlyAsPossible:
 
     MAX_STEPS = 20000  # of the sweep past what repeats, before it gives up: none further
 
-    def _repeating(self, no: Region, dyn: Region, bar, placed: list, t, L, counted) -> Region:
+    def _repeating(self, no: Region, dyn: Region, bar, placed: list, t, L, counted, waits=None) -> Region:
         """The pieces from t on, `no` repeating every no.pr from no.hi: swept until the state of
         the sweep (t's phase in that period, the bars of its pieces ahead of t) comes back,
         then what was placed between the two is the period of the pieces."""
@@ -536,6 +585,15 @@ class AsEarlyAsPossible:
                     return Region(first, t0, before, ONE, IntervalSet(), per, pattern)
                 seen[key] = (len(placed), t)
             block = (no | dyn) & Region.of(Interval._mk(t, t + L - EPS))
+            if waits is not None:  # (as `place`: a wait ended sooner where its end is taken)
+                sooner, put = waits
+                p = t if block.is_empty() else sooner(t, dyn)
+                if p is not None:
+                    dyn = put(p, dyn)
+                    t = p + L
+                    continue
+                t = block.on(t, t + L + 1).intervals[0].hi + EPS
+                continue
             if block.is_empty():
                 placed.append((t, t + L - EPS))
                 dyn = dyn | bar(t + L - EPS)
@@ -609,6 +667,218 @@ class AsEarlyAsPossible:
         if self.length is None:
             return f"keep {self.kind} as early as possible"
         return f"keep {self.kind} as early as possible, {_fmt(self.length)} each"
+
+
+class MaximumGap:
+    """Never more than `gap` without a piece of `kind` or an interval of `after` at least
+    `at_least` long (`kind` by default): e.g. ("Break5", 3600, after="NoScreen",
+    at_least=300), never an hour of screen without 5 minutes of "no screen", a 5min break
+    counting as such. The obligation, not where: with an AsEarlyAsPossible of the same
+    kind, that one places the pieces and this one only checks them (and adds one where
+    it left too long a stretch); without it, this one places them, each `length` long
+    (`at_least` by default), as late as its gap allows, where the rules and the other
+    constraints let it be (a MinimumGap keeping them apart). An edit of the user it
+    cannot make hold is refused (simulation.against_constraints). Any kinds and lengths:
+    nothing in it is about breaks.
+
+    A stretch: from the first position after what counts to the next one that counts; it
+    is at most `gap` long, so the latest piece after what counts ending at e starts at
+    e + gap + ε, as early as a MinimumGap of the same gap lets it: with both, one place.
+    Without an AsEarlyAsPossible, `expand` gives it one, after a MinimumGap of its own gap:
+    its pieces as late as it allows, kept as the chip goes as any other's."""
+
+    explicit = True  # (its edits, none where its AsEarlyAsPossible keeps it, written in the script)
+
+    MAX_STEPS = 20000  # of the sweep past what repeats, before it gives up
+
+    def __init__(self, kind: str, gap, after: str | None = None, at_least=0, length=None) -> None:
+        self.kind, self.gap = kind, Fraction(gap)
+        self.after, self.at_least = after or kind, Fraction(at_least)
+        self.length = Fraction(length) if length is not None else self.at_least
+        if self.gap <= 0 or self.at_least < 0 or self.length <= 0 or self.length < self.at_least:
+            raise ValueError("a gap > 0 and a length > 0, at least `at_least`")
+        self.cycle = 0  # (generator.search_window: its AsEarlyAsPossible and MinimumGap give the window)
+        self.rules = None  # (bind)
+        self.siblings: tuple = ()  # (bind_all)
+
+    def bind(self, rules) -> None:
+        self.rules = rules
+
+    def bind_all(self, constraints) -> None:
+        self.siblings = tuple(k for k in constraints if k is not self)
+
+    def kinds(self) -> set:
+        return {self.kind, self.after}
+
+    def holds_by_itself(self) -> bool:
+        """As the chip goes: its AsEarlyAsPossible keeps the pieces (`expand`)."""
+        return True
+
+    def targets(self, state: LineState, c) -> dict:
+        return {}  # (it puts nothing the mode rules keep: its edits, ConstraintEditAction)
+
+    def place(self, state: LineState, c) -> Region:
+        """Where its kind is after the chip at c: what is there that stays, and what it adds."""
+        cp = c if isinstance(c, Pos) else Pos(c)
+        after = _after(c)
+        kept = state.line.presence(self.kind)
+        no = Region.empty()
+        if self.rules is not None:
+            from problems import forbidden
+            no = forbidden(_Shim(self.rules, state), self.kind, state.line.vals) & after
+        hard = [g for g in self.siblings if isinstance(g, MinimumGap) and g.kind == self.kind and not g.soft]
+        for g in hard:  # (where a gap that is a rule keeps its kind away: no place for a piece)
+            no = no | (g.apart(state.line.presence(g.after), g.pulls_of(state, c)) & after)
+        if self.after == self.kind:
+            counts = kept
+        else:
+            long = MinimumGap(self.kind, 1, after=self.after, at_least=self.at_least).long
+            counts = long(state.line.presence(self.after)) | kept
+        added = self._sweep(cp, counts, no, [g for g in hard if g.after == self.kind])
+        return (kept & after) | (added & after)
+
+    def _sweep(self, cp: Pos, counts: Region, no: Region, gaps: list) -> Region:
+        """The pieces it adds after cp (none where its AsEarlyAsPossible could place them): each stretch longer than `gap` cut by a piece as late
+        as it can be, from the stretch the chip is in on; past what does not repeat, until
+        the sweep's state (its phase in the periods, the bars of its last piece) comes back."""
+        G, L = Pos(self.gap), self.length
+        first = cp + EPS
+        u = self._stretch_start(counts, first)
+        H = max([first] + [r.hi for r in (counts, no) if not r.is_empty()])
+        P = ONE
+        for r in (counts, no):
+            if r.right and r.right != _full(r):
+                P = plcm(P, r.pr)
+        reach = Pos(max((g.gap for g in gaps), default=Fraction(0)) + 1)
+        placed, bars, seen = [], Region.empty(), {}
+        for _ in range(self.MAX_STEPS):
+            checkpoint()
+            if u == INF:
+                break
+            if u >= H:
+                ahead = bars.on(u, u + reach)
+                key = ((u - H) % P, tuple((iv.lo - u, iv.hi - u) for iv in ahead.intervals))
+                if key in seen:
+                    i0, u0 = seen[key]
+                    before = IntervalSet([Interval._mk(a, b) for a, b in placed[:i0]])
+                    pattern = IntervalSet([Interval._mk(a - u0, b - u0) for a, b in placed[i0:]])
+                    if not pattern:
+                        return Region.of(before) if before else Region.empty()
+                    lo = min([a for a, _ in placed] + [u0])
+                    return Region(lo, u0, before, ONE, IntervalSet(), u - u0, pattern)
+                seen[key] = (len(placed), u)
+            nxt = self._next(counts, u, G)
+            if nxt is not None:  # (what counts comes in time: the stretch after it)
+                u = self._end(counts, nxt) + EPS
+                continue
+            p = self._latest(no | bars, max(u, first), u + G, L)
+            if p is None:  # (nowhere in time: as late as it may; the rules refuse it if they forbid it)
+                p = max(u + G, first)
+            placed.append((p, p + L - EPS))
+            for g in gaps:
+                bars = bars | Region.of(Interval._mk(p + L, p + L - EPS + Pos(g.gap)))
+            u = self._end(counts | Region.of(Interval._mk(p, p + L - EPS)), p + L - EPS) + EPS
+        return Region.of(IntervalSet([Interval._mk(a, b) for a, b in placed])) if placed else Region.empty()
+
+    def _stretch_start(self, counts: Region, x: Pos) -> Pos:
+        """The first position of the stretch x is in (if what counts covers x: the stretch
+        after it); x if nothing counts behind it (the line begins there)."""
+        if counts.contains(x):
+            return self._end(counts, x) + EPS
+        w = Pos(self.gap + 1)
+        for _ in range(16):
+            back = counts.on(x - w, x).intervals
+            if back:
+                return back[-1].hi + EPS
+            w = w * 2
+        return x
+
+    @staticmethod
+    def _next(counts: Region, u: Pos, G: Pos):
+        """The first position from u that counts, if it is at most G after u."""
+        ivs = counts.on(u, u + G + EPS).intervals
+        return ivs[0].lo if ivs else None
+
+    @staticmethod
+    def _end(region: Region, x: Pos):
+        """The last position of the component of `region` that x is in (INF without end)."""
+        e, w = x, Pos(1)
+        for _ in range(200):
+            ivs = [iv for iv in region.on(e, e + w + EPS).intervals if iv.lo <= e <= iv.hi]
+            if not ivs:
+                return e
+            hi = ivs[0].hi
+            if hi == INF:
+                return INF
+            if hi < e + w:
+                return hi
+            e, w = hi, w * 2
+        return INF
+
+    @staticmethod
+    def _latest(no: Region, lo: Pos, hi: Pos, L) -> Pos | None:
+        """The latest first position p in [lo, hi] with [p, p + L - ε] out of `no`; if hi < lo
+        (overdue), the earliest from lo."""
+        if hi < lo:
+            t = lo
+            for _ in range(10000):
+                block = no.on(t, t + L).intervals
+                if not block:
+                    return t
+                if block[0].hi == INF:
+                    return None
+                t = block[0].hi + EPS
+            return None
+        p = hi
+        while p >= lo:
+            block = no.on(p, p + L).intervals
+            if not block:
+                return p
+            p = block[0].lo - L
+        return None
+
+    def ops(self, state: LineState, c: Fraction) -> list[Op]:
+        want = self.place(state, c)
+        now = state.line.presence(self.kind) & _after(c)
+        out = []
+        if not (want - now).is_empty():
+            out.append(Op.put(self.kind, want - now))
+        return out
+
+    def __str__(self) -> str:
+        each = f", {_fmt(self.length)} each" if self.length != self.at_least else ""
+        if self.after == self.kind and not self.at_least:
+            return f"keep {self.kind} at most {_fmt(self.gap)} apart{each}"
+        return f"keep {self.kind} at most {_fmt(self.gap)} after {_fmt(self.at_least)} or more of {self.after}{each}"
+
+
+def expand(constraints) -> tuple:
+    """The constraints with what places the pieces of each MaximumGap that nothing else
+    places: an AsEarlyAsPossible of its kind and length after a MinimumGap of its gap (its
+    `after`, `at_least`, and the pull of a MinimumGap of its kind if one has one), each
+    piece as late as the obligation allows, then pushed and kept as the chip goes as the
+    pieces of any AsEarlyAsPossible (generator.constraint_events, mode_rules). Without a
+    MaximumGap, the constraints themselves."""
+    out = list(constraints)
+    for k in constraints:
+        for g in constraints:
+            if isinstance(k, MaximumGap) and isinstance(g, MinimumGap) and (g.kind, g.after, g.at_least) ==                     (k.kind, k.after, k.at_least) and g.gap > k.gap:
+                raise ValueError(f"no line keeps both: {g}; {k}")
+        if not isinstance(k, MaximumGap) or any(isinstance(o, AsEarlyAsPossible) and o.kind == k.kind and o.length is not None
+                                                for o in out):
+            continue
+        pull = next((g.pull for g in out if isinstance(g, MinimumGap) and g.kind == k.kind and g.pull), None)
+        gap = MinimumGap(k.kind, k.gap, after=k.after if k.after != k.kind else None, at_least=k.at_least, pull=pull)
+        early = AsEarlyAsPossible(k.kind, length=k.length)
+        gap.soft = True  # (a wait: where its end is taken, the piece comes sooner)
+        gap.placed_for = early.placed_for = k  # (not the user's: what the obligation needs)
+        out += [early, gap]
+    return tuple(out)
+
+
+def _full(r: Region) -> IntervalSet:
+    """A right tail that is all of its period."""
+    return IntervalSet._sorted([Interval._mk(ZERO, r.pr - EPS)])
 
 
 class _Shim:

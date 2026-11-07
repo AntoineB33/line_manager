@@ -17,7 +17,7 @@ import re
 from dataclasses import replace
 from fractions import Fraction
 
-from constraints import AsEarlyAsPossible, Breaks, KeepOn, MinimumGap, ScreenBreaks
+from constraints import AsEarlyAsPossible, Breaks, KeepOn, MaximumGap, MinimumGap, ScreenBreaks
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import Op
 from region import ONE, Region
@@ -188,6 +188,9 @@ _GAP_AFTER = re.compile(r"keep (\S+) at least (\S+) after (\S+) or more of (\S+?
 
 
 _EARLY = re.compile(r"keep (\S+) as early as possible(?:, (\S+) each)?$")
+_EACH = r"(?:, (\S+) each)?$"
+_AT_MOST = re.compile(r"keep (\S+) at most (\S+) apart" + _EACH)
+_AT_MOST_AFTER = re.compile(r"keep (\S+) at most (\S+) after (\S+) or more of (\S+?)" + _EACH)
 
 
 def _constraint(line: str, rules):
@@ -196,6 +199,17 @@ def _constraint(line: str, rules):
         if rules is not None and m[1] not in rules.order:
             raise ValueError(f"{m[1]} is not in the rules")
         return AsEarlyAsPossible(m[1], None if m[2] is None else _number(m[2]))
+    m = _AT_MOST.match(line) or _AT_MOST_AFTER.match(line)
+    if m:
+        after = m.re is _AT_MOST_AFTER
+        for k in [m[1]] + ([m[4]] if after else []):
+            if rules is not None and k not in rules.order:
+                raise ValueError(f"{k} is not in the rules")
+        each = m[5] if after else m[3]
+        length = None if each is None else _number(each)
+        if after:
+            return MaximumGap(m[1], _number(m[2]), after=m[4], at_least=_number(m[3]), length=length)
+        return MaximumGap(m[1], _number(m[2]), length=length)
     m = _GAP.match(line) or _GAP_AFTER.match(line)
     if m:
         pull = m[5] if m.re is _GAP_AFTER else m[3]

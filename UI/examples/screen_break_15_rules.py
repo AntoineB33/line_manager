@@ -26,7 +26,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from app import AsEarlyAsPossible, MinimumGap, start  # noqa: E402
+from app import AsEarlyAsPossible, MaximumGap, MinimumGap, start  # noqa: E402
 
 RULES = [
     # A break comes with "no screen"; "no screen" is each device locked or not used.
@@ -61,6 +61,9 @@ CONSTRAINTS = [
     # no break within 2 hours after 15 minutes or more of "no screen" (a break included);
     # a break that would start inside a "no screen" period starts at its start
     MinimumGap("Break15", 2 * 60 * MINUTE, after="NoScreen", at_least=15 * MINUTE, pull="NoScreen"),
+    # never more than 2 hours without 15 minutes of "no screen" (the obligation; the line
+    # above it is only where it goes: without it, as late as this allows)
+    MaximumGap("Break15", 2 * 60 * MINUTE, after="NoScreen", at_least=15 * MINUTE),
 ]
 PROBLEMS = []  # a break is no task: no target
 Q = 0.5

@@ -278,7 +278,13 @@ class ModeRules:
             return LineState(c, solve(self.rs, c.problem()), state.history)
         except Conflict:  # the generator's other elements are in the way
             c = self.constrain(state.claims, state.line, p, state.history, give_way=True, pushing=pushing)
-            return LineState(c, solve(self.rs, c.problem()), state.history)
+            try:
+                return LineState(c, solve(self.rs, c.problem()), state.history)
+            except Conflict:
+                # the constraints cannot be kept here on this line (what a push puts goes
+                # against a rule): the mode rules' decision alone, the next run of the
+                # generator places them again (never an error of the chip's step)
+                return state
 
     def run_claims(self, state: LineState, decision: tuple, at: Region):
         """The claims of `with_run`, or None if the decision places nothing."""

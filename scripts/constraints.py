@@ -26,6 +26,30 @@ from region import ONE, ZERO, Region, plcm
 from solver import checkpoint, solve
 
 
+def constraint_ops(rules, state: LineState, c, constraints) -> list[Op]:
+    """The edits that make these constraints hold after the chip at c. The constraints of
+    one kind (its AsEarlyAsPossible, its MinimumGap) are computed together on the same
+    line; each kind on the line the kinds before it made, in the order they first appear:
+    the 5min breaks placed where the 15min ones leave room, not on them."""
+    from resolve import Refused, apply_edit
+    groups: dict = {}
+    for k in constraints:
+        groups.setdefault(getattr(k, "kind", None) or id(k), []).append(k)
+    ops, s = [], state
+    gs = list(groups.values())
+    for i, g in enumerate(gs):
+        mine = [o for k in g for o in k.ops(s, c)]
+        if not mine:
+            continue
+        ops += mine
+        if i < len(gs) - 1:
+            try:
+                s = apply_edit(rules, s, mine, GEN)
+            except Refused:
+                pass  # (the edits together are refused where they are applied)
+    return ops
+
+
 def _after(c) -> Region:
     """(c, inf)."""
     return Region.of(Interval(c, INF, False, False))
@@ -234,9 +258,7 @@ class MinimumGap:
             return Region.empty()
         ends = long.complement().left_edges()  # (the first position after each interval)
         window = ends.dilate(Interval(ZERO, Pos(self.gap), True, False))
-        if pulls:
-            window = window - pulled(window, pulls, self.gap)
-        return window
+        return window - pulled(window, pulls, self.gap) if pulls else window
 
     def pulls_of(self, state: LineState, c) -> Region | None:
         """The intervals of `pull` that pull a gap's end to their start: behind the chip as
@@ -424,6 +446,11 @@ class AsEarlyAsPossible:
             else:
                 first = block.on(t, t + L + 1).intervals[0]
                 t = first.hi + EPS
+        if stop is None and no.right:
+            # what keeps it away repeats past no.hi (the 15min breaks every 8100, for the
+            # 5min ones): the sweep goes on until its pieces repeat with it, the same phase
+            # in its period and the same bars ahead of the sweep
+            return self._repeating(no, dyn, bar, placed, t, L, counted) & after
         while not (dyn & Region.of(Interval._mk(t, t + L))).is_empty():  # (past `end`: the gaps of the last ones)
             t = (dyn & Region.of(Interval._mk(t, t + L))).on(t, t + L + 1).intervals[0].hi + EPS
         spacing = L + max((g.gap for g in counted), default=Fraction(0))
@@ -440,6 +467,37 @@ class AsEarlyAsPossible:
             return (Region.of(core) | Region.of(Interval(t, INF, True, False))) & after
         return Region(first, t, core, ONE, IntervalSet(), Pos(spacing),
                       IntervalSet._sorted([Interval._mk(ZERO, Pos(L))])) & after
+
+    MAX_STEPS = 20000  # of the sweep past what repeats, before it gives up: none further
+
+    def _repeating(self, no: Region, dyn: Region, bar, placed: list, t, L, counted) -> Region:
+        """The pieces from t on, `no` repeating every no.pr from no.hi: swept until the state of
+        the sweep (t's phase in that period, the bars of its pieces ahead of t) comes back,
+        then what was placed between the two is the period of the pieces."""
+        P = no.pr
+        reach = Pos(L + max((g.gap for g in counted), default=Fraction(0)) + 1)
+        seen = {}
+        for _ in range(self.MAX_STEPS):
+            checkpoint()
+            if t >= no.hi:
+                ahead = dyn.on(t, t + reach)
+                key = ((t - no.hi) % P, tuple((iv.lo - t, iv.hi - t) for iv in ahead.intervals))
+                if key in seen:
+                    i0, t0 = seen[key]
+                    per = t - t0
+                    before = IntervalSet([Interval._mk(a, b) for a, b in placed[:i0]])
+                    pattern = IntervalSet([Interval._mk(a - t0, b - t0) for a, b in placed[i0:]])
+                    first = min([a for a, _ in placed] + [t0])
+                    return Region(first, t0, before, ONE, IntervalSet(), per, pattern)
+                seen[key] = (len(placed), t)
+            block = (no | dyn) & Region.of(Interval._mk(t, t + L))
+            if block.is_empty():
+                placed.append((t, t + L))
+                dyn = dyn | bar(t + L)
+                t = t + L + EPS
+            else:
+                t = block.on(t, t + L + 1).intervals[0].hi + EPS
+        return Region.of(IntervalSet([Interval._mk(a, b) for a, b in placed])) if placed else Region.empty()
 
     def targets(self, state: LineState, c) -> dict:
         return {}  # (where the chip pushes it: written in the script, generator.constraint_events)

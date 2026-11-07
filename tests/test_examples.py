@@ -60,6 +60,8 @@ class ExamplesTest(unittest.TestCase):
             "screen_break_15_task": {(ChipIn, None), (ChipIn, "1"), (ChipIn, "2"), (ChipIn, "3"), Edited,
                                      ScoreBelow, PresenceAbove},
             "screen_breaks_5_15": {(ChipIn, None), Edited},
+            # the same breaks from rules and constraints (no target)
+            "screen_breaks_5_15_rules": {(ChipIn, None), Edited},
             "screen_breaks": {(ChipIn, None), Edited},
             "screen_breaks_sleep": {(ChipIn, None), Edited},
             # the tasks: their targets are watched, in each mode (all reach VideoGames)
@@ -207,6 +209,34 @@ class ExamplesTest(unittest.TestCase):
                 out.append(ahead[0].lo.x)
             return out
         self.assertEqual(nexts("screen_break_15_rules"), nexts("screen_break_15"))
+
+
+class FiveAndFifteenMinuteBreaksTest(unittest.TestCase):
+    def test_the_same_breaks_as_the_hand_written_ones(self):
+        """screen_breaks_5_15_rules.py (AsEarlyAsPossible and MinimumGap for each, placed in
+        their order: constraints.constraint_ops) and screen_breaks_5_15.py (ScreenBreaks):
+        the same 15min and 5min breaks, on the empty line and with "no screen" that bars
+        (30 minutes at 1800), pulls (4400: the 5min break starts there) or does nothing
+        (8000). The 5min ones every 8100, as the 15min ones that bar them repeat
+        (AsEarlyAsPossible._repeating)."""
+        from intervals import Interval as Iv2
+        from line import Op
+
+        def breaks(name, no_screen):
+            sim = first_run(name)
+            if no_screen:
+                sim.edit_now([Op.put("NoScreen", Region.of(Iv2(*no_screen, True, True)))])
+                req = sim.request
+                sim.complete(req.id, *list(req.gen.stages(req.state, req.chip, req.known, req.previous))[-1])
+            line = sim.state.line
+            return [[(iv.lo.x, iv.hi.x) for iv in line.presence(k).on(0, 60000).intervals] for k in ("Break15", "Break5")],                 list(sim.log.refused)
+        for no_screen in (None, (1800, 3600), (4400, 4600), (8000, 8050)):
+            with self.subTest(no_screen=no_screen):
+                rules, refused = breaks("screen_breaks_5_15_rules", no_screen)
+                self.assertEqual(refused, [])
+                self.assertEqual(rules, breaks("screen_breaks_5_15", no_screen)[0])
+        rules, _ = breaks("screen_breaks_5_15_rules", None)
+        self.assertEqual([a for a, _ in rules[1]][:4], [4500, 12600, 20700, 28800])
 
 
 class TwentySecondBreakTest(unittest.TestCase):

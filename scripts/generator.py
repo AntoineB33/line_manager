@@ -65,7 +65,7 @@ import time
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 
-from constraints import push_of
+from constraints import constraint_ops, push_of
 from guards import check_script_edit
 from intervals import EPS, INF, Interval, IntervalSet, Pos
 from line import GEN, LineState, Op
@@ -273,7 +273,7 @@ class RulesGenerator:
         ctx = _Context(self, state, c, known)
         stats = RunStats(budget=budget(self.q), probability_rules=ctx.probability_rules)
         base, keep = state, None
-        ops = [o for k in self.constraints for o in k.ops(state, c)]
+        ops = constraint_ops(self.rules, state, c, self.constraints)
         written = self.constraint_events(state, c)  # (the explicit ones: their edits in the script)
         if ops:
             keep = ConstraintEditAction() if any(not getattr(k, "explicit", False) for k in self.constraints) else None
@@ -396,7 +396,7 @@ class RulesGenerator:
         from ratio_plan import cycle
         c = Fraction(c)
         out = []
-        ops = [o for k in self.constraints if getattr(k, "explicit", False) for o in k.ops(state, c)]
+        ops = constraint_ops(self.rules, state, c, [k for k in self.constraints if getattr(k, "explicit", False)])
         if ops:
             out.append(Event(ChipIn(c, INF), (EditAction(tuple(ops)),)))
         for k in self.constraints:
@@ -423,7 +423,7 @@ class RulesGenerator:
         """(the fill's edit or None, the state with the constraints' elements) (ratio_plan.Fill)."""
         if not self.fill.ok:
             return None, state
-        ops = [o for k in self.constraints for o in k.ops(state, c)]
+        ops = constraint_ops(self.rules, state, c, self.constraints)
         try:
             base = apply_edit(self.rules, state, ops, GEN) if ops else state
         except Refused:

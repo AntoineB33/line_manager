@@ -42,7 +42,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 
-from constraints import pushes_in
+from constraints import constraint_ops, pushes_in
 from generator import PACE, PACE_TIME, RulesGenerator, RunStats
 from guards import check_script_edit
 from intervals import EPS, INF, Interval, Num, Pos
@@ -80,7 +80,7 @@ def _reach(ev: Event):
 
 def against_constraints(rules, state: LineState, c: Fraction, constraints) -> str | None:
     """Why the constraints the script must satisfy cannot hold on this line, if so."""
-    ops = [o for k in constraints for o in k.ops(state, c)]
+    ops = constraint_ops(rules, state, c, constraints)
     if not ops:
         return None
     try:
@@ -353,7 +353,7 @@ class Simulation:
         for ops in getattr(self.gen, "first_edits", lambda *_: [])(self.state, req.chip):
             try:  # on top of what the constraints ask for, and they must still hold after it
                 if base is None:
-                    asked = [o for k in constraints for o in k.ops(self.state, req.chip)]
+                    asked = constraint_ops(self.rules, self.state, req.chip, constraints)
                     base = apply_edit(self.rules, self.state, asked, GEN) if asked else self.state
                 after = apply_edit(self.rules, base, ops, GEN)
                 why = check_script_edit(base, after, req.chip) or \
@@ -749,7 +749,7 @@ class Simulation:
                     elif isinstance(a, ConstraintEditAction):
                         c = self.chip.position(t)
                         hidden = [k for k in script.constraints if not getattr(k, "explicit", False)]
-                        self._edit(t, [o for k in hidden for o in k.ops(self.state, c)], GEN, "script")
+                        self._edit(t, constraint_ops(self.rules, self.state, c, hidden), GEN, "script")
                     elif isinstance(a, RerunAction):
                         rerun = ("start" if a.first else "user edit" if isinstance(ev.trigger, Edited)
                                  else "uncovered" if isinstance(ev.trigger, Uncovered) else "script")

@@ -108,3 +108,22 @@ no place is not checked that way.
   decaying for free: a lower bound, as scheduler_score.md's rollout closes its trials, not the
   infinite continuation the score is defined on.
 - **The modes are not predicted** for this problem: it reads the line as it is.
+
+## The breaks with a daily sleep: periods that meet only after weeks (measured 2026-11-07)
+The default breaks in their rules form (AsEarlyAsPossible, MinimumGap, MaximumGap, the three
+modes, "NoScreen → (NoComputerUnlocked or NotOnComputer) & (NoPhoneUnlocked or NotOnPhone)")
+with "Sleep → NoScreen" every day, no task and no score: the first run of the generator took
+49.5s with the 15min breaks alone, 104.5s with the 5min ones too, and over 180s with the 20s
+ones alone; with account 3's tasks and the score too, it did not end in 25 minutes. The
+examples have no daily sleep, so their tests never met it.
+Why: each kind's pieces are placed forever (`AsEarlyAsPossible._repeating`), and a region
+repeating with two periods repeats with their least common multiple: the 15min breaks (every
+8100) with the day, every 3 days; the 5min ones (every 3900) every 39 days; the 20s ones
+(every 1220) every 61 days. Each edit of the constraints is then resolved over that period
+(the "or" of "no screen": `solver._solve_or` over tens of days of 20s pieces).
+What would end it, to decide (it touches requirement.md's "If the rules imply to put
+something at infinity, it is considered possible"):
+- a horizon: the constraints place their pieces up to a horizon (OmniApp's 168h), not forever,
+  and the next runs extend it as the chip goes;
+- or a line that keeps two repeating patterns apart instead of merging them into one pattern of
+  their common period (the 20s breaks every 1220 and the night every 86400, each its own tail).

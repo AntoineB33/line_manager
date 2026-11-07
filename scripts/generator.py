@@ -670,9 +670,12 @@ class _Context:
         return base + adj
 
     def score(self, s: LineState) -> tuple:
-        """(the weighted error of the problems, then how far the shorter stretches from the
-        chip are from the ratio targets: problems.PresenceRatioProblem.stretch_error)."""
-        return (sum((w * p.error(self, s) for p, w in self.gen.problems if w), Fraction(0)),
+        """(what the problems' quantities by a date miss, before anything else (score.ScoreProblem:
+        a shortfall outweighs every other goal), then the weighted error of the problems, then
+        how far the shorter stretches from the chip are from the ratio targets:
+        problems.PresenceRatioProblem.stretch_error)."""
+        return (sum((p.shortfall(self, s) for p, w in self.gen.problems if w and hasattr(p, "shortfall")), 0),
+                sum((w * p.error(self, s) for p, w in self.gen.problems if w), Fraction(0)),
                 sum((w * p.stretch_error(self, s) for p, w in self.gen.problems if w and hasattr(p, "stretch_error")),
                     Fraction(0)))
 

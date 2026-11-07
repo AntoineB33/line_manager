@@ -888,7 +888,7 @@ call ends it (`test_background_runs`).
 - **Problems and weights.** A generator is given optimization problems, each with
   a weight ≥ 0, and minimizes the weighted sum of their errors. Each problem has a
   horizon H and looks at the window (c, c + H]; the generator plans the window W of
-  the longest one. Two problems are implemented:
+  the longest one. Three problems are implemented (the third below):
   - **Presence ratio.** A target r_K ∈ [0, 1] for each kind: the error is the sum of
     |(1/H) ∫ s_K/100 − r_K| over the kinds, with what the mode rules are expected to
     add or remove in the window.
@@ -901,6 +901,21 @@ call ends it (`test_background_runs`).
     than h, so making up for it takes more than the hole. A piece further than L
     from every other one needs the full L on its own (`ProblemsTest`). The mode
     rules are not predicted for this one: it reads the line as it is.
+- **OmniApp's score** (`score.py`, `ScoreProblem`; OmniApp's `docs/scheduler_score.md`
+  of 2026-11-07). The tasks are kinds; the other kinds a task names a resilience for are
+  its restrictive periods; what the user put of a task is that task's time alone. The
+  error is J = J1 + w J2 + w_X J3 on the window: each task's lag (served minus its target,
+  forgetting over its period on the schedulable clock), its panels under their minimum and
+  over their maximum. Its quantities by a date give D, which the generator compares before
+  every error (`_Context.score`: a quantity the rules leave room for is reached). Each
+  task reads its own past: its compensation length is the default λ until its period
+  passes λ, then about three periods, and a rare task (a period over 168 h) keeps its
+  panels and the schedulable clock as far back as that reaches, the rest of the line read
+  only near the chip. A formula of a priority, minimum or maximum (`Step`, `Linear`,
+  `Periodic`) cuts the window where it changes, each piece scored as if its value held
+  at all times. Its proposals fill the window with panels, the task furthest behind first
+  (its lag in units of its minimum), at the shares the quantities raise
+  (`ScoreTest`, `ScoreProblemTest`). What it does not do yet: gaps_to_solve_later.md.
 - **Candidates.** Candidate edits are built in a fixed order:
   1. the no-op first;
   2. then, for each combination of a prediction of what mode rules will do in W and

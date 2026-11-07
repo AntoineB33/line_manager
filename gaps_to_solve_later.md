@@ -74,3 +74,19 @@ no place is not checked that way.
   a run begins to push (seed 20: {100/3}), and a gap after K reads it as a piece that just
   ended. Taking K off that point in `decide` makes holes in the trail at every run
   boundary instead: not kept. What a pushed break leaves behind needs deciding first.
+
+## OmniApp's score (score.py): what is not done yet
+- **Rare tasks are scored, not placed.** The window is 4 times the longest minimum, so a
+  task due every few months gets a panel only when its due falls inside a run's window.
+  scheduler_score.md places it on the cycle in closed form; the generator has no cycle of
+  this problem yet (ratio_plan's cycles are for PresenceRatioProblem).
+- **J is the window's, not the whole continuation's.** As for the other problems, the
+  search scores (c, c + H]; scheduler_score.md integrates to infinity.
+- **One fill policy.** The proposals are one greedy fill at a few panel lengths; OmniApp
+  adds a rollout two runs deep, an improvement pass and a branch-and-bound. Measured once:
+  on A30 B15 C15 over 9 hours from an empty line, the fill beats both fixed patterns of the
+  example, which is all it is checked for.
+- **Cost.** The compensation is O(segments²) and each formula piece replays the past;
+  nothing is cached between candidates beyond the last state. Not measured on an
+  OmniApp-sized account (22 tasks).
+- **The modes are not predicted** for this problem: it reads the line as it is.

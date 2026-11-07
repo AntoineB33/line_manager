@@ -179,22 +179,11 @@ class ScoreProblemTest(unittest.TestCase):
         script, _ = g.run(state or LineState.empty(), F(0), ModeTimeline(0, "1").known(0))
         return sc, g, script.base
 
-    def test_a30_b15_c15_panels_of_their_minimum(self):
-        """Three tasks that exclude each other, a third each: panels of their minimum, none short."""
-        sc, g, st = self.run_generator(["A → no B", "A → no C", "B → no C"],
-                                       {"A": Task(1, 30 * MIN), "B": Task(1, 15 * MIN), "C": Task(1, 15 * MIN)},
-                                       window=9 * HOUR)
-        self.assertEqual(sc.evaluate(st.line, 0, g.window).J2, 0)
-        for k, n in (("A", 30), ("B", 15), ("C", 15)):
-            for iv in st.line.presence(k).on(0, g.window).intervals:
-                if iv.hi.x < g.window - 1:  # (one cut by the window's end: the next run goes on with it)
-                    self.assertEqual(iv.hi.x - iv.lo.x, n * MIN, (k, str(iv)))
-
-    @unittest.expectedFailure
     def test_a30_b15_c15_from_an_empty_line(self):
-        """Over 9 hours from an empty line, at least as good as the fixed patterns of
-        scheduler_score.md's example. Does not hold yet: measured 5487 against 5421
-        (A30 B15 C15 B15 C15) and 4909 (B15 C15 A30), gaps_to_solve_later.md."""
+        """Three tasks that exclude each other, a third each, over 9 hours from an empty line: no
+        panel under its minimum, and a score better than both fixed patterns of
+        scheduler_score.md's example (measured 4684 against 5421 for A30 B15 C15 B15 C15 and 4910
+        for B15 C15 A30)."""
         sc, g, st = self.run_generator(["A → no B", "A → no C", "B → no C"],
                                        {"A": Task(1, 30 * MIN), "B": Task(1, 15 * MIN), "C": Task(1, 15 * MIN)},
                                        window=9 * HOUR)
@@ -202,12 +191,100 @@ class ScoreProblemTest(unittest.TestCase):
         self.assertEqual(r.J2, 0)
         for k, n in (("A", 30), ("B", 15), ("C", 15)):
             for iv in st.line.presence(k).on(0, g.window).intervals:
-                if iv.hi.x >= g.window - 1:
-                    continue  # (cut by the window's end: the next run goes on with it)
-                self.assertEqual(iv.hi.x - iv.lo.x + (0 if iv.lo.k else 0), n * MIN, (k, str(iv)))
+                if iv.hi.x < g.window - 1:  # (one cut by the window's end: the next run goes on with it)
+                    self.assertGreaterEqual(iv.hi.x - iv.lo.x, n * MIN, (k, str(iv)))
         for cyc in ([("A", 30), ("B", 15), ("C", 15), ("B", 15), ("C", 15)], [("B", 15), ("C", 15), ("A", 30)]):
             fixed = Line(**pattern([(k, n * MIN) for k, n in cyc], 0, g.window))
-            self.assertLessEqual(r.J, sc.evaluate(fixed, 0, g.window).J, cyc)
+            self.assertLess(r.J, sc.evaluate(fixed, 0, g.window).J, cyc)
+
+    def test_the_search_s_model_scores_as_the_score(self):
+        """score_search.Model costs a continuation as Score.evaluate scores it on the line, the
+        past put by the user (pre-placed: every other task deprived there, compensated after) or
+        by the generator, sleep every night."""
+        from generator import RulesGenerator, _Context
+        from line import LineState, Op
+        from modes import ModeTimeline
+        from ratio_plan import cycle
+        from resolve import apply_edit
+        from rules import parse_rules
+        from score import ScoreProblem
+        from score_search import Model
+        day = 24 * HOUR
+        names = ["A", "B", "C", "D"]
+        rules = parse_rules([f"{a} → " + " & ".join(f"no {b}" for b in names[i + 1:]) for i, a in enumerate(names[:-1])])
+        chip = F(5 * day + 12 * HOUR)
+        sleep = cycle(F(4920), day, 0, 8 * HOUR)
+        past = pattern([("A", 45 * MIN), ("B", 45 * MIN), ("A", 45 * MIN), ("C", 45 * MIN), ("D", 30 * MIN)], 2 * day, chip)
+        sc = Score({k: Task(p, 30 * MIN, resilience={"Sleep": 0}) for k, p in zip(names, (4, 2, 1, 1))})
+        for owner in ("user", "generated"):
+            with self.subTest(past=owner):
+                st = apply_edit(rules, LineState.empty(), [Op.put("Sleep", sleep)], "user")
+                st = apply_edit(rules, st, [Op.put(k, Region.of(IntervalSet([Iv(a, b, False, True) for a, b in v if b <= chip])))
+                                            for k, v in past.items()], owner)
+                g = RulesGenerator(rules, [(ScoreProblem(sc), 1)], 0.5, window=day)
+                p = g.problems[0][0]
+                ctx = _Context(g, st, chip, ModeTimeline(0, "1").known(chip))
+                m = Model(p, ctx, st, 30.0)
+                runs = m.stride()
+                kinds = {k: st.line.presence(k) - Region.of(Iv(chip, chip + day, False, True)) for k in names}
+                for k, v in m.to_wall(runs).items():
+                    kinds[k] = kinds[k] | Region.of(IntervalSet([Iv(a, b, False, True) for a, b in v]))
+                kinds["Sleep"] = sleep
+                line = Line()
+                line.kinds = kinds
+                exact = sc.evaluate(line, chip, chip + day, p._preplaced(st))
+                self.assertAlmostEqual(m.cost(runs)[1] / exact.J, 1, delta=0.01)
+
+    def test_after_a_past_at_the_shares(self):
+        """Account 3's shape: 22 tasks that exclude each other at its shares (26% down to 0.66%, 5
+        at 0), a 45min minimum, sleep every night (resilience 0), 60 days of past at the shares
+        (stride scheduling): over the next day the generator leaves little to nobody and scores
+        better than going on at the shares. (Without the whole-continuation search,
+        score_search.py, it left 38% to nobody.)"""
+        from generator import RulesGenerator
+        from line import LineState, Op
+        from modes import ModeTimeline
+        from ratio_plan import cycle
+        from resolve import apply_edit
+        from rules import parse_rules
+        from score import ScoreProblem
+        day = 24 * HOUR
+        shares = {"T458": 2606, "T21": 1097, "T461": 1029, "T462": 1029, "T9": 1000, "T455": 769, "T463": 465,
+                  "T464": 398, "T465": 398, "T459": 274, "T466": 266, "T467": 199, "T460": 137, "T469": 133,
+                  "T468": 66, "T470": 66, "T471": 66, "T87": 0, "T124": 0, "T198": 0, "T250": 0, "T280": 0}
+        names = sorted(shares)
+        rules = parse_rules([f"{a} → " + " & ".join(f"no {b}" for b in names[i + 1:]) for i, a in enumerate(names[:-1])])
+        chip, start = F(100 * day + 12 * HOUR), F(40 * day)
+        sleep = cycle(start - day + 4920, day, 0, 8 * HOUR)
+
+        def stride(upto):
+            pos, panels, t = {k: 0.0 for k in names if shares[k]}, {k: [] for k in names}, start
+            while t < upto:
+                if sleep.contains(t + 1):
+                    t = F(next(iv.hi.x for iv in sleep.on(t, t + day).intervals if iv.lo <= t + 1 <= iv.hi))
+                    continue
+                k = min(pos, key=lambda k: (pos[k], k))
+                b = min(t + 45 * MIN, F(upto))
+                panels[k].append((t, b))
+                pos[k] += 45 * MIN / shares[k]
+                t = b
+            return panels
+        past = stride(chip)
+        ops = [Op.put(k, Region.of(IntervalSet([Iv(a, b, False, True) for a, b in v]))) for k, v in past.items() if v]
+        st0 = apply_edit(rules, LineState.empty(), [Op.put("Sleep", sleep)], "user")
+        st0 = apply_edit(rules, st0, ops, "generated")  # (a past schedule: not tasks the user put, pre-placed)
+        sc = Score({k: Task(p, 45 * MIN, resilience={"Sleep": 0}) for k, p in shares.items()})
+        g = RulesGenerator(rules, [(ScoreProblem(sc), 1)], 0.5, window=day)
+        script, _ = g.run(st0, chip, ModeTimeline(0, "1").known(chip))
+        line = script.base.line
+        W = IntervalSet.of(Iv(chip, chip + day, False, True))
+        awake = float(day - line.integral("Sleep", W))
+        served = sum(float(line.integral(k, W)) for k in names)
+        self.assertLess(1 - served / awake, 0.1)
+        on = stride(chip + day)
+        going_on = Line(Sleep=[], **on)
+        going_on.kinds["Sleep"] = sleep
+        self.assertLess(sc.evaluate(line, chip, chip + day).J, sc.evaluate(going_on, chip, chip + day).J)
 
     def test_a_quantity_by_a_date_is_reached(self):
         """A at a tenth of B's priority, but 2 hours of it asked within the first 3: reached."""

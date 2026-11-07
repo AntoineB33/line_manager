@@ -82,27 +82,28 @@ no place is not checked that way.
   this problem yet (ratio_plan's cycles are for PresenceRatioProblem).
 - **J is the window's, closed by a tail.** The search scores (c, c + H] and adds the tail
   below; scheduler_score.md integrates to infinity.
-- **The search falls short of the score (measured 2026-11-07).** Account 3's shape: 22
-  tasks that exclude each other (its shares, a 45min minimum each), sleep and the hour before
-  it every day (resilience 0), a past of 45min panels at the shares (stride scheduling).
-  - Over a 24h window after 60 days of that past, the generator leaves 38% of the awake time
-    to nobody. The same 24h continued at the shares (stride, nothing to nobody) scores better
-    (J 167545 against 177767): the score wants the time served, the search does not find it.
-  - After 1 day of past, nothing to nobody, but short panels (J2 113406) and T458 at 15%
-    against 26%, where stride scores J 159104 against 237602.
-  - From an empty line, A30 B15 C15 (9h): 5487, against 5421 for A30 B15 C15 B15 C15 and
-    4909 for B15 C15 A30 (`test_a30_b15_c15_from_an_empty_line`, an expected failure).
-  - What was tried: the fill choosing the task furthest behind in units of its minimum (it
-    puts a 0.66% task's 45min panel first, a surplus it forgets over 113h, and the run keeps
-    the no-op); then choosing by criterion 1 one step ahead, closed by the tail (it beats the
-    no-op, but leaves the 38%); then also offering the window at the shares (stride): not
-    kept by the search, which judges each progressive stage's candidates on their own. What
-    it needs is OmniApp's search over the whole continuation: a rollout two runs deep, the
-    improvement pass, then branch-and-bound.
+- **The search (score_search.py), measured 2026-11-07 on account 3's shape.** 22 tasks that
+  exclude each other at its shares, a 45min minimum, sleep and the hour before it every night,
+  a past at the shares put by the generator (a past schedule, not tasks the user put: those are
+  pre-placed, every other task deprived there).
+  - A day's window after 60 days of past: J 158943, nothing to nobody; going on at the shares
+    (stride in the past's phase) scores 167545. Before the search: 177767 and 38% to nobody.
+  - After 1 day of past: 120779, 5% to nobody; stride 159104. Before: 237602 with short panels.
+  - From an empty line, A30 B15 C15 (9h): 4684, against 4910 and 5421 for the example's
+    patterns (`test_a30_b15_c15_from_an_empty_line`).
+  - How: several seeds (the base policy due at (L + offset M) / f, five offsets), each improved
+    over the whole continuation while the 4s last, the best kept. The improvement ends in a
+    local optimum that depends on the seed (159k to 186k for one line), so more seeds would
+    find better ones; the rollout (one or two runs deep) did worse within the time than
+    improving more seeds, and is not used.
+  - Not done: branch-and-bound; the continuation a re-plan replaces as a seed (scheduler_score.md
+    seeds it first); a search that goes on past the 4s while the run is given time (q = 1).
+  - A bug it found: the model read the compensation inside the window only, the exact score 16h
+    either side; on a pre-placed past the two differed by 2 (`test_the_search_s_model_scores_as_the_score`).
 - **Cost (measured, same shape).** One evaluation of the score: 0.15s with 60 days of past
   (305s before the compensation was made linear and the whole line read only 4 lambda back).
-  A generator run with a 3h window: 0.4s (1 day of past), 0.8s (7 days), 3.3s (60 days), from
-  4.3s, 4.7s and 9.3s before each task's far past was cached; with a 24h window: 1.1s and 3.7s.
+  A generator run with a 3h window: 0.6s (1 day of past), 0.8s (7 days), 2.8s (60 days); with a
+  24h window: 4.9s and 6.9s, most of it the search's 4s.
 - **The tail is optimistic.** Past `end`, each task is taken as served at its target, its lag
   decaying for free: a lower bound, as scheduler_score.md's rollout closes its trials, not the
   infinite continuation the score is defined on.

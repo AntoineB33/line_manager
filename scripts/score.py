@@ -181,13 +181,14 @@ class Score:
         return dict(P=P, pi=pi, M=M, X=X, tau=tau, lam=lam, rare=rare, Theta=Th, names=names)
 
     # --- the segments of the line where nothing changes
-    def _segments(self, line, preplaced, lo, hi, finest=None) -> list:
+    def _segments(self, line, preplaced, lo, hi, finest=None, at=()) -> list:
         """The segments of [lo, hi] where nothing on the line changes, none longer than
-        `finest` (the targets are read at their middles: the compensation varies inside)."""
+        `finest` (the targets are read at their middles: the compensation varies inside), cut at
+        the positions `at` too."""
         kinds = sorted(self.tasks) + self.periods
         pres = {k: line.presence(k) for k in kinds}
         lo, hi = Fraction(lo), Fraction(hi)
-        cuts = {lo, hi}
+        cuts = {lo, hi} | {Fraction(x) for x in at if lo < Fraction(x) < hi}
         for k in kinds:
             for r in (pres[k], preplaced.get(k, Region.empty())):
                 for iv in r.on(lo, hi).intervals:
@@ -577,9 +578,13 @@ class ScoreProblem:
     def extra(self, ctx) -> list:
         return []
 
+    SEARCH_TIME = 4.0  # seconds of the whole-continuation search per run (score_search.py)
+
     def proposals(self, ctx, pred: str, strategy: str):
         from line import GEN, Op
         from problems import forbidden
+        if strategy == "spread4":  # (the first strategy: the search over the whole continuation)
+            return self._searched(ctx)
         factor = FACTORS.get(strategy, 1)
         s, c = ctx.state, Fraction(ctx.c)
         end = c + self.window
@@ -662,6 +667,26 @@ class ScoreProblem:
                 ops.append(Op.take(i, mine))
             if out[i]:
                 ops.append(Op.put(i, Region.of(IntervalSet([Interval(a, b, False, True) for a, b in out[i]]))))
+        return tuple(ops)
+
+    def _searched(self, ctx):
+        """score_search.search's continuation as an edit, once per state and chip."""
+        from line import GEN, Op
+        from score_search import search
+        s, c = ctx.state, Fraction(ctx.c)
+        memo = getattr(self, "_search_memo", None)
+        if memo is not None and memo[0] is s and memo[1] == c:
+            return memo[2]
+        W = Region.of(Interval(c, c + self.window, False, True))
+        found = search(self, ctx, s, self.SEARCH_TIME)
+        ops = []
+        for i in sorted(self.score.tasks):
+            mine = s.claims.owned(i, GEN) & W
+            if not mine.is_empty():
+                ops.append(Op.take(i, mine))
+            if found.get(i):
+                ops.append(Op.put(i, Region.of(IntervalSet([Interval(a, b, False, True) for a, b in found[i]]))))
+        self._search_memo = (s, c, tuple(ops))
         return tuple(ops)
 
     @staticmethod

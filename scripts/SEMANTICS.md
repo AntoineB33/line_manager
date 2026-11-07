@@ -913,9 +913,13 @@ call ends it (`test_background_runs`).
   panels and the schedulable clock as far back as that reaches, the rest of the line read
   only near the chip. A formula of a priority, minimum or maximum (`Step`, `Linear`,
   `Periodic`) cuts the window where it changes, each piece scored as if its value held
-  at all times. Its proposals fill the window with panels, the task furthest behind first
-  (its lag in units of its minimum), at the shares the quantities raise
-  (`ScoreTest`, `ScoreProblemTest`). What it does not do yet: gaps_to_solve_later.md.
+  at all times. Its first proposal is a search over the whole continuation
+  (`score_search.py`): on a model of the window (the schedulable clock, the allowed tasks and
+  local shares of each stretch, the lags at the chip; it costs a continuation as the score
+  does), several seeds at the shares, each improved by swapping, reassigning and moving runs
+  while the whole scores lower, the best kept. Its other proposals fill the window one panel
+  at a time by criterion 1 one step ahead (`ScoreTest`, `ScoreProblemTest`). What it does not
+  do yet: gaps_to_solve_later.md.
 - **Candidates.** Candidate edits are built in a fixed order:
   1. the no-op first;
   2. then, for each combination of a prediction of what mode rules will do in W and

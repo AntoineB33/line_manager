@@ -110,14 +110,24 @@ def initial_state(rs: RuleSet, entries, owner: str = USER) -> LineState:
     return apply_edit(rs, LineState.empty(), ops, owner)
 
 
+_GEN_MEMO: list = []  # the last few (rules, state, ops, after) of the generated script's edits
+
+
 def apply_edit(rs: RuleSet, state: LineState, ops: list[Op], owner: str) -> LineState:
     """The state after the edit; raises Refused."""
     if owner == MODE:
         return _apply(rs, state, ops, owner)
     if owner != USER:
+        # (the same edit on the same state, asked again in the same run: the constraints' edits,
+        # by the script put in place at its start and by its first stage, constraints.constraint_ops)
+        for r_, s_, o_, after in _GEN_MEMO:
+            if r_ is rs and s_ is state and len(o_) == len(ops) and all(a is b for a, b in zip(o_, ops)):
+                return after
         after = _apply(rs, state, ops, owner)
         if not same_dict(user_claims(state.claims), user_claims(after.claims)):
             raise Refused("N2: would remove or change an element added by the user")
+        _GEN_MEMO.insert(0, (rs, state, tuple(ops), after))
+        del _GEN_MEMO[4:]
         return after
     rec = Record.of(ops)
     kinds = {op.kind for op in ops}

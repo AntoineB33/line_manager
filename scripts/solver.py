@@ -135,8 +135,11 @@ class Line:
         for k in set(self.vals) | set(other.vals):
             vs = set(self.vals.get(k, {})) | set(other.vals.get(k, {}))
             for v in vs:
-                a = self.vals.get(k, {}).get(v, EMPTY) & region
-                b = other.vals.get(k, {}).get(v, EMPTY) & region
+                ra, rb = self.vals.get(k, {}).get(v, EMPTY), other.vals.get(k, {}).get(v, EMPTY)
+                if ra is rb:
+                    continue  # (the same region: unchanged by the edit, nothing to compare)
+                a = ra & region
+                b = rb & region
                 if a != b:
                     return False
         return True
@@ -1097,7 +1100,15 @@ def _cells(prob: Problem) -> list | None:
 
 
 def _a_point(r: Region):
-    """A position of a non-empty region."""
+    """A position of a non-empty region (a lazy one read in windows near where its operands
+    start, region.Lazy, before it is computed whole)."""
+    from region import Lazy
+    if isinstance(r, Lazy) and r._full is None:
+        for h in r._hints():
+            got = r.on(h - Lazy.PROBE, h + Lazy.PROBE).intervals
+            if got:
+                iv = got[0]
+                return iv.lo if iv.lo != -INF else iv.hi
     for ivs, base in ((r.core, None), (r.right, r.hi), (r.left, None)):
         if ivs:
             iv = ivs.intervals[0]

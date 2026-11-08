@@ -28,7 +28,24 @@ from region import ONE, ZERO, Region, plcm
 from solver import checkpoint, solve
 
 
+_OPS_MEMO: list = []  # the last few (rules, state, c, constraints, ops): a run asks them several times
+
+
 def constraint_ops(rules, state: LineState, c, constraints) -> list[Op]:
+    """(see `_constraint_ops`) The same state, chip and constraints give the same edits: kept for
+    the next asks of the same run (its start, the edits written in its script, its first stage:
+    three times the placement of every break forever otherwise)."""
+    cs = tuple(constraints)
+    for r, s_, c_, k_, ops in _OPS_MEMO:
+        if r is rules and s_ is state and c_ == c and len(k_) == len(cs) and all(a is b for a, b in zip(k_, cs)):
+            return list(ops)
+    ops = _constraint_ops(rules, state, c, cs)
+    _OPS_MEMO.insert(0, (rules, state, c, cs, tuple(ops)))
+    del _OPS_MEMO[4:]
+    return ops
+
+
+def _constraint_ops(rules, state: LineState, c, constraints) -> list[Op]:
     """The edits that make these constraints hold after the chip at c. The constraints of
     one kind (its AsEarlyAsPossible, its MinimumGap) are computed together on the same
     line; each kind on the line the kinds before it made, in the order they first appear:

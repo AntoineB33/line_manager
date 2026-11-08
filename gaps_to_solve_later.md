@@ -160,3 +160,24 @@ largest shares within a few points of their targets (T458 0.30-0.32 for 0.26).
   would lag; only the part of the view that changed needs recomputing.
 - Regions far apart (an element 1000 years ahead with a night every day) are combined lazily
   (`region._far_apart`): written out, the night would have been 365000 pieces.
+
+## The 10-minute pace with the breaks and a night (measured 2026-11-08)
+The three break kinds with a night, no task: from the start of a run, its first definitive
+script (definitive past the chip). The stages after the first come at once, definitive 80
+minutes and more within the same second; the last stage, the mode rules compiled ahead for the
+frames (`compile_runs`), then takes minutes.
+
+| | start (the script in place) | first stage after it | in all |
+|---|---|---|---|
+| before | 5.3s | 9.8s | 15.1s |
+| now | 4.7s | 2.8s | 7.5s |
+
+What changed: the constraints' edits for the same state and chip are computed once per run
+(`constraints.constraint_ops`, they were computed by the start, the edits written in the
+script and the first stage), the same generated edit on the same state applied once
+(`resolve.apply_edit`), a point of a lazy cell found in a window (`solver._a_point`), a region
+the same in both lines not compared (`Line.same_on`).
+Left: the start applies the placement of every break forever and checks that nothing changed
+left of the chip on the whole past (the 61-day "no screen" computed whole); the requirement asks
+the first script definitive on the first units almost at once. And the last stage's minutes:
+until it ends, the chip's frames over the breaks decide the mode rules at each step.

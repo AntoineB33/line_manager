@@ -224,5 +224,75 @@ class DisplayedTest(unittest.TestCase):
             self.assertEqual(got, DAY - 8 * HOUR)  # (every awake moment, 1000 years ahead)
 
 
+class BreaksShownTest(unittest.TestCase):
+    """The breaks in the instant layer (Instant.placed, instant.displayed): before any run, and as
+    soon as the rules change, the window shows them where their constraints put them, with what
+    the rules make of them (the devices of "no screen"), the tasks kept out of them."""
+
+    RULES = ["Break15 → NoScreen", "Break20s → NoScreen", "Sleep → NoScreen",
+             "NoScreen → (NoComputerUnlocked or NotOnComputer) & (NoPhoneUnlocked or NotOnPhone)",
+             "NotOnComputer → no NoComputerUnlocked", "NotOnPhone → no NoPhoneUnlocked",
+             "Break15 is always 100%", "Break20s is always 100%",
+             "mode 1 & not Break20s → no NoScreen", "mode 1 & Break20s → NotOnComputer or NotOnPhone",
+             "mode 2 → NoScreen & NoComputerUnlocked & NoPhoneUnlocked & no Break20s",
+             "mode 3 → NoScreen & (NotOnComputer or NotOnPhone)"]
+
+    def constraints(self, gap15=2 * HOUR):
+        from constraints import AsEarlyAsPossible, MaximumGap, MinimumGap
+        return [AsEarlyAsPossible("Break15", length=15 * MIN),
+                MinimumGap("Break15", gap15, after="NoScreen", at_least=15 * MIN, pull="NoScreen"),
+                MaximumGap("Break15", gap15, after="NoScreen", at_least=15 * MIN),
+                AsEarlyAsPossible("Break20s", length=20), MinimumGap("Break20s", 20 * MIN),
+                MaximumGap("Break20s", 20 * MIN, length=20)]
+
+    def session(self, gap15=2 * HOUR):
+        import os
+        import sys
+        from unittest import mock
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "UI"))
+        import gui
+        from app import Session
+        from score import ScoreProblem
+        names = sorted(InstantTest.TASKS)
+        rules = self.RULES + [f"{a} → " + " & ".join(f"no {b}" for b in names[i + 1:]) for i, a in enumerate(names[:-1])]
+        tasks = {k: Task(t.priority, t.minimum, resilience={"NoScreen": 0}) for k, t in InstantTest.TASKS.items()}
+        with mock.patch.object(gui, "run"):
+            return Session(rules, [(0, "1")], 10 * DAY + 10 * HOUR, 1, ["add Sleep on (4920, 33720] every 86400"],
+                           [(ScoreProblem(Score(tasks)), 1)], F(1, 2), self.constraints(gap15)), names
+
+    def shown(self, s, a, b):
+        return s.display()(s.sim.state.line, s.sim.state.claims, a, b)
+
+    def test_before_any_run(self):
+        s, names = self.session()
+        a = F(s.position)
+        began = time.perf_counter()
+        line, claims = self.shown(s, a, a + DAY)
+        self.assertLess(time.perf_counter() - began, 0.5)
+        b15 = line.presence("Break15").on(a, a + DAY)
+        b20 = line.presence("Break20s").on(a, a + DAY)
+        self.assertGreater(len(b15.intervals), 4)
+        self.assertGreater(len(b20.intervals), 60)
+        ns = line.presence("NoScreen").on(a, a + DAY)
+        placed = IntervalSet()
+        for k in names:
+            placed = placed | line.presence(k).on(a, a + DAY)
+        self.assertFalse((placed & ns).intervals)  # (no task in "no screen")
+        self.assertFalse((IntervalSet.of(Iv(a, a + DAY, False, False)) - ns - placed).intervals)  # (no idle)
+        dev = line.presence("NoComputerUnlocked").on(a, a + DAY) | line.presence("NotOnComputer").on(a, a + DAY)
+        self.assertFalse((b15 - dev).intervals)  # (what the rules make of a break: shown too)
+
+    def test_rules_changed_shown_at_once(self):
+        """The 15min breaks every hour instead of every 2: the next display shows them so."""
+        s, names = self.session()
+        a = F(s.position) + 10 * HOUR + 10 * DAY
+        before = len(self.shown(s, a, a + DAY)[0].presence("Break15").on(a, a + DAY).intervals)
+        s.constraints = self.constraints(gap15=HOUR)
+        s.sim.set_generator(s.generator(s.rs))
+        s._instant = None
+        after = len(self.shown(s, a, a + DAY)[0].presence("Break15").on(a, a + DAY).intervals)
+        self.assertGreater(after, before)
+
+
 if __name__ == "__main__":
     unittest.main()

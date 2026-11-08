@@ -287,19 +287,26 @@ class Session:
             return None
         from instant import Instant, displayed
         if getattr(self, "_instant", None) is None or self._instant[0] is not self.rs:
-            self._instant = (self.rs, Instant(self.rs, score))
+            self._instant = (self.rs, Instant(self.rs, score, self.constraints))
         inst = self._instant[1]
-        d = self.sim.definitive
-        start = self.position if d is None else (d.x if hasattr(d, "x") else d)
-        if start != float("inf"):
-            start = max(F(start), self.plan_end(score))
+        chip = F(self.position)
+        if self.sim.script_gen is not self.sim.gen:
+            # the script in place is not of the rules in place (they just changed, or no run yet):
+            # from the chip on, the instant layer, breaks included (the requirements: the window
+            # and the first 10 minutes corrected almost at once)
+            start = chip
+        else:
+            d = self.sim.definitive
+            start = chip if d is None else (d.x if hasattr(d, "x") else d)
+            if start != float("inf"):
+                start = max(F(start), self.plan_end(score))
         history = self.sim.state.history
 
         def shown(line, claims, a, b):
             if start == float("inf"):
                 return line, claims
             lo = max(F(a), F(start))
-            return displayed(inst, line, claims, history, lo, F(b), F(start))
+            return displayed(inst, line, claims, history, lo, F(b), F(start), chip)
         return shown
 
     def plan_end(self, score) -> F:

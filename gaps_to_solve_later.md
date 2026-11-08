@@ -222,3 +222,27 @@ another; days computed are kept (`Instant.CACHE`). `SameAtTTest`.
   falls where the task may not be goes to the next place it may, within its day only.
 - The days start balanced (no lag carried from the day before): fine for the look of it, not
   the score's continuity.
+
+## The breaks in the instant layer (2026-11-08)
+The window shows the breaks from the instant layer past the plan, and from the chip on while
+the script in place is not of the rules in place (just changed, or no run yet): each break kind
+placed straight from its constraints (`Instant.placed`: AsEarlyAsPossible.place, in their order,
+written into a copy of the line with what the pieces come with, no solving: 0.1s for the three
+kinds with a night); then the window solved by the rules (`instant._solved`: every kind as the
+rules make it, the devices of "no screen" included, and a check that what is shown breaks no
+rule). A window within a week of the chip places them only up to its end; further, forever, once.
+
+Measured (the 15min and 20s breaks, a night, 4 tasks): a day shown before any run 0.17s; after
+the rules change, the change 3.6s (from 8.7s) and the next day shown 0.56s; a day 1000 years
+ahead the first time 2.2s, then 0.1s.
+
+Found on the way and fixed: a bounded region and a repeating one combined wrote the repeating one
+out up to the bounded one (a window 1000 years ahead: every night in between); intersections and
+differences with a bounded region are now read on its span (`region._combine`, `Lazy.__and__`).
+The script at the start of a run computes and checks the constraints' edits only as far as it
+is definitive (`constraint_ops(until=...)`), its written edits whole (the script's text).
+
+Left: the 3.6s of a rule change are the simulation applying the breaks' edits forever and
+checking the whole past (the solver over the 61-day "no screen"): the solver working in a window
+near the chip would end them. `test_window.test_zooming_keeps_the_position_under_the_mouse_under_it`
+failed once under the load of two test processes, and passes alone.

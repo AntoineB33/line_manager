@@ -387,7 +387,7 @@ class RulesGenerator:
                                     constraints=self.constraints), replace(stats)
                     lo = hi
 
-    def constraint_events(self, state: LineState, c) -> list[Event]:
+    def constraint_events(self, state: LineState, c, until=None) -> list[Event]:
         """The edits of the constraints written out in the script (those `explicit`), not
         called while it runs: what they ask for from the chip at c, an edit; and for each
         AsEarlyAsPossible with a length, in each mode where it cannot be at the chip, what
@@ -396,7 +396,7 @@ class RulesGenerator:
         from ratio_plan import cycle
         c = Fraction(c)
         out = []
-        ops = constraint_ops(self.rules, state, c, [k for k in self.constraints if getattr(k, "explicit", False)])
+        ops = constraint_ops(self.rules, state, c, [k for k in self.constraints if getattr(k, "explicit", False)], until)
         if ops:
             out.append(Event(ChipIn(c, INF), (EditAction(tuple(ops)),)))
         for k in self.constraints:

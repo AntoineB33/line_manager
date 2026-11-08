@@ -250,6 +250,7 @@ class Simulation:
         self._looks = None  # (script, {the text of an event: its last watch.look or None})
         self.state = state
         self.gen = generator
+        self.script_gen = None  # the generator whose run made the script in place (None: none yet)
         self.rules = generator.rules
         self.chip = chip
         self.modes = modes
@@ -339,7 +340,10 @@ class Simulation:
         hidden = [k for k in constraints if not getattr(k, "explicit", False)]
         if hidden and not any(isinstance(a, ConstraintEditAction) for e in events for a in e.actions):
             events.insert(0, Event(ChipIn(req.chip, INF), (ConstraintEditAction(),)))
-        written = getattr(self.gen, "constraint_events", lambda *_: [])(self.state, req.chip)
+        # (the constraints' edits it makes and checks only as far as it needs them: it is definitive
+        # on its first units; the edits it writes are whole, the run's text)
+        until = req.chip + max(PACE, getattr(self.gen, "window", PACE))
+        written = getattr(self.gen, "constraint_events", lambda *_: [])(self.state, req.chip)  # (whole: the script's text)
         events = [e for e in written if str(e) not in {str(x) for x in events}] + events
         if not any(isinstance(e.trigger, Edited) and any(isinstance(a, RerunAction) for a in e.actions) for e in events):
             # an edit of the user while this run goes on runs the generator again (the run,
@@ -358,11 +362,11 @@ class Simulation:
         for ops in getattr(self.gen, "first_edits", lambda *_: [])(self.state, req.chip):
             try:  # on top of what the constraints ask for, and they must still hold after it
                 if base is None:
-                    asked = constraint_ops(self.rules, self.state, req.chip, constraints)
+                    asked = constraint_ops(self.rules, self.state, req.chip, constraints, until)
                     base = apply_edit(self.rules, self.state, asked, GEN) if asked else self.state
                 after = apply_edit(self.rules, base, ops, GEN)
                 why = check_script_edit(base, after, req.chip) or \
-                    ("it goes against the constraints" if any(k.ops(after, req.chip) for k in constraints) else None)
+                    ("it goes against the constraints" if constraint_ops(self.rules, after, req.chip, constraints, until) else None)
             except (Refused, Undetermined) as e:
                 why = str(e)
             if not why:
@@ -465,6 +469,7 @@ class Simulation:
         else:
             script.true, script.fired = set(), set()
         self.script = script
+        self.script_gen = self.gen  # (made by a run of this generator: of the rules in place)
         self._reset()
         self.definitive = None if stats.definitive is None else max(stats.definitive, self.definitive or stats.definitive)
         self.log.ran((t, c, why, script, stats))

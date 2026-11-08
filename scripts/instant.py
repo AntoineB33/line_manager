@@ -42,12 +42,68 @@ class Instant:
     RARE = 168 * 3600  # a task whose period is longer: placed at its due dates (scheduler_score.md)
     CACHE = 256  # days kept
 
-    def __init__(self, rules, score) -> None:
-        """rules: the RuleSet; score: score.Score (its tasks: priorities, minimums, resilience)."""
+    def __init__(self, rules, score, constraints=()) -> None:
+        """rules: the RuleSet; score: score.Score (its tasks: priorities, minimums, resilience);
+        constraints: the generator's (the breaks' AsEarlyAsPossible, MinimumGap, MaximumGap),
+        placed directly by `placed`."""
         self.rules, self.score = rules, score
         self.tasks = sorted(score.tasks)
         self.periods = sorted({k for t in score.tasks.values() for k in t.resilience})
         self._days: dict = {}  # (lo, hi) -> (inputs, the day's schedule)
+        self.constraints = tuple(constraints)
+        for k in self.constraints:
+            if hasattr(k, "bind"):
+                k.bind(rules)
+            if hasattr(k, "bind_all"):
+                k.bind_all(self.constraints)
+        self._placed = None  # (line, claims, chip, the state with the constraints' pieces)
+
+    NEAR = 7 * 86400  # a window ending within this of the chip: the breaks placed only up to its end
+
+    def placed(self, state, chip, until=None):
+        """The state with each constraint that places pieces (AsEarlyAsPossible with a length: the
+        breaks) placed from the chip, forever, in the constraints' order, each on the line the ones
+        before it made (the 5min breaks where the 15min ones leave room), written straight into
+        the line with the kinds its pieces come with ("Break15 → NoScreen"): no solving, no edit
+        (0.1s for the three breaks with a night). The same placement the generator's constraint
+        edits make (constraints.AsEarlyAsPossible.place): what the window shows past the plan,
+        and what the instant fill keeps its tasks away from. `until`: a window ending within NEAR
+        of the chip needs them only up to its end (the 15min breaks with the 20s ones and a night
+        repeat every 61 days: placed forever, 1160 steps of the sweep); further, forever, once.
+        Past `until` the pieces are not there: read the state up to it only."""
+        from constraints import AsEarlyAsPossible
+        from line import Line, LineState
+        chip = Fraction(chip)
+        until = None if until is None or until - chip > self.NEAR else Fraction(until)
+        got = self._placed
+        if got is not None and got[0] is state.line and got[1] is state.claims and got[2] == chip and                 (got[4] is None or (until is not None and until <= got[4])):
+            return got[3]  # (placed forever, or far enough)
+        cur = state
+        upto = Region.of(Interval(-INF, chip, False, True))
+        for k in self.constraints:
+            if not isinstance(k, AsEarlyAsPossible) or k.length is None:
+                continue
+            pieces = (cur.line.presence(k.kind) & upto) | k.place(cur, chip, until=until)
+            vals = dict(cur.line.vals)
+            for kind in k._with(self.rules):
+                if kind == k.kind:
+                    vals[kind] = {Fraction(100): pieces}
+                else:
+                    old = vals.get(kind, {}).get(Fraction(100))
+                    vals[kind] = dict(vals.get(kind, {}))
+                    vals[kind][Fraction(100)] = pieces if old is None else old | pieces
+            cur = LineState(cur.claims, Line(vals), cur.history)
+        self._placed = (state.line, state.claims, chip, cur, until)
+        return cur
+
+    def placed_kinds(self) -> set:
+        """The kinds `placed` writes: the constraints' and those their pieces come with."""
+        from constraints import AsEarlyAsPossible
+        out = set()
+        for k in self.constraints:
+            if isinstance(k, AsEarlyAsPossible) and k.length is not None:
+                out |= set(k._with(self.rules))
+        return out
 
     def schedule(self, state, a, b, start=None) -> dict:
         """{task: [(start, end), ...]} on [a, b): the instant schedule, the user's tasks left out
@@ -243,7 +299,7 @@ def _has(s: IntervalSet, x) -> bool:
     return False
 
 
-def displayed(instant: Instant, line, claims, history, lo, hi, start=None):
+def displayed(instant: Instant, line, claims, history, lo, hi, start=None, chip=None):
     """(the line, the claims) the calendar shows on [lo, hi): the line, its tasks after `lo` (past
     the plan of the scheduler's steps) replaced by the instant schedule there, the user's tasks
     kept. The instant schedule's elements are the generator's, as those of the steps: shown as
@@ -253,10 +309,29 @@ def displayed(instant: Instant, line, claims, history, lo, hi, start=None):
     if lo >= hi:
         return line, claims
     state = LineState(claims, line, history)
+    if chip is not None and instant.constraints:  # (the breaks placed at once, instant.placed)
+        state = instant.placed(state, chip, hi)
     got = instant.schedule(state, lo, hi, lo if start is None else start)
     after = Region.of(Interval(lo, hi, False, False))
     vals = dict(line.vals)
     shown = claims.copy()
+    for kind in (instant.placed_kinds() if chip is not None else ()):  # past lo: the breaks placed at once
+        new = state.line.presence(kind) & after
+        d = {v: r - after for v, r in vals.get(kind, {}).items()}
+        if not new.is_empty():
+            d[Fraction(100)] = d.get(Fraction(100), Region.empty()) | new
+        d = {v: r for v, r in d.items() if not r.is_empty()}
+        if d:
+            vals[kind] = d
+        else:
+            vals.pop(kind, None)
+        c = shown.pos.get(kind, {})
+        for key in [key for key in c if key[1] == GEN]:
+            c[key] = c[key] - after
+            if c[key].is_empty():
+                del c[key]
+        if not new.is_empty() and kind in [k.kind for k in instant.constraints if hasattr(k, "length")]:
+            shown.add_pos(kind, new, Fraction(100), GEN)
     for i in instant.tasks:
         d = shown.pos.get(i, {})
         for key in [key for key in d if key[1] == GEN]:
@@ -276,4 +351,34 @@ def displayed(instant: Instant, line, claims, history, lo, hi, start=None):
             vals[i] = keep
         else:
             vals.pop(i, None)
+    solved = _solved(instant, shown, after, lo, hi)
+    if solved is not None:  # (every kind on the window as the rules make it of what is shown)
+        out = dict(line.vals)
+        for k in set(out) | set(solved.vals):
+            d = {v: r - after for v, r in out.get(k, {}).items()}
+            for v, r in solved.vals.get(k, {}).items():
+                d[v] = d[v] | (r & after) if v in d else r & after
+            d = {v: r for v, r in d.items() if not r.is_empty()}
+            if d:
+                out[k] = d
+            else:
+                out.pop(k, None)
+        return Line(out), shown
     return Line(vals), shown
+
+
+def _solved(instant, claims, after, lo, hi):
+    """The line the rules make on [lo, hi) of what is shown there (its claims: the user's, the
+    breaks placed and the tasks the instant schedule put, the generator's): every kind as on a
+    line (which device is locked in a "no screen", ...), and a check that the instant schedule
+    breaks no rule, whatever its shape. The rules are read as far before and after as they
+    reach. None where they do not decide it, or refuse it (then the line's other kinds are
+    shown as they are)."""
+    from solver import Conflict, Undetermined, solve
+    rs = instant.rules
+    reach = getattr(rs, "reach", Fraction(0)) or Fraction(0)
+    W = Region.of(Interval(lo - reach - 1, hi + reach + 1, False, False))
+    try:
+        return solve(rs, claims.on(W).problem())
+    except (Conflict, Undetermined, ValueError):
+        return None

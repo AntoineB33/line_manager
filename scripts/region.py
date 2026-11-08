@@ -246,6 +246,17 @@ class Region:
 
     # ------------------------------------------------------------ algebra
     def _combine(self, other: Region, op, name: str | None = None, lazy: bool = True) -> Region:
+        # (with a bounded region: only the other one's part on its span counts, read there; a
+        # window 1000 years ahead and a night every day would otherwise write every night in between)
+        if name == "and" or name == "sub":
+            for a, b in ((self, other), (other, self)) if name == "and" else ((self, other),):
+                if not isinstance(a, Lazy) and a.is_bounded() and (b.left or b.right if not isinstance(b, Lazy) else True):
+                    if not a.core:
+                        return _EMPTY
+                    lo, hi = a.core.intervals[0].lo, a.core.intervals[-1].hi + EPS
+                    part = b.on(lo, hi)
+                    got = a.core & part if name == "and" else a.core - part
+                    return Region.of(got) if got else _EMPTY
         if lazy and name is not None:
             if isinstance(self, Lazy) or isinstance(other, Lazy) or _long_together(self, other):
                 return Lazy(name, self, other)
@@ -581,7 +592,8 @@ class Lazy(Region):
         return Lazy("or", self, other)
 
     def __and__(self, other: Region) -> Region:
-        return Lazy("and", self, other)
+        b = _bounded_part(self, other)  # (with a bounded region: read on its span, not lazily)
+        return b if b is not None else Lazy("and", self, other)
 
     def __sub__(self, other: Region) -> Region:
         return Lazy("sub", self, other)
@@ -641,6 +653,17 @@ class Lazy(Region):
 
     def __reduce__(self):
         return (_same_region, (self.full(),))
+
+
+def _bounded_part(lazy, other):
+    """lazy & other when other is a bounded (not lazy) region: lazy read on other's span, exact."""
+    if isinstance(other, Lazy) or not other.is_bounded():
+        return None
+    if not other.core:
+        return _EMPTY
+    lo, hi = other.core.intervals[0].lo, other.core.intervals[-1].hi + EPS
+    got = other.core & lazy.on(lo, hi)
+    return Region.of(got) if got else _EMPTY
 
 
 def _same_region(r: Region) -> Region:

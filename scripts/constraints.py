@@ -31,21 +31,41 @@ from solver import checkpoint, solve
 _OPS_MEMO: list = []  # the last few (rules, state, c, constraints, ops): a run asks them several times
 
 
-def constraint_ops(rules, state: LineState, c, constraints) -> list[Op]:
+def constraint_ops(rules, state: LineState, c, constraints, until=None) -> list[Op]:
     """(see `_constraint_ops`) The same state, chip and constraints give the same edits: kept for
     the next asks of the same run (its start, the edits written in its script, its first stage:
-    three times the placement of every break forever otherwise)."""
+    three times the placement of every break forever otherwise). `until`: the edits only up to
+    there (the script at the start of a run, definitive on its first units: the breaks placed
+    forever are the run's to put, simulation.first_script)."""
     cs = tuple(constraints)
-    for r, s_, c_, k_, ops in _OPS_MEMO:
-        if r is rules and s_ is state and c_ == c and len(k_) == len(cs) and all(a is b for a, b in zip(k_, cs)):
+    key_until = None if until is None else Fraction(until)
+    for r, s_, c_, k_, u_, ops in _OPS_MEMO:
+        if r is rules and s_ is state and c_ == c and u_ == key_until and len(k_) == len(cs) and all(a is b for a, b in zip(k_, cs)):
             return list(ops)
-    ops = _constraint_ops(rules, state, c, cs)
-    _OPS_MEMO.insert(0, (rules, state, c, cs, tuple(ops)))
+    ops = _constraint_ops(rules, state, c, cs, key_until)
+    _OPS_MEMO.insert(0, (rules, state, c, cs, key_until, tuple(ops)))
     del _OPS_MEMO[4:]
     return ops
 
 
-def _constraint_ops(rules, state: LineState, c, constraints) -> list[Op]:
+def _ops_of(k, state, c, until):
+    """k's edits, up to `until` if given (computed only that far where k can, cut there)."""
+    if until is None:
+        return k.ops(state, c)
+    try:
+        got = k.ops(state, c, until=until)
+    except TypeError:
+        got = k.ops(state, c)
+    W = Region.of(Interval(c, until, False, True))
+    out = []
+    for o in got:
+        r = o.region & W
+        if not r.is_empty():
+            out.append(Op(o.action, o.kind, r, o.value))
+    return out
+
+
+def _constraint_ops(rules, state: LineState, c, constraints, until=None) -> list[Op]:
     """The edits that make these constraints hold after the chip at c. The constraints of
     one kind (its AsEarlyAsPossible, its MinimumGap) are computed together on the same
     line; each kind on the line the kinds before it made, in the order they first appear:
@@ -58,7 +78,7 @@ def _constraint_ops(rules, state: LineState, c, constraints) -> list[Op]:
     ops, s = [], state
     gs = list(groups.values())
     for i, g in enumerate(gs):
-        mine = [o for k in g if not isinstance(k, MaximumGap) for o in k.ops(s, c)]
+        mine = [o for k in g if not isinstance(k, MaximumGap) for o in _ops_of(k, s, c, until)]
         late = [k for k in g if isinstance(k, MaximumGap)]
         if late:  # (an obligation checked on what the others of its kind put: MaximumGap)
             t = s
@@ -67,7 +87,7 @@ def _constraint_ops(rules, state: LineState, c, constraints) -> list[Op]:
                     t = apply_edit(rules, s, mine, GEN)
                 except Refused:
                     pass
-            mine += [o for k in late for o in k.ops(t, c)]
+            mine += [o for k in late for o in _ops_of(k, t, c, until)]
         if not mine:
             continue
         ops += mine
@@ -475,7 +495,7 @@ class AsEarlyAsPossible:
             no = no | g.apart(src, pulls[id(g)])
         return no & after, pulls
 
-    def place(self, state: LineState, c, forced=None, also: Region | None = None) -> Region:
+    def place(self, state: LineState, c, forced=None, also: Region | None = None, until=None) -> Region:
         """Where its pieces are after the chip at c. `forced`: its first piece (a, b), where
         the chip pushes it, the others placed after it (mode_rules: a push that would run
         into what stays); `also`: as `obstacles`."""
@@ -485,6 +505,12 @@ class AsEarlyAsPossible:
         no, pulls = self.obstacles(state, c, also)
         counted = [g for g in self._gaps() if self._counts(g) and L >= g.at_least]
         fixed = {id(g): self.fixed_of(state, c, g.after) for g in counted}
+        # (the sweep reads these at every step, thousands of times: a lazy one, region.Lazy,
+        # computed whole once is then read by bisection, not through its chain each time)
+        from region import _eager
+        no = _eager(no)
+        fixed = {k: _eager(v) for k, v in fixed.items()}
+        pulls = {k: (_eager(v) if v is not None else None) for k, v in pulls.items()}
         waits = any(g.soft for g in self._gaps())
         if waits:  # (a wait it ends sooner where its end is taken: the obligation's due, `expand`)
             hard = {"no": self.obstacles(state, c, also, soft=False)[0], "dyn": Region.empty()}
@@ -534,6 +560,9 @@ class AsEarlyAsPossible:
         for p in pulls.values():  # (a period a bar may fall inside: placed one by one up to its end)
             if p and p.bounded():
                 end = max(end, p.bounded().sup())
+        if until is not None:  # (only up to there: the pieces past it are not asked for, instant.Instant.placed)
+            end = Pos(until)
+            stop = Region.empty()
         t = (placed[-1][1] + EPS) if placed else cp + EPS
         dyn = Region.empty()
         for a, b in placed:
@@ -573,6 +602,8 @@ class AsEarlyAsPossible:
                     t = p + L
                     continue
                 t = first.hi + EPS
+        if until is not None:
+            return Region.of(IntervalSet([Interval._mk(a, b) for a, b in placed])) & after if placed else Region.empty()
         if stop is None and no.right:
             # what keeps it away repeats past no.hi (the 15min breaks every 8100, for the
             # 5min ones): the sweep goes on until its pieces repeat with it, the same phase
@@ -684,14 +715,16 @@ class AsEarlyAsPossible:
                     out.append(r.mode)
         return sorted(set(out))
 
-    def ops(self, state: LineState, c: Fraction) -> list[Op]:
+    def ops(self, state: LineState, c: Fraction, until=None) -> list[Op]:
         if self.length is None:
             return []  # (an order of the generator's own turns: nothing to make hold on the line)
-        want = self.place(state, c)
+        want = self.place(state, c, until=until)
         now = state.line.presence(self.kind) & _after(c)
         out = []
         if not (want - now).is_empty():
-            out.append(Op.put(self.kind, want - now))
+            # (its own pieces already there put again change nothing: the edit is written whole,
+            # `cycle(...)` in the script's text, whatever part of it a script before put)
+            out.append(Op.put(self.kind, want - (now - state.claims.owned(self.kind, GEN))))
         if not (now - want).is_empty():
             out.append(Op.take(self.kind, now - want))
         return out

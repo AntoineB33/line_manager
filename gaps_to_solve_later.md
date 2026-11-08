@@ -209,9 +209,12 @@ scores J 336321 against 485894 for the instant schedule of the same hour.
   place the tasks. With the breaks' own edits computed near the chip, a step could place both.
 
 ## The instant schedule, the same at t (2026-11-08)
-User rule: what was shown at t stays when the user comes back to t; a rare task the scheduler
-moves moves its later occurrences, so t may then show something else. Done by making the instant
-schedule a function of the line, the rules and the score only: the future is cut into days on a
+User rule: what was shown at t stays when the user comes back to t, unless a schedule the
+scheduler published since changes it: a step focused on its 10 minutes may change any part of
+the future, not only its slice nor a fixed span after it (a rare task it moves into its slice
+no longer being at t was the user's example). Done by making the instant schedule a function
+of the line, the rules and the score only, so what is shown anywhere follows the latest
+published schedule, and nothing else changes it: the future is cut into days on a
 fixed grid, each filled from its own start (or from where the plan ends, in its day); a rare task
 (period over 168h) is placed at its due dates, its last start on the line and one period after
 another; days computed are kept (`Instant.CACHE`). `SameAtTTest`.

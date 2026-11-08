@@ -158,3 +158,30 @@ def _has(s: IntervalSet, x) -> bool:
         if iv.lo > x:
             return False
     return False
+
+
+def displayed(instant: Instant, line, claims, history, lo, hi):
+    """The line the calendar shows on [lo, hi): the line, its tasks after `lo` (where the
+    scheduler's steps have not made it definitive) replaced by the instant schedule there (the
+    user's tasks kept, they are the line's). Nothing to do past hi or before lo."""
+    from line import Line, LineState
+    lo, hi = Fraction(lo), Fraction(hi)
+    if lo >= hi:
+        return line
+    state = LineState(claims, line, history)
+    got = instant.schedule(state, lo, hi)
+    after = Region.of(Interval(lo, hi, False, False))
+    vals = dict(line.vals)
+    for i in instant.tasks:
+        mine = claims.owned(i, USER)
+        old = vals.get(i, {})
+        keep = {v: (r - after) | (r & mine & after) for v, r in old.items()}
+        new = Region.of(IntervalSet([Interval(a, b, False, True) for a, b in got.get(i, ())])) if got.get(i) else Region.empty()
+        if not new.is_empty():
+            keep[Fraction(100)] = keep.get(Fraction(100), Region.empty()) | new
+        keep = {v: r for v, r in keep.items() if not r.is_empty()}
+        if keep:
+            vals[i] = keep
+        else:
+            vals.pop(i, None)
+    return Line(vals)

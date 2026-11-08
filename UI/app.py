@@ -277,6 +277,29 @@ class Session:
         out = self.calculator.ask(name, *args)
         return (None, out) if out == TOO_LONG else out
 
+    def display(self):
+        """What the window shows of the line, for a session whose problem is OmniApp's score:
+        f(line, claims, a, b) the line with, past where the script in place is definitive, the
+        instant schedule of [a, b) (instant.displayed); None for the others (the line as it is)."""
+        from score import ScoreProblem
+        score = next((p.score for p, _ in self.problems if isinstance(p, ScoreProblem)), None)
+        if score is None:
+            return None
+        from instant import Instant, displayed
+        if getattr(self, "_instant", None) is None or self._instant[0] is not self.rs:
+            self._instant = (self.rs, Instant(self.rs, score))
+        inst = self._instant[1]
+        d = self.sim.definitive
+        start = self.position if d is None else (d.x if hasattr(d, "x") else d)
+        history = self.sim.state.history
+
+        def shown(line, claims, a, b):
+            if start == float("inf"):
+                return line
+            lo = max(F(a), F(start))
+            return displayed(inst, line, claims, history, lo, F(b))
+        return shown
+
     def generator(self, rs) -> RulesGenerator:
         from score import ScoreProblem
         if any(isinstance(p, ScoreProblem) for p, _ in self.problems):  # (OmniApp's score: the scheduler's steps)

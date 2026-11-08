@@ -127,5 +127,49 @@ class InstantTest(unittest.TestCase):
             self.assertFalse((r & ns).intervals, k)
 
 
+class DisplayedTest(unittest.TestCase):
+    """What the window shows (instant.displayed, Session.display): the line where the steps made
+    it definitive, the instant schedule past it, the user's tasks wherever they are."""
+
+    TASKS = InstantTest.TASKS
+
+    def test_past_the_definitive_the_instant_schedule(self):
+        from instant import displayed
+        a = F(40 * DAY + 10 * HOUR)
+        rs, st = night_state([], [Op.put("A", Region.of(Iv(a + 5 * HOUR, a + 6 * HOUR, False, True)))])
+        sc = Score(self.TASKS)
+        st = apply_edit(rs, st, [Op.put("B", Region.of(Iv(a, a + 3 * HOUR, False, True)))], "generated")
+        definitive = a + 2 * HOUR
+        line = displayed(Instant(rs, sc), st.line, st.claims, st.history, definitive, a + DAY)
+        self.assertEqual(line.presence("B").on(a, definitive), st.line.presence("B").on(a, definitive))  # (the line before)
+        self.assertTrue(line.presence("A").on(a + 5 * HOUR, a + 6 * HOUR) == IntervalSet.of(Iv(a + 5 * HOUR, a + 6 * HOUR, False, False)))  # (the user's)
+        night = line.presence("Sleep").on(definitive, a + DAY)
+        placed = IntervalSet()
+        for k in self.TASKS:
+            placed = placed | line.presence(k).on(definitive, a + DAY)
+        self.assertFalse((placed & night).intervals)
+        self.assertFalse((IntervalSet.of(Iv(definitive, a + DAY, False, False)) - night - placed).intervals)
+
+    def test_a_session_gives_the_window_its_display(self):
+        import os
+        import sys
+        from unittest import mock
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "UI"))
+        import gui
+        from app import Session
+        from score import ScoreProblem
+        with mock.patch.object(gui, "run"):
+            plain = Session(["A → no B"], [(0, "1")], 0, 1, [], [], F(1, 2))
+            self.assertIsNone(plain.display())
+            s = Session(["A → no B"], [(0, "1")], 0, 1, ["add Sleep on (4920, 33720] every 86400"],
+                        [(ScoreProblem(Score(self.TASKS)), 1)], F(1, 2))
+            show = s.display()
+            self.assertIsNotNone(show)
+            far = F(YEARS_1000)
+            line = show(s.sim.state.line, s.sim.state.claims, far, far + DAY)
+            got = sum((line.presence(k).on(far, far + DAY).measure() for k in self.TASKS), F(0))
+            self.assertEqual(got, DAY - 8 * HOUR)  # (every awake moment, 1000 years ahead)
+
+
 if __name__ == "__main__":
     unittest.main()

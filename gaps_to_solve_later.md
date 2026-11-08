@@ -192,9 +192,12 @@ scores J 336321 against 485894 for the instant schedule of the same hour.
   the instant schedule of the first 10 minutes (and the start's script, `first_edits`, the
   same); each step's slice is one more edit, the script definitive to its end; 18 steps (3
   hours), the last final. In the window, the run is in its own process as any run.
-  Not done: the window does not show the instant schedule past what the steps reached (it
-  shows the line); a run of 18 steps of 10s is 3 minutes, and nothing runs the steps again
-  as the chip nears the end of what they reached but the generator's usual reruns.
+  Shown (2026-11-08): the window draws, past where the script in place is definitive, the
+  instant schedule of what it shows (`Session.display`, `instant.displayed`), the user's tasks
+  kept; the line itself is not changed. It is recomputed when the window rebuilds what it
+  shows (a new script, an edit, a scroll), not at each frame.
+  Not done: a run of 18 steps of 10s is 3 minutes, and nothing runs the steps again as the
+  chip nears the end of what they reached but the generator's usual reruns.
 - A step that finishes early does not use the rest of its budget: more seeds, or the
   branch-and-bound, could.
 - The breaks themselves are still placed by the generator's run (287s here): the steps only

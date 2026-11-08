@@ -463,7 +463,8 @@ class App:
                      "claims": s.sim.state.claims, "kinds": s.kinds(), "reruns": reruns, "other": other,
                      "past": s.past_runs(), "modes": s.known_modes(), "script": s.script_text(), "script_object": s.sim.script,
                      "mode_names": list(s.mode_names), "running": s.running() is not None, "generator_off": s.sim.generator_off, "ahead": s.sim.ahead(), "wall": self.wall, "commands": self.commands, "shown": s.sim.shown,
-                     "selection": s.selection() if s.selectors else None}
+                     "selection": s.selection() if s.selectors else None,
+                     "display": s.display() if hasattr(s, "display") else None}
         if self.file is not None and self.file.state_due():
             self.file.state(s.state_text())
 
@@ -550,6 +551,9 @@ class App:
         X = lambda at: edge + float(at - left) * scale
         script = sn["script_object"]
         shows = script.shows_line()  # s_v
+        display = sn.get("display")  # (past what the steps made definitive: the instant schedule, instant.displayed)
+        if display is not None:
+            line = display(line, claims, a, b)
         now = items(sn, line, claims, p, left, span, a, b, scale, w) if shows else {}
         ahead = sn["ahead"]
         until = ahead.until(Pos(p)) if sn["wall"] is not None and ahead is not None and hasattr(ahead, "until") else None
@@ -566,7 +570,8 @@ class App:
                 self.formula = (ahead, until)
                 self.valid = min(self.valid, until.x)
                 left2 = p + delta + self.scrolled - span / 4
-                later = items(sn, state.line, state.claims, p + delta, left2, span, a, b, scale, w) if shows else None
+                later_line = display(state.line, state.claims, a, b) if display is not None else state.line
+                later = items(sn, later_line, state.claims, p + delta, left2, span, a, b, scale, w) if shows else None
         self.view.sync(now, later, delta, p, X, scale)
         if not keeps_frame(script, sn["shown"]):
             script.frame = self.view.frame()

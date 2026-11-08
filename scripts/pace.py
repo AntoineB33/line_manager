@@ -11,6 +11,9 @@ A step goes from a big picture down to its slice:
    steps before left it), improved over the whole of them while a part of the budget lasts;
 3. the slice: finer moves (an eighth of the shorter run) on the runs that meet it, the whole
    still scored, while the rest of the budget lasts.
+Each part searches until its part of the budget is spent: once the improvement stops, the best
+plan is shaken a little and improved again, kept when better (Model.deepen), so a step uses all
+the time the pace gives it for the best schedule it can find.
 The whole look ahead is committed, the slice definitive and the rest a plan: a better schedule
 found from the big picture changes what is past the slice too. The next step starts from the
 line with it, its plan one of its seeds (the continuation a re-plan replaces), and replaces it
@@ -77,10 +80,14 @@ class Pace:
                 runs, key = got, c
             if m.out_of_time():
                 break
-        info["hours ahead"] = key
+        import random
+        rnd = random.Random(n)  # (the same step decides the same: no chance in what it publishes)
+        runs = m.deepen(runs, rnd)  # (the hours ahead: until their part of the budget is spent)
+        info["hours ahead"] = m.cost(runs)
         m.deadline = began + budget  # (the rest of the budget: the slice)
         focus = (m.u_of(a), m.u_of(b))
         runs = m.improve(runs, focus=focus, fraction=8)
+        runs = m.deepen(runs, rnd, focus=focus, fraction=8)
         info["slice done"] = m.cost(runs)
         info["seconds"] = time.perf_counter() - began
         info["planned"] = end

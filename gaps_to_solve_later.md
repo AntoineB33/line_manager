@@ -253,3 +253,21 @@ What would end it: the replay after a rule change in the background, the window 
 instant layer of the new rules at once meanwhile (the window and the simulation then sharing the
 state across threads: not done without the user's go-ahead). `test_window.test_zooming_keeps_the_position_under_the_mouse_under_it`
 failed once under the load of two test processes, and passes alone.
+
+## The two paces (user, 2026-11-08): instant adaptation, deep scheduler
+"An instantaneous adaptation of the line to prevent obviously wrong schedules without waiting for
+thorough calculations, and a scheduler that has more time to make very deep calculations for the
+absolute best schedule, limited by the 10 minutes every 10 seconds pace."
+- Instant: a rule change is shown before it is put in place (`Session.set_rules` publishes the
+  window's snapshot with the new rules' instant layer, `preview_hook`, then replays the edits
+  with them: the window waits for nothing; `test_new_rules_shown_before_they_are_put_in_place`,
+  under 1s). After an edit of the user the window shows the instant layer from the chip until a
+  run catches up (`Session._edited_since_script`).
+- Deep: each step uses all of its 10 seconds (`Model.deepen`: an iterated local search, the best
+  plan shaken and improved again, kept if better; seeded by the step's number, so a step decides
+  the same). Measured on account 3's shape: the six steps' hour the same as without it (562272;
+  the instant schedule 761042): the improvement had already found what the shaking finds on these
+  slices (one or two runs of 45min minimums in 10 minutes). Whether that is the best is not proved:
+  a branch-and-bound over the slice would.
+- The line itself (the simulation's state) still takes the seconds of the replay to have the new
+  rules; the window does not wait for it.

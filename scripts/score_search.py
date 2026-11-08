@@ -320,6 +320,34 @@ class Model:
                         break
         return runs
 
+    def deepen(self, runs, rnd, focus=None, fraction: int = 4) -> list:
+        """While the time lasts: the best plan shaken a little (two to four runs given to other
+        tasks allowed there, or two runs swapped, in `focus` if given), improved again, kept if
+        the whole scores lower (an iterated local search: the improvement alone stops in a local
+        optimum, with time left)."""
+        best, key = runs, self.cost(runs)
+        u_of = lambda n, rs: sum(h for _, h in rs[:n])
+        while not self.out_of_time() and len(best) > 1:
+            cand = list(best)
+            idx = [n for n in range(len(cand)) if focus is None or (u_of(n, cand) < focus[1] and u_of(n, cand) + cand[n][1] > focus[0])]
+            if not idx:
+                break
+            if rnd.random() < 0.5 and len(idx) > 1:
+                a, b = sorted(rnd.sample(idx, 2))
+                cand[a], cand[b] = cand[b], cand[a]
+            else:
+                for n in rnd.sample(idx, min(len(idx), rnd.randint(2, 4))):
+                    s = self.stretch_at(u_of(n, cand))
+                    if s is not None and s[5] is None and s[4]:
+                        cand[n] = (rnd.choice(sorted(s[4]) + [None]), cand[n][1])
+            if not self.valid(cand):
+                continue
+            cand = self.improve(cand, focus, fraction)
+            k = self.cost(cand)
+            if k < key:
+                best, key = cand, k
+        return best
+
     def valid(self, runs) -> bool:
         """Each run's task allowed all along it (the user's stretches kept as they are)."""
         u = 0.0

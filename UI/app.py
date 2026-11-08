@@ -248,6 +248,8 @@ class Session:
         self.modes = ModeTimeline(x0, initial, transitions)
         self.planned = (initial, list(self.modes.transitions))  # by MODES
         self.changes: dict[F, str] = {}  # by the user: the mode from each position on
+        self._preview = None  # the rules being put in place: what the window shows meanwhile
+        self.preview_hook = None  # what shows it (the window's: gui.App._publish)
         self.sim = Simulation(LineState.empty(), self.generator(self.rs), self.chip, self.modes)
         self.sim.background = True
         self._running = None  # (request id, process): the generator run going on
@@ -286,11 +288,12 @@ class Session:
         if score is None:
             return None
         from instant import Instant, displayed
-        if getattr(self, "_instant", None) is None or self._instant[0] is not self.rs:
-            self._instant = (self.rs, Instant(self.rs, score, self.constraints))
+        rs = self._preview if getattr(self, "_preview", None) is not None else self.rs
+        if getattr(self, "_instant", None) is None or self._instant[0] is not rs:
+            self._instant = (rs, Instant(rs, score, self.constraints))
         inst = self._instant[1]
         chip = F(self.position)
-        if self.sim.script_gen is not self.sim.gen:
+        if rs is not self.rs or self.sim.script_gen is not self.sim.gen or self._edited_since_script():
             # the script in place is not of the rules in place (they just changed, or no run yet):
             # from the chip on, the instant layer, breaks included (the requirements: the window
             # and the first 10 minutes corrected almost at once)
@@ -308,6 +311,16 @@ class Session:
             lo = max(F(a), F(start))
             return displayed(inst, line, claims, history, lo, F(b), F(start), chip)
         return shown
+
+    def _edited_since_script(self) -> bool:
+        """Whether the user's elements are not those the script in place was made from: an edit
+        since its run, which the instant layer answers at once until the steps catch up (the
+        user's block of A dragged: less A around it at once)."""
+        from guards import same_dict, user_claims
+        base = getattr(self.sim.script, "base", None)
+        if base is None:
+            return True
+        return not same_dict(user_claims(base.claims), user_claims(self.sim.state.claims))
 
     def plan_end(self, score) -> F:
         """Where the plan the generator's tasks make on the line ends after the chip (the steps
@@ -570,11 +583,23 @@ class Session:
             g = self.generator(rs)
         except ValueError as e:  # e.g. no best script (ratio_plan.NoBestScript)
             return f"refused: {e}"
+        # the window shows the new rules at once (the instant layer, `display`), before the edits
+        # are replayed with them and the run starts, which takes seconds (OmniApp's requirements
+        # § Two paces: the calendar corrected almost at once)
+        self._preview = rs
+        if self.preview_hook is not None:
+            try:
+                self.preview_hook()
+            except Exception:
+                pass
         try:
             self.sim.set_generator(g)
         except Exception as e:  # the edits have no result with these rules
+            self._preview = None
             self.sim.set_generator(self.generator(self.rs))
             return f"refused: with these rules the edits have no result ({e})"
+        finally:
+            self._preview = None
         self.texts, self.rs = texts, rs
         self.mode_names = sorted(set(self.mode_names) | {r.mode for r in rs.mode_rules})
         return self.show_rules()

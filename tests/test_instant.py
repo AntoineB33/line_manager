@@ -282,6 +282,28 @@ class BreaksShownTest(unittest.TestCase):
         dev = line.presence("NoComputerUnlocked").on(a, a + DAY) | line.presence("NotOnComputer").on(a, a + DAY)
         self.assertFalse((b15 - dev).intervals)  # (what the rules make of a break: shown too)
 
+    def test_new_rules_shown_before_they_are_put_in_place(self):
+        """set_rules: the window is shown the new rules (preview_hook) before the edits are
+        replayed with them, at once: "Sleep → no Break20s" and no 20s break in the night."""
+        s, names = self.session()
+        a = F(s.position) + 14 * HOUR  # (from 00:00: the night of 01:22)
+        night = Region.of(Iv(a + 4920 % DAY, a + 33720 % DAY, False, True))
+        before = self.shown(s, a, a + DAY)[0].presence("Break20s").on(a, a + DAY)
+        seen = []
+        began = time.perf_counter()
+
+        def hook():
+            seen.append((time.perf_counter() - began, s.display()(s.sim.state.line, s.sim.state.claims, a, a + DAY)[0]))
+        s.preview_hook = hook
+        out = s.set_rules(s.texts + ["Sleep → no Break20s"])
+        self.assertNotIn("refused", out)
+        self.assertEqual(len(seen), 1)
+        when, line = seen[0]
+        self.assertLess(when, 1.0)
+        sleep = line.presence("Sleep").on(a, a + DAY)
+        self.assertTrue((before & sleep).intervals)  # (there were 20s breaks in the night)
+        self.assertFalse((line.presence("Break20s").on(a, a + DAY) & sleep).intervals)  # (none, at once)
+
     def test_rules_changed_shown_at_once(self):
         """The 15min breaks every hour instead of every 2: the next display shows them so."""
         s, names = self.session()

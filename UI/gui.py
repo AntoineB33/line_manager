@@ -88,6 +88,7 @@ class App:
     def __init__(self, root: tk.Tk, session, file: SessionLog | None = None) -> None:
         self.root, self.s, self.file = root, session, file
         session.calculate_apart()
+        session.preview_hook = self._publish  # (new rules shown before they are put in place: Session.set_rules)
         self.paused = True
         self.span = F(24)  # the positions the window shows
         self.scrolled = F(0)  # how far right of its place around the chip

@@ -147,8 +147,9 @@ class Instant:
 
     # `_best`, off: measured 2026-11-08 on tests/compare_paces.py, it brings the instant schedule
     # from 1.87 to 1.22 times the step's J (geometric mean of 40 cases), but costs 60ms a day where
-    # the fill costs 5 (a drag stutters) and the score it follows prefers what looks wrong (a 1min
-    # sliver of B before the user's block of A, A against the block): gaps_to_solve_later.md
+    # the fill costs 5 (a drag stutters), and the score read from the day's start weighs only its
+    # first hour (its discount): past it the pick is blind (a 1min sliver of B before the user's
+    # block of A, 6 hours in): gaps_to_solve_later.md
     BEST = False
     POLISH = 0.02  # seconds of Model.improve per day (`_best`)
     STRIDES = (0.25, 0.5, 0.75)  # the score's own stride policies tried against the fill (`_best`)

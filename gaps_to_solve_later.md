@@ -307,9 +307,13 @@ What is left: the instant schedule's J is 1.87 times the step's (geometric mean 
 3.9 at worst (12 of 40 over 1.5). Most of it is the fill's own lag rule: it counts the user's
 block as service of its task where the score counts it as the task's alone and raises the other
 tasks around it (the compensation, both sides). Picking per day between the fill and the score's
-own stride (`Instant._best`, then 20ms of `Model.improve`) brings it to 1.22, but it costs 60ms a
-day (the fill: 5) and the score then prefers what looks wrong: a 1 or 2 min sliver of B before
-the user's block of A, A against the block. Off (`Instant.BEST`) until it is decided whether those
-are rules of the display or terms the score is missing.
+own stride (`Instant._best`, then 20ms of `Model.improve`) brings it to 1.22 on the 4 hours the
+comparison reads, but it costs 60ms a day (the fill: 5), and further into the day it picks what
+looks wrong (a 1min sliver of B before the user's block of A, 6 hours in). Not a term the score
+misses: the score charges that sliver (758 there, J2), but read from the day's start it is
+discounted by e^(-u/Theta), Theta 20min with two 10min tasks at 50%: 6 hours in it weighs e^-18.
+One score read from a day's start judges the day's first hour only. Following the score
+everywhere needs it read from each part's own start, as the steps read their slices (a rolling
+pass of cheap steps: about 10 to 20 times the fill's cost in Python). Off (`Instant.BEST`).
 Also open: a block of the user's inside the night (its task's resilience 0 there): the model
 scores 1% to 4% of what the score does (seeds 20 and 31).

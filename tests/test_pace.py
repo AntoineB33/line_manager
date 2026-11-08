@@ -60,6 +60,26 @@ class PaceTest(unittest.TestCase):
                                          for k, v in inst.items()], "generated")
         self.assertLessEqual(sc.evaluate(st.line, lo, hi).J, sc.evaluate(quick.line, lo, hi).J)
 
+    def test_a_step_plans_past_its_slice(self):
+        """Step 0 commits its whole look ahead: its slice definitive, the hours after it a plan on
+        the line; step 1 starts from that plan (a seed) and replaces it from its own slice on,
+        leaving step 0's slice as it was."""
+        chip = F(10 * DAY + 10 * HOUR)
+        rules, sc, st = setup(chip)
+        pace = Pace(rules, sc)
+        ops, info = pace.step(st, chip, 0, budget=1.0)
+        st = apply_edit(rules, st, ops, "generated")
+        a, b = info["slice"]
+        planned = IntervalSet()
+        for k in NAMES:
+            planned = planned | st.line.presence(k).on(b, info["planned"])
+        self.assertGreater(planned.measure(), 2 * HOUR)  # (hours past the slice: the plan)
+        first = {k: st.line.presence(k).on(a, b) for k in NAMES}
+        ops, info1 = pace.step(st, chip, 1, budget=1.0)
+        st = apply_edit(rules, st, ops, "generated")
+        self.assertEqual({k: st.line.presence(k).on(a, b) for k in NAMES}, first)
+        self.assertEqual(info1["slice"][0], b)
+
     def test_a_step_through_the_night(self):
         """A slice in the night: nothing committed there, and no time spent on it."""
         chip = F(10 * DAY + 2 * HOUR)  # (02:00: asleep until 09:22)

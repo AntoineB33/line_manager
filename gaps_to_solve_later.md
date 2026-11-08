@@ -192,10 +192,15 @@ scores J 336321 against 485894 for the instant schedule of the same hour.
   the instant schedule of the first 10 minutes (and the start's script, `first_edits`, the
   same); each step's slice is one more edit, the script definitive to its end; 18 steps (3
   hours), the last final. In the window, the run is in its own process as any run.
-  Shown (2026-11-08): the window draws, past where the script in place is definitive, the
-  instant schedule of what it shows (`Session.display`, `instant.displayed`), the user's tasks
-  kept; the line itself is not changed. It is recomputed when the window rebuilds what it
-  shows (a new script, an edit, a scroll), not at each frame.
+  Shown (2026-11-08): each step puts its whole look ahead on the line, its slice definitive
+  and the 4 hours after it a plan the next steps start from and replace from their own slice
+  on (a better schedule found from the big picture changes what is past the slice too). The
+  window draws the line up to where that plan ends and the instant schedule past it
+  (`Session.display`, `instant.displayed`), with the generator's claim, as the steps' own
+  elements: nothing tells them apart (user rule 2026-11-08). It is recomputed when the window
+  rebuilds what it shows (a new script, an edit, a scroll), not at each frame.
+  Found on the way: the search's model let the generator's own tasks in its window forbid the
+  others ("A → no B" read on the plan it replaces); they forbid nothing now.
   Not done: a run of 18 steps of 10s is 3 minutes, and nothing runs the steps again as the
   chip nears the end of what they reached but the generator's usual reruns.
 - A step that finishes early does not use the rest of its budget: more seeds, or the

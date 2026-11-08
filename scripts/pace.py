@@ -11,7 +11,10 @@ A step goes from a big picture down to its slice:
    steps before left it), improved over the whole of them while a part of the budget lasts;
 3. the slice: finer moves (an eighth of the shorter run) on the runs that meet it, the whole
    still scored, while the rest of the budget lasts.
-Only the slice is committed: the next step starts from the line with it, so the steps join.
+The whole look ahead is committed, the slice definitive and the rest a plan: a better schedule
+found from the big picture changes what is past the slice too. The next step starts from the
+line with it, its plan one of its seeds (the continuation a re-plan replaces), and replaces it
+from its own slice on.
 """
 
 from __future__ import annotations
@@ -56,18 +59,32 @@ class Pace:
         info = {"slice": (a, b)}
         if m.U <= 0:
             return self._commit(state, {}, a, b), info
-        seeds = [m.from_wall(big)] + [m.stride(off) for off in SEEDS[:2]]
+        plan = {i: [(max(Fraction(iv.lo.x if hasattr(iv.lo, "x") else iv.lo), a), min(Fraction(iv.hi.x if hasattr(iv.hi, "x") else iv.hi), end))
+                    for iv in state.claims.owned(i, GEN).on(a, end).intervals]
+                for i in self.score.tasks}
+        plan = {i: v for i, v in plan.items() if v}
+        seeds = [m.from_wall(big)] + ([m.from_wall(plan)] if plan else []) + [m.stride(off) for off in SEEDS[:2]]
         costs = [m.cost(r) for r in seeds]
         info["big picture"] = costs[0]
-        best = min(zip(costs, range(len(seeds))))[1]
-        runs = m.improve(seeds[best])
-        info["hours ahead"] = m.cost(runs)
+        # each seed improved in turn, best first, while the hours' part of the budget lasts: the
+        # improvement ends in a local optimum that depends on the seed, the best one at the start
+        # is not always the best at the end
+        runs, key = None, None
+        for _, k in sorted(zip(costs, range(len(seeds)))):
+            got = m.improve(seeds[k])
+            c = m.cost(got)
+            if key is None or c < key:
+                runs, key = got, c
+            if m.out_of_time():
+                break
+        info["hours ahead"] = key
         m.deadline = began + budget  # (the rest of the budget: the slice)
         focus = (m.u_of(a), m.u_of(b))
         runs = m.improve(runs, focus=focus, fraction=8)
         info["slice done"] = m.cost(runs)
         info["seconds"] = time.perf_counter() - began
-        return self._commit(state, m.to_wall(runs), a, b), info
+        info["planned"] = end
+        return self._commit(state, m.to_wall(runs), a, end), info
 
     def _commit(self, state, wall: dict, a, b) -> list:
         """The edit: on [a, b], the generator's tasks off, the step's put."""

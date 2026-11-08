@@ -291,14 +291,33 @@ class Session:
         inst = self._instant[1]
         d = self.sim.definitive
         start = self.position if d is None else (d.x if hasattr(d, "x") else d)
+        if start != float("inf"):
+            start = max(F(start), self.plan_end(score))
         history = self.sim.state.history
 
         def shown(line, claims, a, b):
             if start == float("inf"):
-                return line
+                return line, claims
             lo = max(F(a), F(start))
             return displayed(inst, line, claims, history, lo, F(b))
         return shown
+
+    def plan_end(self, score) -> F:
+        """Where the plan the generator's tasks make on the line ends after the chip (the steps
+        put their whole look ahead: definitive on their slice, the rest a plan the next steps
+        improve); the chip if there is none."""
+        from line import GEN
+        c = F(self.position)
+        end = c
+        for k in score.tasks:
+            r = self.sim.state.claims.owned(k, GEN)
+            if r.is_empty() or not r.is_bounded():
+                continue
+            hi = r.sup()
+            hi = hi.x if hasattr(hi, "x") else hi
+            if hi != float("inf") and F(hi) > end:
+                end = F(hi)
+        return end
 
     def generator(self, rs) -> RulesGenerator:
         from score import ScoreProblem

@@ -553,7 +553,7 @@ class App:
         shows = script.shows_line()  # s_v
         display = sn.get("display")  # (past what the steps made definitive: the instant schedule, instant.displayed)
         if display is not None:
-            line = display(line, claims, a, b)
+            line, claims = display(line, claims, a, b)
         now = items(sn, line, claims, p, left, span, a, b, scale, w) if shows else {}
         ahead = sn["ahead"]
         until = ahead.until(Pos(p)) if sn["wall"] is not None and ahead is not None and hasattr(ahead, "until") else None
@@ -570,8 +570,8 @@ class App:
                 self.formula = (ahead, until)
                 self.valid = min(self.valid, until.x)
                 left2 = p + delta + self.scrolled - span / 4
-                later_line = display(state.line, state.claims, a, b) if display is not None else state.line
-                later = items(sn, later_line, state.claims, p + delta, left2, span, a, b, scale, w) if shows else None
+                later_line, later_claims = display(state.line, state.claims, a, b) if display is not None else (state.line, state.claims)
+                later = items(sn, later_line, later_claims, p + delta, left2, span, a, b, scale, w) if shows else None
         self.view.sync(now, later, delta, p, X, scale)
         if not keeps_frame(script, sn["shown"]):
             script.frame = self.view.frame()

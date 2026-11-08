@@ -140,7 +140,13 @@ class DisplayedTest(unittest.TestCase):
         sc = Score(self.TASKS)
         st = apply_edit(rs, st, [Op.put("B", Region.of(Iv(a, a + 3 * HOUR, False, True)))], "generated")
         definitive = a + 2 * HOUR
-        line = displayed(Instant(rs, sc), st.line, st.claims, st.history, definitive, a + DAY)
+        line, claims = displayed(Instant(rs, sc), st.line, st.claims, st.history, definitive, a + DAY)
+        # (nothing tells the instant schedule's elements from the steps': the generator's, both)
+        for k in self.TASKS:
+            mine = line.presence(k).on(definitive, a + DAY)
+            owners = {owner for (v, owner), r in claims.pos.get(k, {}).items() if r.on(definitive, a + DAY).intervals}
+            if mine.intervals and k != "A":
+                self.assertEqual(owners, {"generated"}, k)
         self.assertEqual(line.presence("B").on(a, definitive), st.line.presence("B").on(a, definitive))  # (the line before)
         self.assertTrue(line.presence("A").on(a + 5 * HOUR, a + 6 * HOUR) == IntervalSet.of(Iv(a + 5 * HOUR, a + 6 * HOUR, False, False)))  # (the user's)
         night = line.presence("Sleep").on(definitive, a + DAY)
@@ -166,7 +172,7 @@ class DisplayedTest(unittest.TestCase):
             show = s.display()
             self.assertIsNotNone(show)
             far = F(YEARS_1000)
-            line = show(s.sim.state.line, s.sim.state.claims, far, far + DAY)
+            line, _ = show(s.sim.state.line, s.sim.state.claims, far, far + DAY)
             got = sum((line.presence(k).on(far, far + DAY).measure() for k in self.TASKS), F(0))
             self.assertEqual(got, DAY - 8 * HOUR)  # (every awake moment, 1000 years ahead)
 

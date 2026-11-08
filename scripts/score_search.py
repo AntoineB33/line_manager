@@ -61,8 +61,13 @@ class Model:
         u0 = [u0[k] - base for k in keep]
         u = (u0[-1] + ((segs[-1][1] - segs[-1][0]) if sched[-1] else 0.0)) if keep else 0.0
         no = {}
+        # (the generator's tasks in the window are what the search replaces: they forbid nothing,
+        # a plan of the step before included, pace.py)
+        W = Region.of(Interval(self.c, self.end, False, True))
+        vals = {k: ({v: r - (state.claims.owned(k, GEN) & W) for v, r in d.items()} if k in sc.tasks else d)
+                for k, d in state.line.vals.items()}
         for i in self.names:
-            no[i] = forbidden(ctx, i)
+            no[i] = forbidden(ctx, i, vals)
             for k, r in sc.tasks[i].resilience.items():
                 if r == 0:
                     no[i] = no[i] | state.line.presence(k)

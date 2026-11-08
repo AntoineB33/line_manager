@@ -161,18 +161,27 @@ def _has(s: IntervalSet, x) -> bool:
 
 
 def displayed(instant: Instant, line, claims, history, lo, hi):
-    """The line the calendar shows on [lo, hi): the line, its tasks after `lo` (where the
-    scheduler's steps have not made it definitive) replaced by the instant schedule there (the
-    user's tasks kept, they are the line's). Nothing to do past hi or before lo."""
+    """(the line, the claims) the calendar shows on [lo, hi): the line, its tasks after `lo` (past
+    the plan of the scheduler's steps) replaced by the instant schedule there, the user's tasks
+    kept. The instant schedule's elements are the generator's, as those of the steps: shown as
+    they are, nothing tells them apart (OmniApp's requirements § Two paces)."""
     from line import Line, LineState
     lo, hi = Fraction(lo), Fraction(hi)
     if lo >= hi:
-        return line
+        return line, claims
     state = LineState(claims, line, history)
     got = instant.schedule(state, lo, hi)
     after = Region.of(Interval(lo, hi, False, False))
     vals = dict(line.vals)
+    shown = claims.copy()
     for i in instant.tasks:
+        d = shown.pos.get(i, {})
+        for key in [key for key in d if key[1] == GEN]:
+            d[key] = d[key] - after
+            if d[key].is_empty():
+                del d[key]
+        if got.get(i):
+            shown.add_pos(i, Region.of(IntervalSet([Interval(a, b, False, True) for a, b in got[i]])), Fraction(100), GEN)
         mine = claims.owned(i, USER)
         old = vals.get(i, {})
         keep = {v: (r - after) | (r & mine & after) for v, r in old.items()}
@@ -184,4 +193,4 @@ def displayed(instant: Instant, line, claims, history, lo, hi):
             vals[i] = keep
         else:
             vals.pop(i, None)
-    return Line(vals)
+    return Line(vals), shown

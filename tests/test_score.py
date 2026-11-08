@@ -306,5 +306,26 @@ class ScoreProblemTest(unittest.TestCase):
         self.assertGreater(st.line.integral("B", IntervalSet.of(Iv(0, g.window, False, True))), 0)
 
 
+class PanelEndingAtTheChipTest(unittest.TestCase):
+    def test_a_short_panel_ending_at_the_chip_is_charged(self):
+        """A's 10min panel ends at the chip, where the continuation gives the time to B: charged (a
+        re-plan must not drop a short panel for nothing; OmniApp's ScoreModel charges it too,
+        tests/cross_score_cases.py)."""
+        from fractions import Fraction as F
+        from intervals import Interval as Iv
+        from line import LineState, Op
+        from region import Region
+        from resolve import apply_edit
+        from rules import parse_rules
+        from score import Score, Task
+        rules = parse_rules(["A → no B"])
+        sc = Score({"A": Task(1, 30 * 60), "B": Task(1, 30 * 60)})
+        c = F(10 * 86400)
+        st = apply_edit(rules, LineState.empty(), [Op.put("B", Region.of(Iv(c - 3600, c - 600, False, True))),
+                                                   Op.put("A", Region.of(Iv(c - 600, c, False, True))),
+                                                   Op.put("B", Region.of(Iv(c, c + 7200, False, True)))], "generated")
+        self.assertGreater(sc.evaluate(st.line, c, c + 7200).J2, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

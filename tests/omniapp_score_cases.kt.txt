@@ -1,0 +1,72 @@
+package org.example.project
+
+import java.io.File
+import kotlin.test.Test
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.double
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
+import org.example.project.scheduler.domain.PlanBlock
+import org.example.project.scheduler.domain.PlanTask
+import org.example.project.scheduler.domain.RestrictivePeriod
+import org.example.project.scheduler.domain.ScheduleFill
+import org.example.project.scheduler.domain.ScoreModel
+import org.example.project.scheduler.model.TaskId
+
+/**
+ * THROWAWAY (delete after use): OmniApp's [ScoreModel] on cases line_manager wrote (the same tasks, periods, blocks,
+ * past and plan), in line_manager's units (millis^3 / 3.6e12), next to line_manager's own score, to find where the
+ * two implementations of docs/scheduler_score.md part. Reads and writes only the scratch directory.
+ */
+class ScratchScoreCases {
+    private val DIR = "C:/Users/antoi/AppData/Local/Temp/claude/0e42ae6af0a68298/ac02c45a-c60d-4696-9534-21b3b9165908/scratchpad/xscore"
+
+    @Test
+    fun scoreCases() {
+        val f = File("$DIR/cases.json")
+        if (!f.isFile) return
+        val out = StringBuilder()
+        for (c in Json.parseToJsonElement(f.readText()).jsonArray) {
+            c as JsonObject
+            fun ms(o: JsonObject, k: String) = o[k]!!.jsonPrimitive.long
+            val tasks = c["tasks"]!!.jsonArray.map {
+                it as JsonObject
+                PlanTask(
+                    TaskId(it["id"]!!.jsonPrimitive.content), it["priority"]!!.jsonPrimitive.double, ms(it, "minimumMillis"),
+                    it["resilience"]!!.jsonObject.mapKeys { (k, _) -> k.lowercase() }.mapValues { (_, v) -> v.jsonPrimitive.double },
+                )
+            }
+            val periods = c["periods"]!!.jsonArray.map { it as JsonObject; RestrictivePeriod(ms(it, "start"), ms(it, "end"), it["kind"]!!.jsonPrimitive.content) }
+            fun blocks(key: String) = c[key]!!.jsonArray.map { it as JsonObject; PlanBlock(TaskId(it["task"]!!.jsonPrimitive.content), ms(it, "start"), ms(it, "end")) }
+            val a = ms(c, "a")
+            val end = ms(c, "end")
+            val from = a - ms(c, "lookback")
+            val costs = DoubleArray(2)
+            for ((n, w) in listOf(1.0, 0.0).withIndex()) {
+                val model = ScoreModel(tasks, blocks("blocks"), ScheduleFill.windowsFor(periods, tasks, from, end), from, end, w)
+                val cur = ScheduleFill.replay(model, blocks("history"), a)
+                for (p in (blocks("plan") + blocks("blocks")).sortedBy { it.startMillis }) {
+                    val us = model.uAt(maxOf(p.startMillis, a))
+                    val ue = model.uAt(minOf(p.endMillis, end))
+                    if (ue <= cur.u + ScoreModel.EPS) continue
+                    if (us > cur.u + ScoreModel.EPS) model.serve(cur, -1, us)
+                    model.serve(cur, model.indexOf[p.taskId] ?: -1, ue)
+                }
+                val uEnd = model.uAt(end)
+                // (the user's blocks after the plan: served as they are, then nobody to the end)
+                if (uEnd > cur.u + ScoreModel.EPS) model.serve(cur, -1, uEnd)
+                model.settle(cur)
+                costs[n] = cur.cost / 3.6e12
+            }
+            val lm = c["lm"]!!.jsonObject
+            out.appendLine(
+                "seed ${c["seed"]} ${c["feats"]}: omniapp J ${"%.1f".format(costs[0])} J1 ${"%.1f".format(costs[1])}" +
+                    " | line_manager J ${"%.1f".format(lm["J"]!!.jsonPrimitive.double)} J1 ${"%.1f".format(lm["J1"]!!.jsonPrimitive.double)}",
+            )
+        }
+        File("$DIR/results.txt").writeText(out.toString())
+    }
+}

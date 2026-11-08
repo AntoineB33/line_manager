@@ -315,10 +315,13 @@ class Score:
                 if served[i]:
                     run[i] += h
                 elif run[i] > 0:
-                    if fa < x0c <= fb:
+                    # (a panel ending AT the chip is charged too: the continuation ends it there, and a
+                    # re-plan must not drop a short panel for nothing; OmniApp's ScoreModel and the search's
+                    # model, score_search.Model, charge it)
+                    if fa < x0c <= fb or (x0c == fa and fa == float(c)):
                         J2, J3 = self._charge(R, i, run[i], ustart - uc, J2, J3)
                     run[i] = 0.0
-        if float(b) == float(end):  # the continuation past `end`, closed in closed form
+        if float(b) == float(end) and not getattr(self, "_no_tail", False):  # the continuation past `end`, closed in closed form
             ue = self._u_at(segs, sched, u0, float(end)) - uc
             for i in names:
                 J1 += self._tail(L[i], R["tau"][i], R["Theta"][i], ue) / max(R["M"][i], self.s.floor) ** 2

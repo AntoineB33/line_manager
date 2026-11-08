@@ -349,6 +349,14 @@ screen and the three breaks; the breaks and periods its panels carry; its panels
   direction everywhere: OmniApp's current plan is the worse one by its own score. What it does:
   its time to the 10% and 26% tasks, where the instant schedule repays the 0.7% to 2% ones.
   OmniApp's plan read is the one stored at the export (made at its last re-plan, maybe hours old).
-- The two implementations of the score do not agree in magnitude (the ratios above): one of them
-  reads the document differently somewhere (the past, the tail, the compensation). To find before
-  the port: score the same plans with both on small cases until they agree.
+- The two implementations of the score, reconciled 2026-11-08 (tests/cross_score_cases.py, 40 cases
+  where the old and the new document coincide: every tau under one compensation length, nothing
+  rare, no maximum): 40 of 40 agree to 0.1 once line_manager charged a short panel ending AT the
+  chip (the document said "after x"; now "at or after x", and ScoreModel already did). Apart:
+  - ScoreModel takes the last schedulable stretch as going on forever past its window; where the
+    window ends in a night after a block of the user's, the block deprives the others forever there
+    (line_manager reads the line ahead, as the document says). A fix in OmniApp, not made;
+  - ScoreModel implements the document before 2026-11-07: one compensation length for all (4h),
+    no rare tasks, no maximum, no quantities. On the real account the small tasks' tau is about
+    113h, so their compensation is 4h in OmniApp and hundreds of hours here: the magnitudes above.
+    What OmniApp's scheduler answers on the account is the old document's.

@@ -16,8 +16,7 @@ from score import ScoreProblem
 from score_search import Model
 
 SEEDS = range(10)
-KNOWN = (20, 31)  # (a block of the user's inside the night, where its task's resilience is 0: the
-# model scores 1% to 4% of what the score does there, gaps_to_solve_later.md)
+KNOWN = ()  # (20 and 31 were the panel open across the night, read by the model only at the chip: fixed)
 
 
 class ComparePacesTest(unittest.TestCase):
@@ -42,6 +41,32 @@ class ComparePacesTest(unittest.TestCase):
                 # (within 2%: on the rolling pass's plans the model is 0.8% and 1.8% off on seeds 16
                 # and 32, the fill's within 0.15%; cause not found: gaps_to_solve_later.md)
                 self.assertAlmostEqual(m.cost(m.from_wall(shown))[1] / max(exact, 1.0), 1.0, delta=0.02)
+
+    def test_a_panel_open_across_the_night(self):
+        """A's 20min panel ends where the night begins; the window starts in the night and the morning
+        begins with B. The night does not interrupt A's panel (no task may run there), so it ends in the
+        window, short of its 45min: the score charges it there, and the model must too (it read only a
+        panel open AT the window's start, and the step planned against a score 3 times off on a real
+        account)."""
+        from intervals import Interval as Iv
+        from ratio_plan import cycle
+        from rules import parse_rules
+        from score import Score, Task
+        from line import LineState
+        DAY, HOUR, MIN = 86400, 3600, 60
+        rules = parse_rules(["A → no B"])
+        score = Score({"A": Task(1, 45 * MIN, resilience={"Sleep": 0}), "B": Task(1, 45 * MIN, resilience={"Sleep": 0})})
+        st = apply_edit(rules, LineState.empty(), [Op.put("Sleep", cycle(F(4920), F(DAY), F(0), F(8 * HOUR)))], "user")
+        night = F(10 * DAY + 4920)
+        st = apply_edit(rules, st, [Op.put("A", C._region([(night - 20 * MIN, night)])), Op.put("B", C._region([(night - 65 * MIN, night - 20 * MIN)]))], "generated")
+        a = F(10 * DAY + 5 * HOUR)
+        end = a + 6 * HOUR
+        plan = {"B": [(night + 8 * HOUR, night + 8 * HOUR + 45 * MIN)], "A": [(night + 8 * HOUR + 45 * MIN, end)]}
+        m = Model(ScoreProblem(score, window=end - a), SimpleNamespace(c=a, state=st, gen=SimpleNamespace(rules=rules)), st, 5)
+        line = apply_edit(rules, st, [Op.put(k, C._region(v)) for k, v in plan.items()], "generated")
+        r = score.evaluate(line.line, a, end, ScoreProblem(score, window=end - a)._preplaced(st))
+        self.assertGreater(r.J2, 0)  # (A's evening panel, charged in the window)
+        self.assertAlmostEqual(m.cost(m.from_wall(plan))[1], r.J, delta=1e-6 * r.J + 1)
 
     def test_a_maximum_is_kept_by_the_instant_schedule(self):
         """Seed 6: A at most 30 min; the fill gave it 195 min in a row (J 24809 against the

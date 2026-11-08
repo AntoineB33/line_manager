@@ -50,6 +50,7 @@ class Model:
                             at=(self.c, self.end))
         mus = [sc._mu(x) for x in segs]
         sched = [any(m > 0 for m in mu.values()) for mu in mus]
+        all_segs, all_sched = segs, sched  # (before the window's are kept: the panel open at the chip reads back)
         u0, u = [], 0.0
         for x, ok in zip(segs, sched):
             u0.append(u)
@@ -98,12 +99,29 @@ class Model:
         self.U = u
         self.L0 = problem.lags_at(state.line, self.c, pre)
         # the panel open at the chip: its task and how long it has run (on u, back to the chip)
+        # (read back from the chip as the score reads a panel: a stretch where no task may run does not
+        # interrupt it, scheduler_score.md § Criterion 2: the evening's panel is still open in the middle of
+        # the night, and ends when the morning gives the time to another task)
         self.open = (None, 0.0)
-        for i in self.names:
-            pres = state.line.presence(i) - (state.claims.owned(i, GEN) & W)
-            if pres.contains(self.c):
-                iv = next(v for v in pres.on(self.c - 10 ** 7, self.c + 1).intervals if v.lo <= self.c <= v.hi)
-                self.open = (i, float(self.c - (iv.lo.x if hasattr(iv.lo, "x") else iv.lo)))
+        who, length = None, 0.0
+        for x, ok in zip(reversed(all_segs), reversed(all_sched)):
+            if x[0] >= float(self.c) - 1e-9:
+                continue
+            if not ok:
+                continue  # (no task may run there: transparent)
+            here = [i for i in self.names if i in x[2]]
+            part = min(x[1], float(self.c)) - x[0]
+            if who is None:
+                if len(here) != 1:
+                    break  # (nobody, or the user's two at once: no panel open)
+                who = here[0]
+                length = part
+            elif who in here:
+                length += part
+            else:
+                break
+        if who is not None:
+            self.open = (who, length)
         # whether the run open at the chip ends a block of the user's (`ruled`: not its task right after)
         from line import USER as _USER
         self.open_user = self.open[0] is not None and state.claims.owned(self.open[0], _USER).contains(self.c - Fraction(1, 2))

@@ -315,8 +315,9 @@ discounted by e^(-u/Theta), Theta 20min with two 10min tasks at 50%: 6 hours in 
 One score read from a day's start judges the day's first hour only. Following the score
 everywhere needs it read from each part's own start, as the steps read their slices (a rolling
 pass of cheap steps: about 10 to 20 times the fill's cost in Python). Off (`Instant.BEST`).
-Also open: a block of the user's inside the night (its task's resilience 0 there): the model
-scores 1% to 4% of what the score does (seeds 20 and 31).
+Seeds 20 and 31 (the model at 1% to 4% of the score) were not about a block in the night: the
+model read the panel open at the chip only AT the chip, and the score reads it back across what no
+task may have (a night): fixed 2026-11-08 (`test_a_panel_open_across_the_night`).
 The rolling pass (`Instant._rolled`, on since 2026-11-08; the fill alone while the user drags,
 `Session.dragging`): each part of 2h read by the score from its own start with 2h after it; on
 it the score's stride with the instant schedule's rules (`Model.ruled`: a task's maximum, no
@@ -327,5 +328,19 @@ fill alone 1.87), 13 of 40 with a finding, worst 4.2; about 75ms a window (the f
 First tried as the fill and the score's plain stride mixed by part (1.37) and left: slivers of
 B before the user's block, and an improvement bounded by time, not the same from run to run.
 Open: on the pass's plans the step's model is 0.8% and 1.8% off the score (seeds 16 and 32 of
-compare_paces.py; on the fill's within 0.15%), cause not found; short panels away from blocks
+compare_paces.py), cause not found; short panels away from blocks
 remain (4 of the 40 cases: a 1min C, a 13min B with a 30min minimum, ...).
+
+## The real account (tests/real_account.py, 2026-11-08)
+The scheduler's inputs as OmniApp computes them (exported from a copy of the release database by a
+throwaway jvmTest: 22 tasks, shares 0 to 26%, 45min minimums, resilience 0 to sleep, before bed, no
+screen and the three breaks; the breaks and periods its panels carry; its panels of 2 days back and
+18 hours ahead), scored by line_manager's score on 4h windows every 2 hours:
+- it found the model 3 to 4 times off the score where the window starts in the night (the panel
+  open across it, above): the step planned against the wrong score and ended worse than the
+  instant schedule (557912 against 483310). Fixed: the model now equals the score on every chip;
+- after the fix the step is never worse than the instant schedule; the instant schedule is within
+  2% of the step on 6 of 8 chips, 17% at the first;
+- OmniApp's own plan (its panels ahead) scores 1.3 to 3.5 times line_manager's instant schedule on
+  the same windows. Not yet a verdict on OmniApp's scheduler: the export has no sets of tasks
+  (`PlanTask.credits`), and the breaks past its panels' 18 hours are not in it.

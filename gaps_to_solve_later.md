@@ -242,7 +242,14 @@ differences with a bounded region are now read on its span (`region._combine`, `
 The script at the start of a run computes and checks the constraints' edits only as far as it
 is definitive (`constraint_ops(until=...)`), its written edits whole (the script's text).
 
-Left: the 3.6s of a rule change are the simulation applying the breaks' edits forever and
-checking the whole past (the solver over the 61-day "no screen"): the solver working in a window
-near the chip would end them. `test_window.test_zooming_keeps_the_position_under_the_mouse_under_it`
+Left: a rule change takes 3.8s (the 15min and 20s breaks with a night). Done since: the check
+that a script's edit changes nothing left of the chip is not made on the whole past when the
+rules are local and the edit is all after the chip (`guards.check_script_edit`, with the edit's
+operations and a lower bound of a lazy region, `Lazy.lower_bound`); the memory counted without
+computing lazy regions (`line._pieces`). Each gives little: the layers a rule change goes through
+(the replay of the user's edits, the script at the run's start, its edits applied, the cells of
+the solver) each ask a whole-line question, and the same lazy regions get computed by the next.
+What would end it: the replay after a rule change in the background, the window showing the
+instant layer of the new rules at once meanwhile (the window and the simulation then sharing the
+state across threads: not done without the user's go-ahead). `test_window.test_zooming_keeps_the_position_under_the_mouse_under_it`
 failed once under the load of two test processes, and passes alone.

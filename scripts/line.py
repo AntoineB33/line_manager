@@ -273,9 +273,9 @@ class LineState:
     def memory(self) -> int:
         """About what it takes, in bytes: each interval is kept in the line, the claims and
         the edits it comes from."""
-        return BYTES_PER_INTERVAL * sum(len(r.core.intervals) for r in self._regions()) + BYTES_PER_EDIT * len(self.history)
+        return BYTES_PER_INTERVAL * sum(_pieces(r) for r in self._regions()) + BYTES_PER_EDIT * len(self.history)
 
-    def _regions(self) -> list:
+    def _regions(self) -> list:  # noqa: D401 (the line's, then the claims')
         regions = [r for d in self.line.vals.values() for r in d.values()]
         for c in (self.claims.pos, self.claims.neg, self.claims.taken):
             regions += [r for d in c.values() for r in d.values()]
@@ -289,3 +289,14 @@ class LineState:
             if not out or out[-1] != x:
                 out.append(x)
         return out
+
+
+def _pieces(r) -> int:
+    """The intervals a region keeps: a lazy one (region.Lazy) those of what it is made of, not
+    computed whole to be counted."""
+    from region import Lazy
+    if isinstance(r, Lazy):
+        if r._full is not None:
+            return len(r._full.core.intervals)
+        return sum(_pieces(x) for x in (r._a, r._b) if x is not None and hasattr(x, "core") or isinstance(x, Lazy))
+    return len(r.core.intervals)

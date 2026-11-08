@@ -65,10 +65,26 @@ def same_dict(a: dict, b: dict) -> bool:
     return set(a) == set(b) and all(a[k] == b[k] for k in a)
 
 
-def check_script_edit(before: LineState, after: LineState, chip) -> str | None:
-    """None if the edit respects N1 and N2, else the reason."""
+def after_chip(ops, chip) -> bool:
+    """Whether every operation of an edit is after the chip (read without computing a lazy region
+    whole: region.Lazy.lower_bound)."""
+    from region import Lazy
+    for o in ops:
+        r = o.region
+        lb = r.lower_bound() if isinstance(r, Lazy) else (r.inf() if not r.is_empty() else None)
+        if lb is not None and not lb > chip:
+            return False
+    return True
+
+
+def check_script_edit(before: LineState, after: LineState, chip, ops=None, rules=None) -> str | None:
+    """None if the edit respects N1 and N2, else the reason. With the edit's `ops` and `rules`
+    whose positions act on themselves only (RuleSet.local): an edit all after the chip changes
+    nothing left of it, so the line left of it is not compared (the whole past read, a night every
+    day and 20s breaks, 61 days computed whole: seconds)."""
     left = left_side(chip)
-    if not before.line.same_on(after.line, left) or not same_dict(claims_on(before.claims, left), claims_on(after.claims, left)):
+    local = ops is not None and rules is not None and getattr(rules, "local", False) and after_chip(ops, chip)
+    if not local and (not before.line.same_on(after.line, left) or not same_dict(claims_on(before.claims, left), claims_on(after.claims, left))):
         return f"N1: would change the line left of the chip ({chip})"
     if not same_dict(user_claims(before.claims), user_claims(after.claims)):
         return "N2: would remove or change an element added by the user"

@@ -524,7 +524,7 @@ class Simulation:
         else:
             try:
                 after = apply_edit(self.rules, before, ops, owner)
-                why = check_script_edit(before, after, c)
+                why = check_script_edit(before, after, c, ops, self.rules)
                 if not why and frozen is not None and not before.line.same_on(after.line, Region.of(Interval(-INF, frozen, False, True))):
                     why = f"it would change the line where the script is definitive (up to {frozen})"
             except Refused as e:

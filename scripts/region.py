@@ -616,6 +616,27 @@ class Lazy(Region):
 
     PROBE = 3 * 86400  # how wide each window read to find a piece is (`is_empty`)
 
+    def lower_bound(self):
+        """A position no point of it is before (-INF if none is known without computing it):
+        from its operands, for a check that it is all after some position (guards)."""
+        if self._full is not None:
+            return self._full.inf() if not self._full.is_empty() else INF
+        op = self._op
+        lb = lambda r: r.lower_bound() if isinstance(r, Lazy) else (r.inf() if not r.is_empty() else INF)
+        if op == "or":
+            return min(lb(self._a), lb(self._b))
+        if op == "and":
+            return max(lb(self._a), lb(self._b))
+        if op == "sub":
+            return lb(self._a)
+        if op == "shift":
+            return lb(self._a) + self._d
+        if op == "dilate":
+            return lb(self._a) + self._d.lo
+        if op == "edges":
+            return lb(self._a)
+        return -INF
+
     def is_empty(self) -> bool:
         """Empty or not, exactly: a piece found in a window near where the operands start says
         no at once; only when none is found is the whole of it computed."""

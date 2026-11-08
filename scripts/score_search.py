@@ -104,6 +104,9 @@ class Model:
             if pres.contains(self.c):
                 iv = next(v for v in pres.on(self.c - 10 ** 7, self.c + 1).intervals if v.lo <= self.c <= v.hi)
                 self.open = (i, float(self.c - (iv.lo.x if hasattr(iv.lo, "x") else iv.lo)))
+        # whether the run open at the chip ends a block of the user's (`ruled`: not its task right after)
+        from line import USER as _USER
+        self.open_user = self.open[0] is not None and state.claims.owned(self.open[0], _USER).contains(self.c - Fraction(1, 2))
         self.quantities = [(i, float(Q), float(a), float(b)) for i in self.names for Q, a, b in sc.tasks[i].quantities
                            if float(b) > float(self.c)]
         self.served_before = {}
@@ -296,6 +299,94 @@ class Model:
             runs.append((best[1], best[2]))
             u += best[2]
         return runs
+
+    def ruled(self, offset: float = 0.5) -> list:
+        """The base policy (stride on the score's own targets and lags) with what the instant
+        schedule must never show (OmniApp's requirements § Two paces: nothing obviously wrong):
+        - a task's run kept under its maximum where another task may be there;
+        - no panel of a block of the user's own task against either side of it, where another task
+          may be there (the block would look longer than the user made it);
+        - what is left before a block too short for any task's minimum given to the panel before
+          it, not left as a sliver;
+        - nobody never where a task may be.
+        No time in it: the same line, the same plan."""
+        R = self.R
+        out = []
+        u = 0.0
+        cur, run = self.open
+        after_user = self.open_user
+        least = min((R["M"][i] for i in self.names if R["pi"][i] > 0), default=0.0)
+        fixed = [(st[0], st[5]) for st in self.st if st[5] is not None]
+        guard = 0
+        while u < self.U - 1e-9 and guard < 100000:
+            guard += 1
+            s = self.stretch_at(u)
+            if s is None:
+                break
+            if s[5] is not None:  # (the user's: as it is)
+                h = s[1] - u
+                out.append((s[5], h))
+                run = run + h if cur == s[5] else h
+                cur, after_user = s[5], True
+                u += h
+                continue
+            ok = sorted(s[4])
+            if not ok:
+                h = s[1] - u
+                out.append((None, h))
+                cur, run, after_user = None, 0.0, False
+                u += h
+                continue
+            nxt = next(((a, X) for a, X in fixed if a >= u - 1e-9), None)
+            uF, X = nxt if nxt is not None else (None, None)
+
+            def room(i):
+                e = self.free_until(i, u)
+                if uF is not None:
+                    e = min(e, uF)
+                return min(e, self.U) - u
+
+            def maxed(i):
+                return cur == i and R["X"][i] != math.inf and run >= R["X"][i] - 1e-6
+
+            def touches(i):
+                if after_user and i == cur:
+                    return True
+                if i == X and uF is not None and u + room(i) >= uF - 1e-6:
+                    return uF - (u + min(R["M"][i], room(i))) < least
+                return False
+            cands = [i for i in ok if not maxed(i)] or ok
+            pick = [i for i in cands if not touches(i)] or cands
+            if cur in pick and not after_user and run < R["M"][cur] - 1e-6 and room(cur) > 1e-9:
+                # (a panel open at the chip short of its minimum: finished first, the part before
+                # having cut it at its end)
+                i = cur
+                h = min(R["M"][cur] - run, room(cur))
+                out.append((i, h))
+                run += h
+                u += h
+                continue
+            lag = self._lags(out)
+            i = min(pick, key=lambda j: ((lag[j] + offset * R["M"][j]) / max(s[6][j], 1e-12), j))
+            r = room(i)
+            h = min(R["M"][i], r)
+            if i == cur and R["X"][i] != math.inf and R["X"][i] - run > 1e-6:
+                h = min(h, R["X"][i] - run)
+            if uF is not None and X != i and u + r >= uF - 1e-6 and 0 < uF - (u + h) < least:
+                h = uF - u  # (the rest before the block: this panel's)
+            if h <= 1e-9:
+                h = r if r > 1e-9 else s[1] - u
+            out.append((i, h))
+            run = run + h if cur == i else h
+            cur, after_user = i, False
+            u += h
+        merged = []
+        for who, h in out:
+            if merged and merged[-1][0] == who:
+                merged[-1] = (who, merged[-1][1] + h)
+            else:
+                merged.append((who, h))
+        return merged
 
     def stride(self, offset: float = 0.5) -> list:
         """The window at the shares, nobody never: the base policy alone."""

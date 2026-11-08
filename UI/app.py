@@ -251,7 +251,7 @@ class Session:
         self._preview = None  # the rules being put in place: what the window shows meanwhile
         self.preview_hook = None  # what shows it (the window's: gui.App._publish)
         self.dragging = False  # set by what drags a block of the user's: the instant layer's fill alone meanwhile
-        self.refine = False  # the instant layer's rolling pass (Instant._rolled): off until it holds
+        self.refine = True  # the instant layer's rolling pass (Instant._rolled)
         self.sim = Simulation(LineState.empty(), self.generator(self.rs), self.chip, self.modes)
         self.sim.background = True
         self._running = None  # (request id, process): the generator run going on

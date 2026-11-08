@@ -51,7 +51,7 @@ class Instant:
         self.periods = sorted({k for t in score.tasks.values() for k in t.resilience})
         self._days: dict = {}  # (lo, hi) -> (inputs, the day's schedule)
         self._rolls: dict = {}  # (lo, hi) -> (the day's fill and what it was read with, the rolling pass)
-        self.refine = False  # the rolling pass (`_rolled`): off, gaps_to_solve_later.md (§ The two paces compared)
+        self.refine = True  # the rolling pass (`_rolled`); False while the user drags (the fill alone)
         self.constraints = tuple(constraints)
         for k in self.constraints:
             if hasattr(k, "bind"):
@@ -149,19 +149,15 @@ class Instant:
 
     # The rolling pass (`_rolled`): the day in parts of PART, each read by the score from its own
     # start, as a step reads its slice (the score discounts what is ahead over Theta: read from the
-    # day's start it judges the first hour only), each part the fill's or the score's own stride's,
-    # whichever the score puts lower on the part and LOOK after it, then POLISH of the step's own
-    # improvement; the part kept, the next read on the line with it. Cached by the day's fill (what
-    # the day's schedule depends on, read at once): the same fill, the same pass, the line around
-    # it changing every tick or not. `refine` False (while the user drags: the drawing sets it):
-    # the fill alone, 5ms a day; the pass is about 10 to 30 times that. Two things the pass never
-    # shows, whatever the score says: nobody where a task could be, and a panel of a block's own
-    # task against a block of the user's where the fill has none (the user's hour of A with B
-    # against both sides; the score is nearly indifferent there, its compensation spread over its
-    # length, and the steps may still put A there: gaps_to_solve_later.md).
+    # day's start it judges the first hour only): on each, the score's own stride with the rules the
+    # instant schedule keeps (score_search.Model.ruled: a task's maximum, no block's own task
+    # against it, no sliver before a block, nobody never), its phase the one the score puts lowest
+    # on the part and LOOK after it; the part kept, the next read on the line with it. No time in
+    # it: the same line, the same days. Cached by the day's fill (read at once): the same fill,
+    # the same pass, the line around it changing every tick or not. `refine` False (while the user
+    # drags: the drawing sets it): the fill alone, 5ms a day.
     PART = 2 * 3600
     LOOK = 2 * 3600
-    POLISH = 0.005  # seconds of Model.improve per part
     STRIDES = (0.25, 0.5, 0.75)  # the score's own stride policies tried against the fill
     ROLLED = 64  # days of passes kept
 
@@ -212,40 +208,14 @@ class Instant:
             except Exception:
                 m = None
             if m is not None and m.U > 0:
-                def idle(r):  # (nobody where a task could be: never shown, whatever the score says)
-                    u = 0.0
-                    for who, h in r:
-                        if who is None and any(st[4] and st[0] < u + h - 1e-6 and st[1] > u + 1e-6 for st in m.st):
-                            return True
-                        u += h
-                    return False
-                blocks = [(i, _lo(iv), _hi(iv)) for i in self.tasks for iv in state.claims.owned(i, USER).on(t - 1, w + 1).intervals]
-
-                def own_side(wall):  # (a panel of a user block's own task against it: the block looks longer)
-                    n = 0
-                    for i, x, y in blocks:
-                        for p0, p1 in wall.get(i, ()):
-                            if p1 == x or p0 == y:
-                                n += 1
-                    return n
-                sides = own_side(part)
-
-                def ok(r):
-                    return not idle(r) and own_side(m.to_wall(r)) <= sides
-                runs = m.from_wall(part)
-                best, chosen = m.cost(runs), None
-                for off in self.STRIDES:
-                    r = m.stride(off)
+                # (one policy: the score's stride with the instant schedule's rules, Model.ruled,
+                # its phase the one the score puts lowest on the part and LOOK after it)
+                best = None
+                for r in [m.ruled(off) for off in self.STRIDES] + [m.from_wall(part)]:  # (and the fill's, cut to the part)
                     c = m.cost(r)
-                    if c < best and ok(r):
-                        runs, best, chosen = r, c, r
-                if self.POLISH > 0:
-                    m.deadline = time.perf_counter() + self.POLISH
-                    r = m.improve(runs)
-                    if m.cost(r) < best and ok(r):
-                        chosen = r
-                if chosen is not None:
-                    pick = m.to_wall(chosen)
+                    if best is None or c < best[0]:
+                        best = (c, r)
+                pick = m.to_wall(best[1])
             kept = {i: [(max(x, t), min(y, e)) for x, y in v if y > t and x < e] for i, v in pick.items()}
             for i, v in kept.items():
                 v = [(x, y) for x, y in v if y > x]

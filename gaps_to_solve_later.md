@@ -317,17 +317,15 @@ everywhere needs it read from each part's own start, as the steps read their sli
 pass of cheap steps: about 10 to 20 times the fill's cost in Python). Off (`Instant.BEST`).
 Also open: a block of the user's inside the night (its task's resilience 0 there): the model
 scores 1% to 4% of what the score does (seeds 20 and 31).
-The rolling pass, built 2026-11-08 (`Instant._rolled`, off: `Instant.refine`, `Session.refine`):
-parts of 2h, each read by the score from its own start with 2h after it, the fill or the score's
-stride kept by the score, 5ms of `Model.improve`, a part ending at a block of the user's near its
-end, nobody and a block's own task against it never picked. Measured on the 40 cases: 1.37 times
-the step's J (the fill alone 1.87), 50 to 300ms a window. Off because, on the user's hour of A:
-- a 1min or 5min sliver of B before the block at some drag steps (J2 1168 to 3057 where the fill
-  scores 57 to 116): the candidates are the day's fill cut at the part (its phase no longer the
-  parts before's) and the score's stride, which puts A against the block (refused) or the sliver;
-  the fill computed again from each part's start broke two other tests;
-- not the same from one run to the next: the improvement is bounded by time, not by steps (what
-  is shown must stay the same when the user comes back).
-What would hold: one policy, not two mixed by part: the fill's rules (a task's maximum, the rest
-before a block given to the panel before it, never a block's own task against it) put into the
-score's stride (`Model.base`, the exact targets and lags), bounded by steps, rolled by parts.
+The rolling pass (`Instant._rolled`, on since 2026-11-08; the fill alone while the user drags,
+`Session.dragging`): each part of 2h read by the score from its own start with 2h after it; on
+it the score's stride with the instant schedule's rules (`Model.ruled`: a task's maximum, no
+block's own task against it, no sliver before a block, a panel cut at the part's end finished
+first, nobody never) at three phases, or the fill cut to the part, the lowest kept. No time in
+it: the same line gives the same days. Measured on the 40 cases: 1.40 times the step's J (the
+fill alone 1.87), 13 of 40 with a finding, worst 4.2; about 75ms a window (the fill: 5).
+First tried as the fill and the score's plain stride mixed by part (1.37) and left: slivers of
+B before the user's block, and an improvement bounded by time, not the same from run to run.
+Open: on the pass's plans the step's model is 0.8% and 1.8% off the score (seeds 16 and 32 of
+compare_paces.py; on the fill's within 0.15%), cause not found; short panels away from blocks
+remain (4 of the 40 cases: a 1min C, a 13min B with a 30min minimum, ...).

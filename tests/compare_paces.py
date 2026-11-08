@@ -41,6 +41,7 @@ from score import Score, Task  # noqa: E402
 
 MIN, HOUR, DAY = 60, 3600, 86400
 WORSE = 1.5
+REFINE = os.environ.get("REFINE", "1") == "1"  # the instant layer's rolling pass (Instant.refine)
 
 
 def scenario(seed: int) -> dict:
@@ -107,6 +108,7 @@ def compare(sc: dict, budget: float = 2.0) -> tuple:
     a, b = pace.slice(chip, 0)
     end = b + pace.AHEAD
     inst = Instant(rules, score)
+    inst.refine = REFINE
     began = time.perf_counter()
     got = inst.schedule(st, a, end, start=a)  # (as the window shows it where the plan ends at a)
     quick = apply_edit(rules, st, [Op.put(k, _region(v)) for k, v in got.items()], "generated") if got else st

@@ -341,6 +341,14 @@ screen and the three breaks; the breaks and periods its panels carry; its panels
   instant schedule (557912 against 483310). Fixed: the model now equals the score on every chip;
 - after the fix the step is never worse than the instant schedule; the instant schedule is within
   2% of the step on 6 of 8 chips, 17% at the first;
-- OmniApp's own plan (its panels ahead) scores 1.3 to 3.5 times line_manager's instant schedule on
-  the same windows. Not yet a verdict on OmniApp's scheduler: the export has no sets of tasks
-  (`PlanTask.credits`), and the breaks past its panels' 18 hours are not in it.
+- OmniApp's own plan (its panels ahead) against line_manager's instant schedule, 90 days of past
+  exported (a 0.7% task's lag reaches weeks back), the account holding no set of tasks, only the
+  windows its panels cover (18 hours): line_manager's score puts OmniApp's plan 1.3, 2.2, 4.3 and
+  3.4 times the instant schedule's J on 4 windows; OmniApp's own score (ScoreModel, built as
+  ScheduleFill builds it, the same past replayed) puts it 1.7, 6.9, 4.4 and 2.1 times. The same
+  direction everywhere: OmniApp's current plan is the worse one by its own score. What it does:
+  its time to the 10% and 26% tasks, where the instant schedule repays the 0.7% to 2% ones.
+  OmniApp's plan read is the one stored at the export (made at its last re-plan, maybe hours old).
+- The two implementations of the score do not agree in magnitude (the ratios above): one of them
+  reads the document differently somewhere (the past, the tail, the compensation). To find before
+  the port: score the same plans with both on small cases until they agree.

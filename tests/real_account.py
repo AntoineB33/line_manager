@@ -70,6 +70,15 @@ def load(path: str):
         (user if p["user"] else app).setdefault(k, []).append((s(p["start"]), s(p["end"])))
     if user:
         st = apply_edit(rules, st, [Op.put(k, _region(v)) for k, v in user.items()], "user")
+    # OmniApp's panels run on under a break or a period the task may not be in (the period covers the
+    # panel, it does not cut it): what the task is served is the panel less those
+    for k, v in app.items():
+        off = IntervalSet()
+        for kind, r in score.tasks[k].resilience.items():
+            if r == 0 and kind in by_kind:
+                off = off | IntervalSet(by_kind[kind])
+        got = IntervalSet([Iv(a, b, False, True) for a, b in sorted(v) if b > a]) - off
+        app[k] = [(F(getattr(iv.lo, "x", iv.lo)), F(getattr(iv.hi, "x", iv.hi))) for iv in got.intervals]
     return rules, score, st, app, s(d["now"]), names
 
 
@@ -87,7 +96,7 @@ def compare(rules, score, st, app, chip, budget=2.0):
     pace = Pace(rules, score)
     a, b = pace.slice(chip, 0)
     end = b + pace.AHEAD
-    past = _clip(app, chip - 2 * DAY, a)  # (what OmniApp served and planned before the window: the same for all three)
+    past = _clip(app, chip - 120 * DAY, a)  # (what OmniApp served and planned before the window: the same for all three)
     base = apply_edit(rules, st, [Op.put(k, _region(v)) for k, v in past.items()], "generated") if past else st
     pre = ScoreProblem(score, window=end - a)._preplaced(base)
     out = {}

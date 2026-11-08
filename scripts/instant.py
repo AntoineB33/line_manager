@@ -50,6 +50,8 @@ class Instant:
         self.tasks = sorted(score.tasks)
         self.periods = sorted({k for t in score.tasks.values() for k in t.resilience})
         self._days: dict = {}  # (lo, hi) -> (inputs, the day's schedule)
+        self._rolls: dict = {}  # (lo, hi) -> (the day's fill and what it was read with, the rolling pass)
+        self.refine = False  # the rolling pass (`_rolled`): off, gaps_to_solve_later.md (§ The two paces compared)
         self.constraints = tuple(constraints)
         for k in self.constraints:
             if hasattr(k, "bind"):
@@ -136,8 +138,8 @@ class Instant:
             return got[1]
         rare = self._rare(state, lo, hi)
         day = self._fill(state, lo, hi, rare)
-        if self.BEST and not self.rare(self.score.rule_state(lo)):  # (the stride would place a rare task by its lag)
-            day = self._best(state, lo, hi, day)
+        if self.refine and not self.rare(self.score.rule_state(lo)):  # (a rare task: at its due dates, not by its lag)
+            day = self._rolled(state, lo, hi, day)
         for i, v in rare.items():
             day.setdefault(i, []).extend(v)
         if len(self._days) >= self.CACHE:
@@ -145,50 +147,128 @@ class Instant:
         self._days[(lo, hi)] = (inputs, day)
         return day
 
-    # `_best`, off: measured 2026-11-08 on tests/compare_paces.py, it brings the instant schedule
-    # from 1.87 to 1.22 times the step's J (geometric mean of 40 cases), but costs 60ms a day where
-    # the fill costs 5 (a drag stutters), and the score read from the day's start weighs only its
-    # first hour (its discount): past it the pick is blind (a 1min sliver of B before the user's
-    # block of A, 6 hours in): gaps_to_solve_later.md
-    BEST = False
-    POLISH = 0.02  # seconds of Model.improve per day (`_best`)
-    STRIDES = (0.25, 0.5, 0.75)  # the score's own stride policies tried against the fill (`_best`)
+    # The rolling pass (`_rolled`): the day in parts of PART, each read by the score from its own
+    # start, as a step reads its slice (the score discounts what is ahead over Theta: read from the
+    # day's start it judges the first hour only), each part the fill's or the score's own stride's,
+    # whichever the score puts lower on the part and LOOK after it, then POLISH of the step's own
+    # improvement; the part kept, the next read on the line with it. Cached by the day's fill (what
+    # the day's schedule depends on, read at once): the same fill, the same pass, the line around
+    # it changing every tick or not. `refine` False (while the user drags: the drawing sets it):
+    # the fill alone, 5ms a day; the pass is about 10 to 30 times that. Two things the pass never
+    # shows, whatever the score says: nobody where a task could be, and a panel of a block's own
+    # task against a block of the user's where the fill has none (the user's hour of A with B
+    # against both sides; the score is nearly indifferent there, its compensation spread over its
+    # length, and the steps may still put A there: gaps_to_solve_later.md).
+    PART = 2 * 3600
+    LOOK = 2 * 3600
+    POLISH = 0.005  # seconds of Model.improve per part
+    STRIDES = (0.25, 0.5, 0.75)  # the score's own stride policies tried against the fill
+    ROLLED = 64  # days of passes kept
 
-    def _best(self, state, lo, hi, fill: dict) -> dict:
-        """The fill, or the stride on the score's own targets (score_search.Model.stride: the
-        targets with the compensation around the user's blocks, the lags as the score has them)
-        if the score puts it lower: each is better where the other is not (the fill keeps a
-        task's runs under its maximum, the stride reads the compensation), both in milliseconds."""
+    def _rolled(self, state, lo, hi, fill: dict) -> dict:
+        """The day [lo, hi) by the rolling pass (above), from its fill."""
+        key = (lo, hi, tuple(sorted((k, tuple(v)) for k, v in fill.items())), self.rules, self.score)
+        got = self._rolls.get(key[:2])
+        if got is not None and got[0][2] == key[2] and got[0][3] is key[3] and got[0][4] is key[4]:
+            return got[1]
+        out = self._roll(state, lo, hi, fill)
+        if len(self._rolls) >= self.ROLLED:
+            self._rolls.pop(next(iter(self._rolls)))
+        self._rolls[key[:2]] = (key, out)
+        return out
+
+    def _roll(self, state, lo, hi, fill: dict) -> dict:
+        import time
         from types import SimpleNamespace
+        from line import Line, LineState
         from score import ScoreProblem
         from score_search import Model
-        try:
-            m = Model(ScoreProblem(self.score, window=hi - lo), SimpleNamespace(c=lo, state=state, gen=SimpleNamespace(rules=self.rules)), state, 60)
-        except Exception:
-            return fill
-        if m.U <= 0:
-            return fill
-        import time
-        runs = m.from_wall(fill)
-        key, picked = m.cost(runs), None
-        def idle(r):  # (nobody where a task could be: never shown, whatever the score says)
-            u = 0.0
-            for who, h in r:
-                if who is None and any(st[4] and st[0] < u + h - 1e-6 and st[1] > u + 1e-6 for st in m.st):
-                    return True
-                u += h
-            return False
-        for off in self.STRIDES:
-            r = m.stride(off)
-            c = m.cost(r)
-            if c < key and not idle(r):
-                runs, key, picked = r, c, r
-        if self.POLISH > 0:  # (the step's own improvement, a few milliseconds of it)
-            m.deadline = time.perf_counter() + self.POLISH
-            r = m.improve(runs)
-            if m.cost(r) < key and not idle(r):
-                runs, picked = r, r
-        return m.to_wall(picked) if picked is not None else fill
+        lo, hi = Fraction(lo), Fraction(hi)
+        day = Region.of(Interval(lo, hi, False, True))
+        # the line without the generator's tasks of the day (what the day's schedule replaces)
+        vals = dict(state.line.vals)
+        for i in self.tasks:
+            if i in vals:
+                gen = state.claims.owned(i, GEN) & day
+                vals[i] = {v: r - gen for v, r in vals[i].items()}
+        base = vals
+        out: dict = {}
+        t = lo
+        starts = sorted(_lo(iv) for i in self.tasks for iv in state.claims.owned(i, USER).on(lo, hi).intervals)
+        while t < hi:
+            e = min(t + self.PART, hi)
+            # (a part ends where a block of the user's starts near its end: what comes before the
+            # block decided in one part, not a panel of it cut at the part's end to its last minute)
+            near = [x for x in starts if t + self.PART / 4 < x <= t + self.PART * 5 / 4 and x < hi]
+            if near:
+                e = near[0]
+            w = min(e + self.LOOK, hi + self.LOOK)
+            cur = LineState(state.claims, Line(base), state.history)
+            part = {i: [(max(x, t), min(y, w)) for x, y in v if y > t and x < w] for i, v in fill.items()}
+            part = {i: v for i, v in part.items() if v}
+            pick = part
+            try:
+                m = Model(ScoreProblem(self.score, window=w - t), SimpleNamespace(c=t, state=cur, gen=SimpleNamespace(rules=self.rules)), cur, 60)
+            except Exception:
+                m = None
+            if m is not None and m.U > 0:
+                def idle(r):  # (nobody where a task could be: never shown, whatever the score says)
+                    u = 0.0
+                    for who, h in r:
+                        if who is None and any(st[4] and st[0] < u + h - 1e-6 and st[1] > u + 1e-6 for st in m.st):
+                            return True
+                        u += h
+                    return False
+                blocks = [(i, _lo(iv), _hi(iv)) for i in self.tasks for iv in state.claims.owned(i, USER).on(t - 1, w + 1).intervals]
+
+                def own_side(wall):  # (a panel of a user block's own task against it: the block looks longer)
+                    n = 0
+                    for i, x, y in blocks:
+                        for p0, p1 in wall.get(i, ()):
+                            if p1 == x or p0 == y:
+                                n += 1
+                    return n
+                sides = own_side(part)
+
+                def ok(r):
+                    return not idle(r) and own_side(m.to_wall(r)) <= sides
+                runs = m.from_wall(part)
+                best, chosen = m.cost(runs), None
+                for off in self.STRIDES:
+                    r = m.stride(off)
+                    c = m.cost(r)
+                    if c < best and ok(r):
+                        runs, best, chosen = r, c, r
+                if self.POLISH > 0:
+                    m.deadline = time.perf_counter() + self.POLISH
+                    r = m.improve(runs)
+                    if m.cost(r) < best and ok(r):
+                        chosen = r
+                if chosen is not None:
+                    pick = m.to_wall(chosen)
+            kept = {i: [(max(x, t), min(y, e)) for x, y in v if y > t and x < e] for i, v in pick.items()}
+            for i, v in kept.items():
+                v = [(x, y) for x, y in v if y > x]
+                if not v:
+                    continue
+                out.setdefault(i, []).extend(v)
+                r = Region.of(IntervalSet([Interval(x, y, False, True) for x, y in v]))
+                d = dict(base.get(i, {}))
+                d[Fraction(100)] = d[Fraction(100)] | r if Fraction(100) in d else r
+                base = dict(base)
+                base[i] = d
+            t = e
+        # (neighbours of a task across a part's end: one panel)
+        for i, v in out.items():
+            v.sort()
+            merged = [v[0]]
+            for x, y in v[1:]:
+                if x <= merged[-1][1]:
+                    merged[-1] = (merged[-1][0], max(merged[-1][1], y))
+                else:
+                    merged.append((x, y))
+            out[i] = merged
+        return out
 
     def rare(self, R) -> list:
         return [i for i in self.tasks if R["pi"][i] > 0 and R["tau"][i] > self.RARE]

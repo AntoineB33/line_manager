@@ -80,6 +80,7 @@ class InstantTest(unittest.TestCase):
         rs = parse_rules(["A → no B"])
         sc = Score({"A": Task(1, 10 * MIN), "B": Task(1, 10 * MIN)})
         inst = Instant(rs, sc)
+        inst.refine = False  # (while dragging: the fill alone; let go, the rolling pass: below)
         chip = F(10 * DAY)
         lo, hi = chip, chip + DAY
         took = []
@@ -99,6 +100,39 @@ class InstantTest(unittest.TestCase):
                         self.assertGreaterEqual(y - x, 10 * MIN, (n, k, x - a, y - a))
         took.sort()
         self.assertLess(took[len(took) // 2], 0.05)
+
+    @unittest.expectedFailure  # (a 1 or 5 min sliver of B before the block at some steps, and the
+    # pass not the same from one run to the next: gaps_to_solve_later.md, § The two paces compared)
+    def test_the_rolling_pass_when_the_block_is_let_go(self):
+        """The same block let go: the rolling pass (the score read from each part's start) keeps B
+        against both sides, leaves nobody nowhere, scores no worse than the fill there, and takes
+        well under a second for the day."""
+        from instant import displayed
+        from score import ScoreProblem
+        rs = parse_rules(["A → no B"])
+        sc = Score({"A": Task(1, 10 * MIN), "B": Task(1, 10 * MIN)})
+        chip = F(10 * DAY)
+        lo, hi = chip, chip + DAY
+        for n in (0, 1, 5, 10):
+            a = chip + 6 * HOUR + n * MIN
+            st = apply_edit(rs, LineState.empty(), [Op.put("A", Region.of(Iv(a, a + HOUR, False, True)))], "user")
+            got = {}
+            for refine in (False, True):
+                inst = Instant(rs, sc)
+                inst.refine = refine
+                began = time.perf_counter()
+                got[refine] = displayed(inst, st.line, st.claims, st.history, lo, hi, chip=chip)[0]
+                took = time.perf_counter() - began
+            self.assertLess(took, 1.0)
+            line = got[True]
+            A, B = line.presence("A").on(lo, hi), line.presence("B").on(lo, hi)
+            self.assertTrue(B.contains(a - F(1, 2)) and B.contains(a + HOUR + F(1, 2)), n)
+            self.assertFalse((IntervalSet.of(Iv(lo, hi, False, False)) - A - B).intervals, n)
+            pre = ScoreProblem(sc, window=DAY)._preplaced(st)
+            # (each part as the pass reads it: from its own start, the part with the block)
+            part = lo + ((a - lo) // (2 * HOUR)) * 2 * HOUR
+            self.assertLessEqual(sc.evaluate(line, part, part + 4 * HOUR, pre).J,
+                                 sc.evaluate(got[False], part, part + 4 * HOUR, pre).J * 1.05, n)
 
     def test_a_dragged_block_leaves_less_around_it(self):
         """The user's 4h of A: over the 8h after it, A has less than without the block, and the

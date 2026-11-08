@@ -250,6 +250,8 @@ class Session:
         self.changes: dict[F, str] = {}  # by the user: the mode from each position on
         self._preview = None  # the rules being put in place: what the window shows meanwhile
         self.preview_hook = None  # what shows it (the window's: gui.App._publish)
+        self.dragging = False  # set by what drags a block of the user's: the instant layer's fill alone meanwhile
+        self.refine = False  # the instant layer's rolling pass (Instant._rolled): off until it holds
         self.sim = Simulation(LineState.empty(), self.generator(self.rs), self.chip, self.modes)
         self.sim.background = True
         self._running = None  # (request id, process): the generator run going on
@@ -292,6 +294,7 @@ class Session:
         if getattr(self, "_instant", None) is None or self._instant[0] is not rs:
             self._instant = (rs, Instant(rs, score, self.constraints))
         inst = self._instant[1]
+        inst.refine = self.refine and not self.dragging  # (while the user drags a block: the fill alone, Instant._rolled)
         chip = F(self.position)
         if rs is not self.rs or self.sim.script_gen is not self.sim.gen or self._edited_since_script():
             # the script in place is not of the rules in place (they just changed, or no run yet):

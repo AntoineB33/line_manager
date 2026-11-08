@@ -138,5 +138,13 @@ What it was, and what changed:
 - `mode_rules._affine_region` reads a period past where each region's core is written to end:
   a region written differently (cells) is the same set, and its run's formula still holds.
 
-Left: 246.6s for the three kinds is still far too slow for a run, and the run with account 3's
-tasks and the score has not been measured since.
+Lazy regions (`region.Lazy`, 2026-11-08): two regions whose tails repeat together only after
+more than a week are kept as the operation, read in windows, and computed whole only when a
+whole-region question is asked (emptiness first looks for a piece near the operands). Exact
+(`test_lazy_region`: random chains against the regions computed at once). The three kinds with
+a night: 246.6s -> 213.5s. Not more, because the solver (its cells, the region stage), the gap
+rules (`MinimumGap.long`) and the resolver ask whole-region questions at every decision of the
+now line: each makes the 61-day "no screen" whole again (about 30 such computations of 1-4s per
+run). What would end it: those layers working in a window near the chip where the rules allow
+it (local rules, bounded gaps): a decision at the chip then costs what that window holds.
+The run with account 3's tasks and the score has not been measured since.

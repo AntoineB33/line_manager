@@ -245,7 +245,10 @@ class Region:
         return (self.on(a, b + 1) & window).measure()
 
     # ------------------------------------------------------------ algebra
-    def _combine(self, other: Region, op) -> Region:
+    def _combine(self, other: Region, op, name: str | None = None, lazy: bool = True) -> Region:
+        if lazy and name is not None:
+            if isinstance(self, Lazy) or isinstance(other, Lazy) or _long_together(self, other):
+                return Lazy(name, self, other)
         if not (self.left or self.right or other.left or other.right):  # both bounded: the cores only
             core = op(self.core, other.core)
             if not core:
@@ -264,23 +267,31 @@ class Region:
         return Region(lo, hi, core, pl, left, pr, right)._compact()
 
     def __or__(self, other: Region) -> Region:
+        if isinstance(other, Lazy):
+            return self._combine(other, _OPS["or"], "or")
         if other.is_empty():
             return self
         if self.is_empty():
             return other
-        return self._combine(other, lambda a, b: a | b)
+        return self._combine(other, _OPS["or"], "or")
 
     def __and__(self, other: Region) -> Region:
         if self.is_empty():
             return self
+        if isinstance(other, Lazy):
+            return self._combine(other, _OPS["and"], "and")
         if other.is_empty():
             return other
-        return self._combine(other, lambda a, b: a & b)
+        return self._combine(other, _OPS["and"], "and")
 
     def __sub__(self, other: Region) -> Region:
-        if self.is_empty() or other.is_empty():
+        if self.is_empty():
             return self
-        return self._combine(other, lambda a, b: a - b)
+        if isinstance(other, Lazy):
+            return self._combine(other, _OPS["sub"], "sub")
+        if other.is_empty():
+            return self
+        return self._combine(other, _OPS["sub"], "sub")
 
     def complement(self) -> Region:
         return Region(self.lo, self.hi, _window(self.lo, self.hi) - self.core,
@@ -446,6 +457,182 @@ class Region:
 # regions are never modified once built: these are shared
 _EMPTY = Region(ZERO, ZERO, IntervalSet())
 _UNIVERSE = Region.of(IntervalSet.universe())
+
+_OPS = {"or": lambda a, b: a | b, "and": lambda a, b: a & b, "sub": lambda a, b: a - b}
+LAZY_PERIOD = 7 * 86400  # two tails that repeat together only after more than this: a lazy region
+LAZY_DEPTH = 24  # a lazy region built on this many others is computed (its reads would chain too far)
+
+
+def _long_together(a: Region, b: Region) -> bool:
+    """Whether combining a and b would give a tail repeating only after LAZY_PERIOD (the 20s
+    breaks every 1220 and the night every 86400: 61 days)."""
+    for pa, ka, pb, kb in ((a.right, a.pr, b.right, b.pr), (a.left, a.pl, b.left, b.pl)):
+        if pa and pb and ka != kb and not _constant(pa, ka) and not _constant(pb, kb):
+            try:
+                if plcm(ka, kb).x > LAZY_PERIOD:
+                    return True
+            except IncompatiblePeriods:
+                return False
+    return False
+
+
+class Lazy(Region):
+    """A region kept as the operation that makes it, computed only where it is read.
+
+    Two regions whose tails repeat together only after a long period (a night every 86400 and
+    20s breaks every 1220: 61 days, thousands of pieces) are combined lazily: reading a window
+    (`on`) or a position (`contains`) reads the operands there, and further unions,
+    intersections, differences, complements and shifts stay lazy. What needs the whole of it
+    (its tails and bounds, emptiness, equality, its text) computes it once, exactly as a Region
+    is computed, and keeps it. So nothing it answers differs from the Region it stands for:
+    only when the work is done does."""
+
+    __slots__ = ("_op", "_a", "_b", "_d", "_full", "_depth")
+
+    def __init__(self, op: str, a, b=None, d=None) -> None:
+        self._op, self._a, self._b, self._d = op, a, b, d
+        self._full = None
+        self._depth = 1 + max(a._depth if isinstance(a, Lazy) else 0, b._depth if isinstance(b, Lazy) else 0)
+        if self._depth > LAZY_DEPTH:
+            self.full()
+
+    def full(self) -> Region:
+        """The region itself, computed once."""
+        if self._full is None:
+            op, a = self._op, _eager(self._a)
+            if op in _OPS:
+                b = _eager(self._b)
+                if op == "or" and (a.is_empty() or b.is_empty()):
+                    out = b if a.is_empty() else a
+                elif op != "or" and (a.is_empty() or b.is_empty()):
+                    out = a if op == "sub" else _EMPTY
+                else:  # (the plain operation of Region: a subclass's would make it lazy again)
+                    out = Region._combine(a, b, _OPS[op], op, lazy=False)
+            elif op == "comp":
+                out = a.complement()
+            elif op == "shift":
+                out = a.shift(self._d)
+            elif op == "dilate":
+                out = a.dilate(self._d)
+            elif op == "edges":
+                out = a.left_edges()
+            else:
+                raise ValueError(op)
+            self._full = out
+            self._a = self._b = None
+        return self._full
+
+    def __getattr__(self, name):
+        if name in ("lo", "hi", "core", "pl", "left", "pr", "right"):
+            return getattr(self.full(), name)
+        raise AttributeError(name)
+
+    def on(self, a, b) -> IntervalSet:
+        if self._full is not None:
+            return self._full.on(a, b)
+        a, b = num(a), num(b)
+        op = self._op
+        if op == "shift":
+            return self._a.on(a - self._d, b - self._d).shift(self._d)
+        if op == "dilate":  # (what reaches [a, b) comes from [a - hi - 1, b - lo + 1))
+            iv = self._d
+            got = self._a.on(a - iv.hi - 1, b - iv.lo + 1)
+            return IntervalSet(x + iv for x in got.intervals) & _window(a, b)
+        if op == "edges":  # (a start in [a, b) is the start of an interval read from a - 1)
+            got = self._a.on(a - 1, b)
+            return IntervalSet(Interval.point(iv.lo) for iv in got.intervals if a <= iv.lo and iv.lo != -INF)
+        x = self._a.on(a, b)
+        if op == "comp":
+            return _window(a, b) - x
+        return _OPS[op](x, self._b.on(a, b))
+
+    def contains(self, x) -> bool:
+        if self._full is not None:
+            return self._full.contains(x)
+        op = self._op
+        if op == "shift":
+            return self._a.contains(x - self._d)
+        if op in ("dilate", "edges"):
+            x = num(x)
+            return any(iv.lo <= x <= iv.hi for iv in self.on(x, x + EPS).intervals)
+        if op == "comp":
+            return not self._a.contains(x)
+        ia, ib = self._a.contains(x), self._b.contains(x)
+        return ia or ib if op == "or" else ia and ib if op == "and" else ia and not ib
+
+    def __or__(self, other: Region) -> Region:
+        return Lazy("or", self, other)
+
+    def __and__(self, other: Region) -> Region:
+        return Lazy("and", self, other)
+
+    def __sub__(self, other: Region) -> Region:
+        return Lazy("sub", self, other)
+
+    def complement(self) -> Region:
+        return Lazy("comp", self)
+
+    def shift(self, d) -> Region:
+        return Lazy("shift", self, None, num(d))
+
+    def dilate(self, iv: Interval) -> Region:
+        if self._full is not None or iv.lo == -INF or iv.hi == INF:
+            return self.full().dilate(iv)
+        return Lazy("dilate", self, None, iv)
+
+    def left_edges(self) -> Region:
+        if self._full is not None:
+            return self._full.left_edges()
+        return Lazy("edges", self)
+
+    PROBE = 3 * 86400  # how wide each window read to find a piece is (`is_empty`)
+
+    def is_empty(self) -> bool:
+        """Empty or not, exactly: a piece found in a window near where the operands start says
+        no at once; only when none is found is the whole of it computed."""
+        if self._full is not None:
+            return self._full.is_empty()
+        for h in self._hints():
+            if self.on(h - self.PROBE, h + self.PROBE).intervals:
+                return False
+        return self.full().is_empty()
+
+    def _hints(self) -> list:
+        """Positions near which the operands start: where to look for a piece first."""
+        out, todo = [], [self]
+        while todo and len(out) < 6:
+            r = todo.pop()
+            if isinstance(r, Lazy) and r._full is None:
+                todo += [x for x in (r._a, r._b) if isinstance(x, Region)]
+            else:
+                r = _eager(r)
+                if not r.is_empty():
+                    out.append(r.lo if r.lo != -INF else r.hi)
+        return out or [ZERO]
+
+    def __bool__(self) -> bool:
+        return not self.is_empty()
+
+    def __eq__(self, other) -> bool:
+        return self.full() == _eager(other)
+
+    def __hash__(self) -> int:
+        return hash(self.full())
+
+    def __str__(self) -> str:
+        return str(self.full())
+
+    def __reduce__(self):
+        return (_same_region, (self.full(),))
+
+
+def _same_region(r: Region) -> Region:
+    return r
+
+
+def _eager(r):
+    return r.full() if isinstance(r, Lazy) else r
+
 
 def _period(pa: IntervalSet, a: Pos, pb: IntervalSet, b: Pos) -> Pos:
     """A period for combining two tails: a constant tail goes with any period."""

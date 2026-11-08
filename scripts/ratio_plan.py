@@ -114,17 +114,28 @@ class Built(Region):
     __slots__ = ("src",)  # the call's text, or (operator, left, right): the operation on two regions
 
     def __and__(self, other):
+        if _lazy_with(self, other):  # (a region read where asked: no call to keep, region.Lazy)
+            return Region.__and__(self, other)
         if self.issubset(other):
             return self
         return _built(Region.__and__(self, other), ("&", self, other))
 
     def __sub__(self, other):
+        if _lazy_with(self, other):
+            return Region.__sub__(self, other)
         if (Region.__and__(self, other)).is_empty():
             return self
         return _built(Region.__sub__(self, other), ("-", self, other))
 
     def __or__(self, other):
+        if _lazy_with(self, other):
+            return Region.__or__(self, other)
         return _built(Region.__or__(self, other), ("|", self, other))
+
+
+def _lazy_with(a: Region, b: Region) -> bool:
+    from region import Lazy, _long_together
+    return isinstance(b, Lazy) or _long_together(a, b)
 
 
 def _built(r: Region, src) -> Built:

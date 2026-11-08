@@ -148,3 +148,15 @@ now line: each makes the 61-day "no screen" whole again (about 30 such computati
 run). What would end it: those layers working in a window near the chip where the rules allow
 it (local rules, bounded gaps): a decision at the chip then costs what that window holds.
 The run with account 3's tasks and the score has not been measured since.
+
+## The instant schedule (instant.py), measured 2026-11-08
+Account 3's shape (22 tasks at its shares, 45min minimum, resilience 0 to "no screen"), the
+three breaks and the night placed by one generator run (280s): a day's instant schedule takes
+133ms near the chip and 165ms 1000 years ahead, no task in "no screen", no idle time, the
+largest shares within a few points of their targets (T458 0.30-0.32 for 0.26).
+- Not read: rules other than "X → no T" (a task that brings another, percentages); the
+  quantities by a date; the formulas past the window's start (read at its start).
+- 133ms is a frame and a half at most rates: a drag recomputing a whole day at each event
+  would lag; only the part of the view that changed needs recomputing.
+- Regions far apart (an element 1000 years ahead with a night every day) are combined lazily
+  (`region._far_apart`): written out, the night would have been 365000 pieces.

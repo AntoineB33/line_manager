@@ -920,6 +920,15 @@ call ends it (`test_background_runs`).
   while the whole scores lower, the best kept. Its other proposals fill the window one panel
   at a time by criterion 1 one step ahead (`ScoreTest`, `ScoreProblemTest`). What it does not
   do yet: gaps_to_solve_later.md.
+- **The instant schedule** (`instant.py`; OmniApp's requirements § Two paces). What the
+  calendar shows where the generator has not made the schedule definitive: for any window,
+  at once, the tasks placed one at a time where they may be (not where a kind they have
+  resilience 0 to is, not where a rule "X → no T" forbids them, not on the user's tasks),
+  every position some task may have given to one, the task due first by stride at its local
+  share, its lag starting from a week before the window and counting the user's tasks as the
+  sweep goes through them. It reads the line in the window only, so a view 1000 years ahead
+  costs what a view of tomorrow costs (`InstantTest`). Rules of other shapes are not read: the
+  generator's runs keep them.
 - **Candidates.** Candidate edits are built in a fixed order:
   1. the no-op first;
   2. then, for each combination of a prediction of what mode rules will do in W and

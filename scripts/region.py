@@ -463,9 +463,26 @@ LAZY_PERIOD = 7 * 86400  # two tails that repeat together only after more than t
 LAZY_DEPTH = 24  # a lazy region built on this many others is computed (its reads would chain too far)
 
 
+LAZY_PIECES = 4096  # a combination that would write more periods than this between its parts: lazy
+
+
+def _far_apart(a: Region, b: Region) -> bool:
+    """Whether combining a and b would write a repeating tail out for many periods between them
+    (an element 1000 years ahead with a night every day: 365000 nights in the core)."""
+    for r, o in ((a, b), (b, a)):
+        if r.right and not _constant(r.right, r.pr) and o.hi > r.hi and (o.hi - r.hi).x / r.pr.x > LAZY_PIECES:
+            return True
+        if r.left and not _constant(r.left, r.pl) and o.lo < r.lo and (r.lo - o.lo).x / r.pl.x > LAZY_PIECES:
+            return True
+    return False
+
+
 def _long_together(a: Region, b: Region) -> bool:
     """Whether combining a and b would give a tail repeating only after LAZY_PERIOD (the 20s
-    breaks every 1220 and the night every 86400: 61 days)."""
+    breaks every 1220 and the night every 86400: 61 days), or write many periods out between
+    them (`_far_apart`)."""
+    if (a.left or a.right or b.left or b.right) and _far_apart(a, b):
+        return True
     for pa, ka, pb, kb in ((a.right, a.pr, b.right, b.pr), (a.left, a.pl, b.left, b.pl)):
         if pa and pb and ka != kb and not _constant(pa, ka) and not _constant(pb, kb):
             try:

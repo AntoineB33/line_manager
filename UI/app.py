@@ -299,7 +299,7 @@ class Session:
             if start == float("inf"):
                 return line, claims
             lo = max(F(a), F(start))
-            return displayed(inst, line, claims, history, lo, F(b))
+            return displayed(inst, line, claims, history, lo, F(b), F(start))
         return shown
 
     def plan_end(self, score) -> F:

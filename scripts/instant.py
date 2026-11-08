@@ -37,13 +37,93 @@ from region import Region
 
 
 class Instant:
-    LOOK_BACK = 7 * 86400  # how far before the window the lags are read
+    LOOK_BACK = 7 * 86400  # how far before a day the lags are read
+    DAY = 86400  # the days the future is cut into: each filled from its own start
+    RARE = 168 * 3600  # a task whose period is longer: placed at its due dates (scheduler_score.md)
+    CACHE = 256  # days kept
 
     def __init__(self, rules, score) -> None:
         """rules: the RuleSet; score: score.Score (its tasks: priorities, minimums, resilience)."""
         self.rules, self.score = rules, score
         self.tasks = sorted(score.tasks)
         self.periods = sorted({k for t in score.tasks.values() for k in t.resilience})
+        self._days: dict = {}  # (lo, hi) -> (inputs, the day's schedule)
+
+    def schedule(self, state, a, b, start=None) -> dict:
+        """{task: [(start, end), ...]} on [a, b): the instant schedule, the user's tasks left out
+        (they are on the line already), nothing before `start` (none by default; where the plan of
+        the scheduler's steps ends, for the window). The same at a position whatever the window it is read in:
+        the future is cut into days on a fixed grid (DAY from 0), each filled from its own start
+        (or from `start`, in the day it falls in), so looking at t, going away and coming back
+        shows the same, as long as the line, the rules and the score are the same (and a day
+        computed once is kept, `CACHE`). A rare task (its period over RARE) is placed at its due
+        dates, its last start on the line and one period after another: when the scheduler moves
+        it, its later ones move with it."""
+        a, b = Fraction(a), Fraction(b)
+        out: dict = {}
+        k = (max(a, start if start is not None else a) // self.DAY) * self.DAY
+        while k < b:
+            lo, hi = (max(k, Fraction(start)) if start is not None else k), k + self.DAY
+            if lo < hi:
+                for i, v in self._day(state, lo, hi).items():
+                    got = [(max(x, a), min(y, b)) for x, y in v if y > a and x < b]
+                    if got:
+                        out.setdefault(i, []).extend(got)
+            k += self.DAY
+        return out
+
+    def _day(self, state, lo, hi) -> dict:
+        """One day's instant schedule: the rare tasks at their due dates, then the others."""
+        inputs = (state.line, state.claims, self.rules, self.score)
+        got = self._days.get((lo, hi))
+        if got is not None and all(x is y for x, y in zip(got[0], inputs)):
+            return got[1]
+        rare = self._rare(state, lo, hi)
+        day = self._fill(state, lo, hi, rare)
+        for i, v in rare.items():
+            day.setdefault(i, []).extend(v)
+        if len(self._days) >= self.CACHE:
+            self._days.pop(next(iter(self._days)))
+        self._days[(lo, hi)] = (inputs, day)
+        return day
+
+    def rare(self, R) -> list:
+        return [i for i in self.tasks if R["pi"][i] > 0 and R["tau"][i] > self.RARE]
+
+    def _rare(self, state, lo, hi) -> dict:
+        """The rare tasks in [lo, hi): each at its due dates (its last start on the line before lo,
+        then one period after another; from 0 if it never was), at the first place from there
+        it may have for its minimum in the day."""
+        R = self.score.rule_state(lo)
+        out = {}
+        for i in self.rare(R):
+            tau = Fraction(R["tau"][i]).limit_denominator(1000)
+            M = Fraction(R["M"][i]).limit_denominator(1000)
+            before = state.line.presence(i) & Region.of(Interval(-INF, lo, False, False))
+            last = None
+            if not before.is_empty():
+                e = before.sup()
+                e = Fraction(e.x) if hasattr(e, "x") else Fraction(e)
+                piece = [iv for iv in before.on(e - 10 * tau - 1, e + 1).intervals]
+                last = Fraction(piece[-1].lo.x if hasattr(piece[-1].lo, "x") else piece[-1].lo) if piece else e
+            base = last if last is not None else Fraction(0)
+            n = max(1, -(-(lo - base) // tau)) if last is not None else max(0, -(-(lo - base) // tau))
+            due = base + n * tau
+            no = self._forbidden(state, i, lo, hi) | state.claims.owned(i, USER).on(lo, hi)
+            for j in self.tasks:
+                if j != i:
+                    no = no | state.claims.owned(j, USER).on(lo, hi)
+            while due < hi:
+                t = due
+                for _ in range(200):
+                    block = (no & IntervalSet.of(Interval(t, min(t + M, hi), False, True))).intervals if t < hi else []
+                    if not block:
+                        break
+                    t = Fraction(block[0].hi.x if hasattr(block[0].hi, "x") else block[0].hi)
+                if t < hi:
+                    out.setdefault(i, []).append((t, min(t + M, hi)))
+                due += tau
+        return out
 
     # ---- what the window holds
     def _forbidden(self, state, i, a, b) -> IntervalSet:
@@ -63,13 +143,16 @@ class Instant:
                     out = out | state.line.presence(kinds[0]).on(a, b)
         return out
 
-    def schedule(self, state, a, b) -> dict:
-        """{task: [(start, end), ...]} on [a, b): the instant schedule of the window, the user's
-        tasks left out (they are on the line already)."""
+    def _fill(self, state, a, b, rare=None) -> dict:
+        """The tasks but the rare ones on [a, b), filled from a: `rare` ({task: [(x, y)]}) are
+        there already, as the user's tasks are (served, nothing placed on them)."""
         a, b = Fraction(a), Fraction(b)
         R = self.score.rule_state(a)
         names = [i for i in self.tasks]
+        rare_names = set(self.rare(R))
         user = {i: state.claims.owned(i, USER).on(a, b) for i in names}
+        for i, v in (rare or {}).items():
+            user[i] = user[i] | IntervalSet([Interval(x, y, False, True) for x, y in v])
         no = {i: self._forbidden(state, i, a, b) for i in names}
         pres = {k: state.line.presence(k).on(a, b) for k in self.periods}
         L = self._lags(state, a, R)
@@ -94,7 +177,7 @@ class Instant:
                 self._serve(L, R, mine, float(nxt - t), self._shares(R, pres, no, mid, names))
                 t = nxt
                 continue
-            allowed = [i for i in names if R["pi"][i] > 0 and not _has(no[i], mid)]
+            allowed = [i for i in names if R["pi"][i] > 0 and i not in rare_names and not _has(no[i], mid)]
             if not allowed:  # nobody may be here (a night): not on the clock
                 t = nxt
                 continue
@@ -160,7 +243,7 @@ def _has(s: IntervalSet, x) -> bool:
     return False
 
 
-def displayed(instant: Instant, line, claims, history, lo, hi):
+def displayed(instant: Instant, line, claims, history, lo, hi, start=None):
     """(the line, the claims) the calendar shows on [lo, hi): the line, its tasks after `lo` (past
     the plan of the scheduler's steps) replaced by the instant schedule there, the user's tasks
     kept. The instant schedule's elements are the generator's, as those of the steps: shown as
@@ -170,7 +253,7 @@ def displayed(instant: Instant, line, claims, history, lo, hi):
     if lo >= hi:
         return line, claims
     state = LineState(claims, line, history)
-    got = instant.schedule(state, lo, hi)
+    got = instant.schedule(state, lo, hi, lo if start is None else start)
     after = Region.of(Interval(lo, hi, False, False))
     vals = dict(line.vals)
     shown = claims.copy()

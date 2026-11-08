@@ -127,6 +127,53 @@ class InstantTest(unittest.TestCase):
             self.assertFalse((r & ns).intervals, k)
 
 
+class SameAtTTest(unittest.TestCase):
+    """OmniApp's requirements: what the instant schedule shows at t stays as it was when the user
+    comes back to t (the same line, rules and score), whatever window t is seen in; a rare task
+    moved by the scheduler moves its later occurrences with it."""
+
+    # R: 1 hour every 1000 hours of what the tasks may have: about every 6 weeks, a rare task
+    TASKS = dict(InstantTest.TASKS, R=Task(F(8, 1000), HOUR, resilience={"Sleep": 0}))
+
+    def at(self, got, a, b):
+        return {k: [(max(x, a), min(y, b)) for x, y in v if y > a and x < b] for k, v in got.items()}
+
+    def test_the_same_at_t_whatever_the_window(self):
+        rs, st = night_state([])
+        inst = Instant(rs, Score(self.TASKS))
+        t = F(3 * 365 * DAY + 11 * HOUR)
+        first = self.at(inst.schedule(st, t - 5 * HOUR, t + 5 * HOUR), t, t + 2 * HOUR)
+        inst2 = Instant(rs, Score(self.TASKS))  # (computed again, not read from the days kept)
+        again = self.at(inst2.schedule(st, t - DAY, t + 20 * HOUR), t, t + 2 * HOUR)
+        self.assertEqual({k: v for k, v in first.items() if v}, {k: v for k, v in again.items() if v})
+
+    def test_a_rare_task_moved_by_the_scheduler_moves_later(self):
+        rs, st = night_state([])
+        sc = Score(self.TASKS)
+        tau = F(sc.rule_state(0)["tau"]["R"]).limit_denominator(1000)
+        self.assertGreater(tau, 168 * HOUR)
+        far = F(3 * 365 * DAY)
+        got = Instant(rs, sc).schedule(st, far, far + 2 * tau)
+        rs_at = [x for x, y in got.get("R", [])]
+        self.assertEqual(len(rs_at), 2)  # (one each period, at its due date or just after)
+        t = rs_at[0]
+        # the scheduler puts R in its slice, 3 years before: its later ones move with it
+        near = t - 1000 * tau + tau / 3
+        moved = apply_edit(rs, st, [Op.put("R", Region.of(Iv(near, near + HOUR, False, True)))], "generated")
+        after = Instant(rs, sc).schedule(moved, far, far + 2 * tau)
+        self.assertFalse(any(x <= t < y for x, y in after.get("R", [])))  # (R no longer at t)
+        self.assertEqual(len(after.get("R", [])), 2)
+
+    def test_a_day_computed_once_is_kept(self):
+        rs, st = night_state([])
+        inst = Instant(rs, Score(self.TASKS))
+        t = F(5 * 365 * DAY)
+        inst.schedule(st, t, t + DAY)
+        began = time.perf_counter()
+        inst.schedule(st, t, t + DAY)
+        self.assertLess(time.perf_counter() - began, 0.01)
+
+
 class DisplayedTest(unittest.TestCase):
     """What the window shows (instant.displayed, Session.display): the line where the steps made
     it definitive, the instant schedule past it, the user's tasks wherever they are."""

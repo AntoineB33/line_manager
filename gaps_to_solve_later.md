@@ -207,3 +207,15 @@ scores J 336321 against 485894 for the instant schedule of the same hour.
   branch-and-bound, could.
 - The breaks themselves are still placed by the generator's run (287s here): the steps only
   place the tasks. With the breaks' own edits computed near the chip, a step could place both.
+
+## The instant schedule, the same at t (2026-11-08)
+User rule: what was shown at t stays when the user comes back to t; a rare task the scheduler
+moves moves its later occurrences, so t may then show something else. Done by making the instant
+schedule a function of the line, the rules and the score only: the future is cut into days on a
+fixed grid, each filled from its own start (or from where the plan ends, in its day); a rare task
+(period over 168h) is placed at its due dates, its last start on the line and one period after
+another; days computed are kept (`Instant.CACHE`). `SameAtTTest`.
+- Rough: a rare task's period is read on the wall clock, not the schedulable one; a due date that
+  falls where the task may not be goes to the next place it may, within its day only.
+- The days start balanced (no lag carried from the day before): fine for the look of it, not
+  the score's continuity.

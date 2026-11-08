@@ -12,8 +12,10 @@ A step goes from a big picture down to its slice:
 3. the slice: finer moves (an eighth of the shorter run) on the runs that meet it, the whole
    still scored, while the rest of the budget lasts.
 Each part searches until its part of the budget is spent: once the improvement stops, the best
-plan is shaken a little and improved again, kept when better (Model.deepen), so a step uses all
-the time the pace gives it for the best schedule it can find.
+plan is shaken a little and improved again, kept when better (Model.deepen). The last part proves
+the slice: no plan of it of up to 3 runs ending on whole minutes scores lower, what follows as
+planned (Model.certify, exact: the score is a sum of one term per task); a better one found is
+taken. `info["proved"]` says whether the proof was finished in the budget.
 The whole look ahead is committed, the slice definitive and the rest a plan: a better schedule
 found from the big picture changes what is past the slice too. The next step starts from the
 line with it, its plan one of its seeds (the continuation a re-plan replaces), and replaces it
@@ -38,7 +40,9 @@ class Pace:
     STEP = 600  # each step's slice: 10 minutes
     BUDGET = 10.0  # each step's seconds
     AHEAD = 4 * 3600  # how far past its slice a step looks (its big picture)
-    WHOLE = 0.5  # the part of the budget for the hours ahead; the rest for the slice
+    HOURS = 0.4  # the part of the budget for the hours ahead, ...
+    SLICE = 0.7  # ... then up to this part for the slice, the rest to prove it best (Model.certify)
+    PROOF = dict(grid=60, max_runs=3)  # the plans the proof looks at: up to 3 runs on whole minutes
 
     def __init__(self, rules, score) -> None:
         self.rules, self.score = rules, score
@@ -58,7 +62,7 @@ class Pace:
         big = self.instant.schedule(state, a, end)
         problem = ScoreProblem(self.score, window=end - a)
         ctx = SimpleNamespace(c=a, state=state, gen=SimpleNamespace(rules=self.rules))
-        m = Model(problem, ctx, state, budget * self.WHOLE)
+        m = Model(problem, ctx, state, budget * self.HOURS)
         info = {"slice": (a, b)}
         if m.U <= 0:
             return self._commit(state, {}, a, b), info
@@ -84,11 +88,14 @@ class Pace:
         rnd = random.Random(n)  # (the same step decides the same: no chance in what it publishes)
         runs = m.deepen(runs, rnd)  # (the hours ahead: until their part of the budget is spent)
         info["hours ahead"] = m.cost(runs)
-        m.deadline = began + budget  # (the rest of the budget: the slice)
+        m.deadline = began + budget * self.SLICE  # (then the slice)
         focus = (m.u_of(a), m.u_of(b))
         runs = m.improve(runs, focus=focus, fraction=8)
         runs = m.deepen(runs, rnd, focus=focus, fraction=8)
+        m.deadline = began + budget  # (the rest: the proof that nothing on the slice is better)
+        runs, proved, looked = m.certify(runs, focus[1], **self.PROOF)
         info["slice done"] = m.cost(runs)
+        info["proved"], info["plans looked at"] = proved, looked
         info["seconds"] = time.perf_counter() - began
         info["planned"] = end
         return self._commit(state, m.to_wall(runs), a, end), info

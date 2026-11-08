@@ -80,6 +80,49 @@ class PaceTest(unittest.TestCase):
         self.assertEqual({k: st.line.presence(k).on(a, b) for k in NAMES}, first)
         self.assertEqual(info1["slice"][0], b)
 
+    def test_the_slice_is_proved_best(self):
+        """Each step proves its slice: no plan of up to 3 runs on whole minutes scores lower (what
+        follows as planned). Checked against plans scored one by one, the whole score each time,
+        for the plans of up to 2 runs."""
+        from itertools import combinations, product
+        from types import SimpleNamespace
+        from score import ScoreProblem
+        from score_search import Model
+        chip = F(10 * DAY + 10 * HOUR)
+        rules, sc, st = setup(chip)
+        pace = Pace(rules, sc)
+        ops, info = pace.step(st, chip, 0, budget=2.0)
+        self.assertTrue(info["proved"])
+        self.assertGreater(info["plans looked at"], 1000)
+        # brute force, the whole score each time
+        a, b = pace.slice(chip, 0)
+        p = ScoreProblem(sc, window=b - a + pace.AHEAD)
+        m = Model(p, SimpleNamespace(c=a, state=st, gen=SimpleNamespace(rules=rules)), st, 60)
+        runs = m.stride(0.25)
+        m.deadline = time.perf_counter() + 60
+        S = m.u_of(b)
+        got, proved, n = m.certify(runs, S, grid=120, max_runs=2)
+        self.assertTrue(proved)
+        rest, u = [], 0.0
+        for who, h in runs:
+            if u + h > S:
+                rest.append((who, u + h - max(u, S)))
+            u += h
+        tasks = [j for j in m.names if m.R["pi"][j] > 0] + [None]
+        best = None
+        for k in (1, 2):
+            for cut in combinations([x for x in range(120, int(S), 120)], k - 1):
+                ends = (0.0,) + tuple(float(c) for c in cut) + (S,)
+                for plan in product(tasks, repeat=k):
+                    if any(plan[i] == plan[i + 1] and plan[i] is not None for i in range(k - 1)):
+                        continue
+                    if any(j is not None and m.free_until(j, x) < y - 1e-6 for j, (x, y) in zip(plan, zip(ends, ends[1:]))):
+                        continue
+                    cand = Model._with_slice(runs, list(zip(plan, zip(ends, ends[1:]))), rest)
+                    c = m.cost(cand)
+                    best = c if best is None or c < best else best
+        self.assertAlmostEqual(m.cost(got)[1], min(best, m.cost(runs))[1], places=6)
+
     def test_a_step_through_the_night(self):
         """A slice in the night: nothing committed there, and no time spent on it."""
         chip = F(10 * DAY + 2 * HOUR)  # (02:00: asleep until 09:22)

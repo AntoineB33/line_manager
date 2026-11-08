@@ -108,9 +108,12 @@ class Model:
                 return s
         return None
 
-    def cost(self, runs) -> tuple:
-        """(D, J) of a continuation, the score's."""
-        R, names, unit = self.R, self.names, self.unit
+    def cost(self, runs, only=None, raw: bool = False) -> tuple:
+        """(D, J) of a continuation, the score's. `only`: the terms of that task alone (the score is
+        a sum of one term per task, each depending only on when that task is served: the targets
+        do not depend on who is served), D not rounded with `raw` (`certify` adds them)."""
+        R, unit = self.R, self.unit
+        names = self.names if only is None else [only]
         L = dict(self.L0)
         J1 = J2 = J3 = 0.0
         cur, length = self.open
@@ -136,7 +139,7 @@ class Model:
                     J1 += _sq(A, B, tau, R["Theta"][j], u, piece) / unit[j] ** 2
                     L[j] = A + B * math.exp(-piece / tau)
                 if who_here != cur:
-                    if cur is not None:
+                    if cur is not None and (only is None or cur == only):
                         J2, J3 = self._charge(cur, length, u, J2, J3)
                     cur, length = who_here, 0.0
                 if who_here is not None:
@@ -145,20 +148,23 @@ class Model:
                     served[who_here] = served.get(who_here, []) + [(w0, w0 + piece)]
                 u += piece
             u = end
-        if cur is not None and length > R["X"][cur]:  # (the open panel at the end: its excess)
+        if cur is not None and (only is None or cur == only) and length > R["X"][cur]:  # (the open panel at the end: its excess)
             e = length - R["X"][cur]
             J3 += math.exp(-u / R["Theta"][cur]) * R["tau"][cur] * e * (2 * R["M"][cur] + e) / unit[cur] ** 2
         for j in names:
             J1 += math.exp(-u / R["Theta"][j]) * L[j] * L[j] / (1 / R["Theta"][j] + 2 / R["tau"][j]) / unit[j] ** 2
         D = 0.0
         for i, Q, a, b in self.quantities:
+            if only is not None and i != only:
+                continue
             got = self.served_before[(i, a, b)] + sum(max(0.0, min(y, b) - max(x, a)) for x, y in served.get(i, ()))
             missing = max(0.0, Q - got)
             if b > float(self.end):
                 missing = max(0.0, missing - (b - float(self.end)))
             D += missing
         s = self.sc.s
-        return (round(D), J1 + s.minimum_weight * J2 + s.maximum_weight * J3)
+        J = J1 + s.minimum_weight * J2 + s.maximum_weight * J3
+        return (D, J) if raw else (round(D), J)
 
     def _charge(self, i, ell, u, J2, J3):
         R = self.R
@@ -347,6 +353,109 @@ class Model:
             if k < key:
                 best, key = cand, k
         return best
+
+    def certify(self, runs, S, grid=60, max_runs=3) -> tuple:
+        """(the best plan, whether it is proved best, how many plans were looked at): every plan of
+        the slice [0, S] (on the schedulable clock) of at most `max_runs` runs whose ends are on
+        whole `grid`s (the slice's own ends included), each run a task allowed all along it or
+        nobody, what follows the slice as `runs` has it. Exact over that family: the score is a
+        sum of one term per task, each depending on when that task alone is served, so each task's
+        term for each pattern in the slice is computed once and a plan's score is a sum of them.
+        Proved when the family was looked at whole before the time ran out; a better plan found is
+        returned in place of `runs`."""
+        from itertools import combinations
+        if S <= 0 or any(st[5] is not None and st[0] < S for st in self.st):
+            return runs, False, 0  # (a user's task in the slice: not this family's)
+        rest, u = [], 0.0
+        for who, h in runs:  # (what follows the slice)
+            a, b = u, u + h
+            if b > S:
+                rest.append((who, b - max(a, S)))
+            u = b
+        rest_ivs, u = {}, S
+        for who, h in rest:
+            if who is not None:
+                rest_ivs.setdefault(who, []).append((u, u + h))
+            u += h
+        tasks = [j for j in self.names if self.R["pi"][j] > 0]
+        cache = {}
+
+        def term(j, ivs):  # (task j's (D, J) served on ivs in the slice and as the rest has it)
+            key = (j, ivs)
+            if key not in cache:
+                marks = sorted(list(ivs) + rest_ivs.get(j, []))
+                out, u = [], 0.0
+                for a, b in marks:
+                    if a > u:
+                        out.append((None, a - u))
+                    out.append((j, b - a))
+                    u = b
+                if u < self.U:
+                    out.append((None, self.U - u))
+                cache[key] = self.cost(out, only=j, raw=True)
+            return cache[key]
+        base = {j: term(j, ()) for j in tasks}
+        bD, bJ = sum(v[0] for v in base.values()), sum(v[1] for v in base.values())
+        cur = self.cost(runs)
+        best_key, best_plan = cur, None
+        points = sorted({min(k * grid, S) for k in range(1, int(S // grid) + 1)} - {S})
+        allowed = {}
+
+        def ok(j, a, b):
+            if j is None:
+                return True
+            if (j, a, b) not in allowed:
+                allowed[(j, a, b)] = self.free_until(j, a) >= b - 1e-6
+            return allowed[(j, a, b)]
+        n = 0
+        for k in range(1, max_runs + 1):
+            for cut in combinations(points, k - 1):
+                ends = (0.0,) + tuple(cut) + (S,)
+                segs = list(zip(ends, ends[1:]))
+
+                def walk(i, prev, plan):
+                    nonlocal n, best_key, best_plan
+                    if i == len(segs):
+                        n += 1
+                        mine = {}
+                        for j, seg in zip(plan, segs):
+                            if j is not None:
+                                mine.setdefault(j, []).append(seg)
+                        D, J = bD, bJ
+                        for j, ivs in mine.items():
+                            d, jj = term(j, tuple(ivs))
+                            D += d - base[j][0]
+                            J += jj - base[j][1]
+                        key = (round(D), J)
+                        if key < best_key:
+                            best_key, best_plan = key, list(zip(plan, segs))
+                        return True
+                    a, b = segs[i]
+                    for j in tasks + [None]:
+                        if j == prev and j is not None or not ok(j, a, b):
+                            continue
+                        if not walk(i + 1, j, plan + [j]):
+                            return False
+                        if self.out_of_time():
+                            return False
+                    return True
+                if not walk(0, "", []):
+                    return self._with_slice(runs, best_plan, rest), False, n
+        return self._with_slice(runs, best_plan, rest), True, n
+
+    @staticmethod
+    def _with_slice(runs, plan, rest) -> list:
+        """runs with the slice's plan in place of what it had (None: runs as they are)."""
+        if plan is None:
+            return runs
+        out = []
+        for j, (a, b) in plan + [(w, (0, h)) for w, h in rest]:
+            h = b - a
+            if out and out[-1][0] == j:
+                out[-1] = (j, out[-1][1] + h)
+            else:
+                out.append((j, h))
+        return out
 
     def valid(self, runs) -> bool:
         """Each run's task allowed all along it (the user's stretches kept as they are)."""

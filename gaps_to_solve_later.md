@@ -267,7 +267,16 @@ absolute best schedule, limited by the 10 minutes every 10 seconds pace."
   plan shaken and improved again, kept if better; seeded by the step's number, so a step decides
   the same). Measured on account 3's shape: the six steps' hour the same as without it (562272;
   the instant schedule 761042): the improvement had already found what the shaking finds on these
-  slices (one or two runs of 45min minimums in 10 minutes). Whether that is the best is not proved:
-  a branch-and-bound over the slice would.
+  slices (one or two runs of 45min minimums in 10 minutes).
+- Proved (2026-11-08, `Model.certify`, the step's last 30% of its budget): every plan of the
+  slice of up to 3 runs ending on whole minutes (each run a task allowed all along it, or nobody)
+  is scored, what follows the slice as the step planned it, and the best taken. Exact: the score
+  is a sum of one term per task, each depending only on when that task is served, so each task's
+  term for each of its patterns is computed once (191313 plans in about 0.4s). Measured on account
+  3's shape: all six steps proved, none better than the search's (the hour still 562272);
+  `test_the_slice_is_proved_best` checks it against plans scored whole one by one. Not proved:
+  plans of 4 runs or more, or ends off the minute, in a 10-minute slice; the part after the slice
+  (it is the look-ahead, replaced by the next steps); a slice with a user's element in it
+  (`proved` False).
 - The line itself (the simulation's state) still takes the seconds of the replay to have the new
   rules; the window does not wait for it.

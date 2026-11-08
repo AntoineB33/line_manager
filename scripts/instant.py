@@ -240,9 +240,24 @@ class Instant:
             share = self._shares(R, pres, no, mid, names)
             room = {i: self._room(t, b, i, no, user, names) - t for i in allowed}
             due = sorted(allowed, key=lambda i: ((L[i] + R["M"][i] / 2) / max(share[i], 1e-12), i))
-            fits = [i for i in due if room[i] >= Fraction(R["M"][i]).limit_denominator(1000)]
-            i = fits[0] if fits else due[0]
-            h = min(room[i], Fraction(R["M"][i]).limit_denominator(1000)) if fits else room[i]
+            Ms = {i: Fraction(R["M"][i]).limit_denominator(1000) for i in allowed}
+            # a block of the user's: no panel of its own task against either side of it (the
+            # block would only look longer), what is left before it too short for a panel
+            # given to the one before (B against both sides of the user's hour of A)
+            e, X = self._next_user(t, b, user, names)
+            P = next((j for j in names if any(_hi(iv) == t for iv in user[j].intervals)), None)
+            least = min(Ms.values())
+
+            def touches(i):
+                if i == P:
+                    return True
+                return X == i and room[i] == e - t and e - (t + min(room[i], Ms[i])) < least
+            pick = [i for i in due if not touches(i)] or due
+            fits = [i for i in pick if room[i] >= Ms[i]]
+            i = fits[0] if fits else pick[0]
+            h = min(room[i], Ms[i]) if fits else room[i]
+            if X is not None and X != i and room[i] == e - t and 0 < e - (t + h) < least:
+                h = e - t  # (the rest before the block: this panel's)
             if h <= 0:
                 t = nxt
                 continue
@@ -261,6 +276,19 @@ class Instant:
                     end = min(end, lo)
                     break
         return end
+
+    @staticmethod
+    def _next_user(t, b, user, names):
+        """(where the next block of the user's after t starts, its task), (b, None) if none."""
+        e, X = b, None
+        for j in names:
+            for iv in user[j].intervals:
+                lo = _lo(iv)
+                if lo > t:
+                    if lo < e:
+                        e, X = lo, j
+                    break
+        return e, X
 
     def _shares(self, R, pres, no, x, names) -> dict:
         """The local shares at x: priority times multiplier, normalized over the tasks allowed."""
@@ -288,6 +316,14 @@ class Instant:
         served = {i: float(state.line.presence(i).measure_on(IntervalSet.of(Interval(lo, a, False, True)))) for i in names}
         total = sum(served.values())
         return {i: served[i] - R["pi"][i] * total for i in names}
+
+
+def _lo(iv):
+    return Fraction(iv.lo.x) if hasattr(iv.lo, "x") else iv.lo
+
+
+def _hi(iv):
+    return Fraction(iv.hi.x) if hasattr(iv.hi, "x") else iv.hi
 
 
 def _has(s: IntervalSet, x) -> bool:

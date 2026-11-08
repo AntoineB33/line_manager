@@ -71,6 +71,35 @@ class InstantTest(unittest.TestCase):
         self.assertEqual(len(far.on(a - DAY, a + DAY).intervals), 3)
         self.assertLess(time.perf_counter() - began, 0.5)
 
+    def test_a_dragged_block_has_the_other_task_against_both_sides(self):
+        """A and B at 50% each, 10 min minimums, "A → no B"; the user's hour of A dragged one
+        minute at a time: at each step, B against both sides of it (no panel of A making the
+        block look longer), every panel at least its minimum, and the day shown in well under
+        a frame."""
+        from instant import displayed
+        rs = parse_rules(["A → no B"])
+        sc = Score({"A": Task(1, 10 * MIN), "B": Task(1, 10 * MIN)})
+        inst = Instant(rs, sc)
+        chip = F(10 * DAY)
+        lo, hi = chip, chip + DAY
+        took = []
+        for n in range(31):
+            a = chip + 6 * HOUR + n * MIN
+            st = apply_edit(rs, LineState.empty(), [Op.put("A", Region.of(Iv(a, a + HOUR, False, True)))], "user")
+            began = time.perf_counter()
+            line, _ = displayed(inst, st.line, st.claims, st.history, lo, hi, chip=chip)
+            took.append(time.perf_counter() - began)
+            A, B = line.presence("A").on(lo, hi), line.presence("B").on(lo, hi)
+            self.assertTrue(A.contains(a + 1) and not A.contains(a - F(1, 2)), n)  # (the block's left edge)
+            self.assertTrue(B.contains(a - F(1, 2)) and B.contains(a + HOUR + F(1, 2)), n)
+            for k, r in (("A", A), ("B", B)):
+                for iv in r.intervals:
+                    x, y = (F(getattr(v, "x", v)) for v in (iv.lo, iv.hi))
+                    if lo < x and y < hi:
+                        self.assertGreaterEqual(y - x, 10 * MIN, (n, k, x - a, y - a))
+        took.sort()
+        self.assertLess(took[len(took) // 2], 0.05)
+
     def test_a_dragged_block_leaves_less_around_it(self):
         """The user's 4h of A: over the 8h after it, A has less than without the block, and the
         block itself is left as it is (not in the instant schedule)."""

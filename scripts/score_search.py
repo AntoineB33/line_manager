@@ -276,10 +276,12 @@ class Model:
         """The window at the shares, nobody never: the base policy alone."""
         return self.base([], 0.0, self.U, offset=offset)
 
-    def improve(self, runs) -> list:
+    def improve(self, runs, focus=None, fraction: int = 4) -> list:
         """Changes to the whole continuation, each kept when the whole scores lower: swap two
         neighbouring runs, give a run to another allowed task or to nobody, move the boundary
-        between two neighbours by a quarter of the shorter one; again until nothing helps."""
+        between two neighbours by a `fraction` of the shorter one; again until nothing helps.
+        `focus`: (u0, u1) on the schedulable clock: only the runs that meet it are changed (the
+        whole still scored), for the finer passes on the slice a step commits (pace.py)."""
         best = self.cost(runs)
         changed = True
         while changed and not self.out_of_time():
@@ -287,11 +289,15 @@ class Model:
             for n in range(len(runs)):
                 if self.out_of_time():
                     break
+                if focus is not None:
+                    u = sum(h for _, h in runs[:n])
+                    if u + runs[n][1] <= focus[0] or u >= focus[1]:
+                        continue
                 cands = []
                 if n + 1 < len(runs):
                     cands.append(runs[:n] + [runs[n + 1], runs[n]] + runs[n + 2:])
                     (a, ha), (b, hb) = runs[n], runs[n + 1]
-                    for d in (min(ha, hb) / 4, -min(ha, hb) / 4):
+                    for d in (min(ha, hb) / fraction, -min(ha, hb) / fraction):
                         if ha + d > 1 and hb - d > 1:
                             cands.append(runs[:n] + [(a, ha + d), (b, hb - d)] + runs[n + 2:])
                 u = sum(h for _, h in runs[:n])
@@ -317,6 +323,38 @@ class Model:
                 return False
             u += h
         return True
+
+    def from_wall(self, panels: dict) -> list:
+        """The runs of a schedule on the line ({task: [(a, b), ...]}), on the schedulable clock:
+        each stretch's part given to the task the panels put there (or to nobody), neighbours of
+        the same task merged."""
+        runs = []
+        marks = sorted((float(a), float(b), k) for k, v in panels.items() for a, b in v)
+        for st in self.st:
+            pos = st[2]
+            while pos < st[3] - 1e-9:
+                here = next(((a, b, k) for a, b, k in marks if a <= pos < b), None)
+                if here is not None and (here[2] in st[4] or here[2] == st[5]):
+                    end, who = min(here[1], st[3]), here[2]
+                else:
+                    nxt = [a for a, _, _ in marks if pos < a < st[3]]
+                    end, who = (min(nxt) if nxt else st[3]), (st[5] if st[5] is not None else None)
+                if runs and runs[-1][0] == who:
+                    runs[-1] = (who, runs[-1][1] + end - pos)
+                else:
+                    runs.append((who, end - pos))
+                pos = end
+        return runs
+
+    def u_of(self, x) -> float:
+        """The schedulable clock at the line's position x (0 at the window's start)."""
+        x = float(x)
+        for st in self.st:
+            if st[2] <= x < st[3]:
+                return st[0] + (x - st[2])
+            if x < st[2]:
+                return st[0]
+        return self.U
 
     def to_wall(self, runs) -> dict:
         """The runs on the line: {task: [(a, b), ...]}, a run crossing what nobody may have split

@@ -929,6 +929,13 @@ call ends it (`test_background_runs`).
   sweep goes through them. It reads the line in the window only, so a view 1000 years ahead
   costs what a view of tomorrow costs (`InstantTest`). Rules of other shapes are not read: the
   generator's runs keep them.
+- **The scheduler's steps** (`pace.py`; OmniApp's requirements § Two paces). From the chip c
+  where the scheduler starts, step n has 10 seconds for [c + 10min (n + 1), c + 10min (n + 2)]:
+  the big picture (the instant schedule of the 4 hours past the slice), then those hours by
+  the score's model (`score_search.Model`, seeded with the big picture and with its own seeds
+  at the shares, improved while half the budget lasts), then the slice by finer moves on the
+  runs that meet it (`Model.improve(focus=...)`); only the slice is committed, so the next
+  step starts from it (`PaceTest`).
 - **Candidates.** Candidate edits are built in a fixed order:
   1. the no-op first;
   2. then, for each combination of a prediction of what mode rules will do in W and

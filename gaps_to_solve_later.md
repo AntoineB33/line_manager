@@ -181,3 +181,17 @@ Left: the start applies the placement of every break forever and checks that not
 left of the chip on the whole past (the 61-day "no screen" computed whole); the requirement asks
 the first script definitive on the first units almost at once. And the last stage's minutes:
 until it ends, the chip's frames over the breaks decide the mode rules at each step.
+
+## The scheduler's steps (pace.py), measured 2026-11-08
+Account 3's shape, the three breaks and the night placed by one generator run, two days of
+past: six steps of 10 minutes, each given 10 seconds, took 1.4s to 3.1s (the improvement found
+nothing better before the budget), no task in "no screen", no idle time; the hour they made
+scores J 336321 against 485894 for the instant schedule of the same hour.
+- Not wired in: the simulation and the window still run the generator's stages; the steps are
+  called by tests and measures only. To do: run them from the chip as the scheduler of
+  OmniApp's requirements (a step each 10 seconds, the instant schedule before them and past
+  them), and their slices as the definitive part of the script.
+- A step that finishes early does not use the rest of its budget: more seeds, or the
+  branch-and-bound, could.
+- The breaks themselves are still placed by the generator's run (287s here): the steps only
+  place the tasks. With the breaks' own edits computed near the chip, a step could place both.

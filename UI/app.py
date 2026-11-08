@@ -278,6 +278,10 @@ class Session:
         return (None, out) if out == TOO_LONG else out
 
     def generator(self, rs) -> RulesGenerator:
+        from score import ScoreProblem
+        if any(isinstance(p, ScoreProblem) for p, _ in self.problems):  # (OmniApp's score: the scheduler's steps)
+            from pace import Stepped
+            return Stepped(rs, self.problems, self.q, constraints=self.constraints)
         return RulesGenerator(rs, self.problems, self.q, constraints=self.constraints)
 
     # ------------------------------------------------------------ the chip

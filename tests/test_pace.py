@@ -68,5 +68,64 @@ class PaceTest(unittest.TestCase):
         self.assertEqual([o for o in ops if o.action == "put"], [])
 
 
+class SteppedSessionTest(unittest.TestCase):
+    """pace.Stepped in a session (UI/app.py): the run's scripts are the steps; the chip goes on
+    through what they committed."""
+
+    def test_a_session_runs_the_steps(self):
+        from unittest import mock
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "UI"))
+        import gui
+        from app import Session
+        from pace import Stepped
+        from score import ScoreProblem
+        rules = [f"{a} → " + " & ".join(f"no {b}" for b in NAMES[i + 1:]) for i, a in enumerate(NAMES[:-1])]
+        chip = F(10 * DAY + 10 * HOUR)
+        with mock.patch.object(gui, "run"):
+            s = Session(rules, [(0, "1")], chip, 1, ["add Sleep on (4920, 33720] every 86400"], [(ScoreProblem(Score(TASKS)), 1)], F(1, 2))
+            gen = s.sim.gen if hasattr(s.sim, "gen") else s.generator(s.rs)
+            self.assertIsInstance(s.generator(s.rs), Stepped)
+            s.begin()
+            req = s.sim.request
+            req.gen.steps, req.gen.budget = 3, 0.5
+            began = time.perf_counter()
+            out = []
+            for script, stats in req.gen.stages(req.state, req.chip, req.known, req.previous):
+                out.append((time.perf_counter() - began, script, stats))
+            self.assertEqual(len(out), 4)  # (the first 10 minutes, then 3 steps)
+            self.assertLess(out[0][0], 5)
+            self.assertEqual([o[2].definitive for o in out], [chip + 600 * k for k in range(1, 5)])
+            self.assertTrue(out[-1][2].final)
+            s.sim.complete(req.id, out[-1][1], out[-1][2])
+            s.sim.background = False
+            for _ in range(4):
+                s.tick(F(600))
+            c = s.position
+            line = s.sim.state.line
+            placed = IntervalSet()
+            for k in NAMES:
+                placed = placed | line.presence(k).on(chip, chip + 2400)
+            night = line.presence("Sleep").on(chip, chip + 2400)
+            self.assertFalse((placed & night).intervals)
+            self.assertFalse((IntervalSet.of(Iv(chip, chip + 2400, False, False)) - night - placed).intervals)
+
+
+    def test_the_worker_process_gets_it_whole(self):
+        """The window runs a run in a process of its own (generator_worker.py): the generator is
+        pickled; once read back it still runs the steps."""
+        import pickle
+        from pace import Stepped
+        from score import ScoreProblem
+        from modes import ModeTimeline
+        chip = F(10 * DAY + 10 * HOUR)
+        rules, sc, st = setup(chip)
+        gen = Stepped(rules, [(ScoreProblem(sc), 1)], 0.5, budget=0.3, steps=1)
+        back = pickle.loads(pickle.dumps(gen))
+        out = list(back.stages(st, chip, ModeTimeline(0, "1").known(chip)))
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[-1][1].definitive, chip + 1200)
+
+
 if __name__ == "__main__":
     unittest.main()

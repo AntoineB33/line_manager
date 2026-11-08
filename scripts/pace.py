@@ -92,3 +92,79 @@ def _snap(x, a, b) -> Fraction:
         if abs(x - e) <= Fraction(1, 100):
             return e
     return x
+
+
+class Stepped:
+    """A rules generator whose run is the scheduler's steps (OmniApp's requirements § Two paces),
+    for problems that are OmniApp's score (score.ScoreProblem): its first script is the run of
+    an ordinary generator's first stage without the score (the constraints' edits: the breaks)
+    with the instant schedule of the first 10 minutes after the chip; then each step adds its
+    slice, the script definitive up to the slice's end, `STEPS` of them (3 hours), the last
+    final. What it does not have is the ordinary generator's (it stands for one: `__getattr__`)."""
+
+    STEPS = 18
+
+    def __init__(self, rules, problems, q, constraints=(), budget: float | None = None, steps: int | None = None) -> None:
+        from generator import RulesGenerator
+        score = [p for p, w in problems if isinstance(p, ScoreProblem)]
+        if not score:
+            raise ValueError("the steps are those of OmniApp's score: a ScoreProblem")
+        rest = [(p, w) for p, w in problems if not isinstance(p, ScoreProblem)]
+        self.base = RulesGenerator(rules, rest, q, constraints=constraints)
+        self.score = score[0].score
+        self.problems = list(problems)
+        self.budget = Pace.BUDGET if budget is None else budget
+        self.steps = self.STEPS if steps is None else steps
+
+    def __getattr__(self, name):
+        if name in ("base", "score", "problems", "budget", "steps"):
+            raise AttributeError(name)
+        return getattr(self.base, name)
+
+    def first_edits(self, state, c) -> list:
+        """What the script at the start of a run puts at once (simulation.first_script): the
+        instant schedule of the first 10 minutes after the chip."""
+        pace = Pace(self.rules, self.score)
+        c = Fraction(c)
+        quick = pace.instant.schedule(state, c, c + Pace.STEP)
+        ops = pace._commit(state, {k: [(Fraction(a), Fraction(b)) for a, b in v] for k, v in quick.items()}, c, c + Pace.STEP)
+        return [ops] if ops else []
+
+    def run(self, state, chip, known):
+        out = None
+        for out in self.stages(state, chip, known):
+            pass
+        return out
+
+    def stages(self, state, chip, known, previous=None):
+        from dataclasses import replace
+        from intervals import INF
+        from resolve import Refused, apply_edit
+        from script import ChipIn, EditAction, Event
+        c = Fraction(chip)
+        first = next(iter(self.base.stages(state, c, known, previous)))
+        script, stats = first
+        st = script.base if script.base is not None else state
+        pace = Pace(self.rules, self.score)
+        events = list(script.events)
+
+        def publish(ops, st, label, definitive, final):
+            nonlocal events
+            if ops:
+                events = events + [Event(ChipIn(c, INF), (EditAction(tuple(ops)),))]
+            return replace(script, base=st).with_events(events), replace(stats, chosen=label, definitive=definitive, final=final)
+        # the first 10 minutes: the instant schedule (the steps start after them)
+        quick = pace.instant.schedule(st, c, c + Pace.STEP)
+        ops = pace._commit(st, {k: [(Fraction(a), Fraction(b)) for a, b in v] for k, v in quick.items()}, c, c + Pace.STEP)
+        try:
+            st = apply_edit(self.rules, st, ops, "generated") if ops else st
+        except Refused:
+            ops = []
+        yield publish(ops, st, "the instant schedule of the first 10 minutes", c + Pace.STEP, self.steps == 0)
+        for n in range(self.steps):
+            ops, info = pace.step(st, c, n, self.budget)
+            try:
+                st = apply_edit(self.rules, st, ops, "generated") if ops else st
+            except Refused:
+                ops = []
+            yield publish(ops, st, f"step {n}", info["slice"][1], n == self.steps - 1)

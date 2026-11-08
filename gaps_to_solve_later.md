@@ -187,10 +187,14 @@ Account 3's shape, the three breaks and the night placed by one generator run, t
 past: six steps of 10 minutes, each given 10 seconds, took 1.4s to 3.1s (the improvement found
 nothing better before the budget), no task in "no screen", no idle time; the hour they made
 scores J 336321 against 485894 for the instant schedule of the same hour.
-- Not wired in: the simulation and the window still run the generator's stages; the steps are
-  called by tests and measures only. To do: run them from the chip as the scheduler of
-  OmniApp's requirements (a step each 10 seconds, the instant schedule before them and past
-  them), and their slices as the definitive part of the script.
+- Wired in (2026-11-08, `pace.Stepped`): a session whose problem is OmniApp's score runs the
+  steps as its generator: the run's first script is the constraints' edits (the breaks) with
+  the instant schedule of the first 10 minutes (and the start's script, `first_edits`, the
+  same); each step's slice is one more edit, the script definitive to its end; 18 steps (3
+  hours), the last final. In the window, the run is in its own process as any run.
+  Not done: the window does not show the instant schedule past what the steps reached (it
+  shows the line); a run of 18 steps of 10s is 3 minutes, and nothing runs the steps again
+  as the chip nears the end of what they reached but the generator's usual reruns.
 - A step that finishes early does not use the rest of its budget: more seeds, or the
   branch-and-bound, could.
 - The breaks themselves are still placed by the generator's run (287s here): the steps only

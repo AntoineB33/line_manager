@@ -109,21 +109,34 @@ no place is not checked that way.
   infinite continuation the score is defined on.
 - **The modes are not predicted** for this problem: it reads the line as it is.
 
-## The breaks with a daily sleep: periods that meet only after weeks (measured 2026-11-07)
+## The breaks with a daily sleep (measured 2026-11-07/08)
 The default breaks in their rules form (AsEarlyAsPossible, MinimumGap, MaximumGap, the three
 modes, "NoScreen → (NoComputerUnlocked or NotOnComputer) & (NoPhoneUnlocked or NotOnPhone)")
-with "Sleep → NoScreen" every day, no task and no score: the first run of the generator took
-49.5s with the 15min breaks alone, 104.5s with the 5min ones too, and over 180s with the 20s
-ones alone; with account 3's tasks and the score too, it did not end in 25 minutes. The
-examples have no daily sleep, so their tests never met it.
-Why: each kind's pieces are placed forever (`AsEarlyAsPossible._repeating`), and a region
-repeating with two periods repeats with their least common multiple: the 15min breaks (every
-8100) with the day, every 3 days; the 5min ones (every 3900) every 39 days; the 20s ones
-(every 1220) every 61 days. Each edit of the constraints is then resolved over that period
-(the "or" of "no screen": `solver._solve_or` over tens of days of 20s pieces).
-What would end it, to decide (it touches requirement.md's "If the rules imply to put
-something at infinity, it is considered possible"):
-- a horizon: the constraints place their pieces up to a horizon (OmniApp's 168h), not forever,
-  and the next runs extend it as the chip goes;
-- or a line that keeps two repeating patterns apart instead of merging them into one pattern of
-  their common period (the 20s breaks every 1220 and the night every 86400, each its own tail).
+with "Sleep → NoScreen" every day, no task, no score; one generator run:
+
+| | before | now |
+|---|---|---|
+| 15min breaks | 47.8s | 1.3s |
+| 20s breaks | over 400s | 24.6s |
+| all three | over 25 min (with the tasks) | 246.6s |
+
+What it was, and what changed:
+- The device choice ("no screen" → each device locked or not used) was solved by the sweep
+  over every piece of "no screen" at each decision. The rules are local (each position acts
+  on itself only), so `solver._solve_by_cells` solves one point of each cell where the claims
+  are the same, for the kinds the choices decide (the others stay as the region stage made
+  them, a region built by a call keeping its call).
+- The 20s break kept being pulled to the start of a "no screen" period: against the user's
+  rule (2026-11-07) that only a 20s break affects a 20s break. Removed (screen_break_20s_rules).
+  It goes on through the night, so "no screen" (the night and the 20s breaks) repeats every 61
+  days: exact, and what the line holds.
+- `MaximumGap` walked every stretch of that pattern: it first checks by region algebra that no
+  stretch is too long (`_holds`), the walk only where one is.
+- Regions keep the shortest period over a day they repeat with (`region._shortest`); `on` cuts
+  by bisection (`_clip`), the tails cut before they are shifted; the placement sweep reads its
+  obstacles near each step and keeps only the gaps ahead (`constraints._first_block`, `_ahead`).
+- `mode_rules._affine_region` reads a period past where each region's core is written to end:
+  a region written differently (cells) is the same set, and its run's formula still holds.
+
+Left: 246.6s for the three kinds is still far too slow for a run, and the run with account 3's
+tasks and the score has not been measured since.

@@ -348,6 +348,23 @@ def pulled(window: Region, into: Region, reach) -> Region:
     return Region(lo2, hi2, s, pl, s.shift(-(lo2 - pl)), pr, s.shift(-hi2))._compact()
 
 
+def _first_block(no: Region, dyn: Region, t, L):
+    """The first interval of `no` or `dyn` meeting [t, t + L - ε], or None: each read near t
+    (Region.on cuts by bisection), never their union, which on a pattern two periods share
+    (the 20s breaks and a night: 61 days) costs as much as the pattern."""
+    best = None
+    for r in (no, dyn):
+        ivs = r.on(t, t + L).intervals
+        if ivs and (best is None or ivs[0].lo < best.lo):
+            best = ivs[0]
+    return best
+
+
+def _ahead(dyn: Region, t) -> Region:
+    """The bars of the pieces placed that are still ahead of t: those behind no longer act."""
+    return dyn & Region.of(Interval(t, INF, True, False)) if not dyn.is_empty() else dyn
+
+
 class AsEarlyAsPossible:
     """`kind` as early as the rules and the other constraints allow. With `length`: the
     generator places it by itself, no target needed, each piece `length` long, the first
@@ -528,25 +545,24 @@ class AsEarlyAsPossible:
             return dyn | bar(t + L - EPS)
         while t <= end:
             checkpoint()
-            block = (no | dyn) & Region.of(Interval._mk(t, t + L - EPS))
-            if block.is_empty():
-                dyn = put(t, dyn)
+            first = _first_block(no, dyn, t, L)
+            if first is None:
+                dyn = _ahead(put(t, dyn), t)
                 t = t + L
             else:
                 p = sooner(t, dyn) if waits else None
                 if p is not None:
-                    dyn = put(p, dyn)
+                    dyn = _ahead(put(p, dyn), p)
                     t = p + L
                     continue
-                first = block.on(t, t + L + 1).intervals[0]
                 t = first.hi + EPS
         if stop is None and no.right:
             # what keeps it away repeats past no.hi (the 15min breaks every 8100, for the
             # 5min ones): the sweep goes on until its pieces repeat with it, the same phase
             # in its period and the same bars ahead of the sweep
             return self._repeating(no, dyn, bar, placed, t, L, counted, (sooner, put) if waits else None) & after
-        while not (dyn & Region.of(Interval._mk(t, t + L - EPS))).is_empty():  # (past `end`: the gaps of the last ones)
-            t = (dyn & Region.of(Interval._mk(t, t + L - EPS))).on(t, t + L + 1).intervals[0].hi + EPS
+        while _first_block(Region.empty(), dyn, t, L) is not None:  # (past `end`: the gaps of the last ones)
+            t = _first_block(Region.empty(), dyn, t, L).hi + EPS
         spacing = L + max((g.gap for g in counted), default=Fraction(0))
         starts = [a for a, _ in placed] + [t]
         if spacing != L and all(b - a == Pos(spacing) for a, b in zip(starts, starts[1:])):
@@ -584,22 +600,22 @@ class AsEarlyAsPossible:
                     first = min([a for a, _ in placed] + [t0])
                     return Region(first, t0, before, ONE, IntervalSet(), per, pattern)
                 seen[key] = (len(placed), t)
-            block = (no | dyn) & Region.of(Interval._mk(t, t + L - EPS))
+            first = _first_block(no, dyn, t, L)
             if waits is not None:  # (as `place`: a wait ended sooner where its end is taken)
                 sooner, put = waits
-                p = t if block.is_empty() else sooner(t, dyn)
+                p = t if first is None else sooner(t, dyn)
                 if p is not None:
-                    dyn = put(p, dyn)
+                    dyn = _ahead(put(p, dyn), p)
                     t = p + L
                     continue
-                t = block.on(t, t + L + 1).intervals[0].hi + EPS
+                t = first.hi + EPS
                 continue
-            if block.is_empty():
+            if first is None:
                 placed.append((t, t + L - EPS))
-                dyn = dyn | bar(t + L - EPS)
+                dyn = _ahead(dyn | bar(t + L - EPS), t)
                 t = t + L
             else:
-                t = block.on(t, t + L + 1).intervals[0].hi + EPS
+                t = first.hi + EPS
         return Region.of(IntervalSet([Interval._mk(a, b) for a, b in placed])) if placed else Region.empty()
 
     def targets(self, state: LineState, c) -> dict:
@@ -734,8 +750,32 @@ class MaximumGap:
         else:
             long = MinimumGap(self.kind, 1, after=self.after, at_least=self.at_least).long
             counts = long(state.line.presence(self.after)) | kept
+        if self._holds(counts, cp):
+            return kept & after  # (nothing too long: nothing to add; the sweep only where it is needed)
         added = self._sweep(cp, counts, no, [g for g in hard if g.after == self.kind])
         return (kept & after) | (added & after)
+
+    def _holds(self, counts: Region, cp: Pos) -> bool:
+        """Whether no stretch without what counts that reaches past the chip is longer than the
+        gap, read on the regions as they are (no step per piece: the 20s breaks with a night
+        repeat every 61 days, thousands of pieces). A stretch begun before the chip counts
+        from its start, as `_sweep` reads it, unless nothing counts before it."""
+        if counts.is_empty():
+            return False
+        free = counts.complement()
+        G = Pos(self.gap)
+        # the positions of `free` whose stretch so far is longer than the gap: free positions x
+        # with [x - G - ε, x] all free
+        long = free.complement().dilate(Interval(ZERO, G + EPS, True, True)).complement()
+        bad = long & _after(cp)
+        if bad.is_empty():
+            return True
+        # (a stretch with nothing before it, from the chip: counted from the chip, `_stretch_start`)
+        before = counts & _upto(cp)
+        if before.is_empty():
+            late = free.complement().dilate(Interval(ZERO, G + EPS, True, True)) | _upto(cp + G + EPS)
+            return (late.complement() & _after(cp)).is_empty()
+        return False
 
     def _sweep(self, cp: Pos, counts: Region, no: Region, gaps: list) -> Region:
         """The pieces it adds after cp (none where its AsEarlyAsPossible could place them): each stretch longer than `gap` cut by a piece as late

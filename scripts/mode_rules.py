@@ -746,6 +746,12 @@ def _affine_region(r1: Region, r2: Region, s):
             return _AffineRegion(r1, [], r1, False)
         A = r1.lo if r1.lo <= r2.lo else r2.lo
         X = r1.hi if r1.hi >= r2.hi else r2.hi
+        # (a period further on each side: where a region's stored core ends is how it is
+        # written, which can be inside a piece; past a whole period only the sets count)
+        if r1.left or r2.left:
+            A = A - (r1.pl if r1.pl >= r2.pl else r2.pl)
+        if r1.right or r2.right:
+            X = X + (r1.pr if r1.pr >= r2.pr else r2.pr)
         left = Region.of(Interval(-INF, A, False, False))
         if (r1 & left) != (r2 & left):
             return None

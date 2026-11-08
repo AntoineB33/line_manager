@@ -17,6 +17,7 @@ period. All numbers are exact.
 
 from __future__ import annotations
 
+import bisect
 import math
 from fractions import Fraction
 
@@ -62,6 +63,87 @@ def _group(s: IntervalSet) -> str:
     """What repeats, as text: in parentheses if it is several intervals (what repeats is
     then told from what is before it)."""
     return f"({s})" if len(s.intervals) > 1 else str(s)
+
+
+def _hi(iv):
+    return iv.hi
+
+
+def _clip(s: IntervalSet, a, b) -> IntervalSet:
+    """s on [a, b): the intervals that can meet it found by bisection (the core of a region
+    two patterns share can hold thousands), then cut as `s & [a, b)` would."""
+    ivs = s.intervals
+    if len(ivs) < 32:
+        return s & _window(a, b)
+    i = bisect.bisect_left(ivs, a, key=_hi)
+    j = i
+    while j < len(ivs) and ivs[j].lo < b:
+        j += 1
+    if i >= j:
+        return _NONE
+    return IntervalSet._sorted(list(ivs[i:j])) & _window(a, b)
+
+
+def _factors(n: int) -> list:
+    """The prime factors of n > 0, with their multiplicity."""
+    out, d = [], 2
+    while d * d <= n and d < 100000:
+        while n % d == 0:
+            out.append(d)
+            n //= d
+        d += 1
+    if n > 1:
+        out.append(n)
+    return out
+
+
+def _probably_repeats(pattern: IntervalSet, q: Pos, period: Pos) -> bool:
+    """A cheap test before the whole one: a few pieces, each found again q further (within the
+    period), and as many pieces as p copies can make."""
+    ivs = pattern.intervals
+    p = int(period.x / q.x)
+    if len(ivs) % p not in (0, 1, p - 1) and p > 2:
+        return False
+    for iv in ivs[:3] + ivs[len(ivs) // 2:len(ivs) // 2 + 2]:
+        lo, hi = iv.lo + q, iv.hi + q
+        if hi >= period:
+            lo, hi = lo - period, hi - period
+            if lo < ZERO:
+                continue
+        got = _clip(pattern, lo, hi + EPS).intervals
+        if not got or got[0].lo > lo or got[0].hi < hi:
+            return False
+    return True
+
+
+LONG_PERIOD = 86400  # periods up to it are kept as they are (`_shortest`)
+
+
+def _shortest(pattern: IntervalSet, period: Pos) -> tuple:
+    """(the pattern, its period) with the shortest period it repeats with, among the
+    period's divisions by a prime factor of its real part's numerator (and of its ε part):
+    two regions repeating every 1220 and every 86400 combine every 61 days, and what is left
+    of them after an operation may repeat every day again. Only a period longer than
+    LONG_PERIOD: a short one shortened folds a piece that moves with the chip into the repeating
+    part, and the mode rules' formula of a run no longer follows it (the 20s example's crossing
+    solved at each frame). A constant pattern is left as it is."""
+    if _constant(pattern, period) or period.x <= LONG_PERIOD:
+        return pattern, period
+    changed = True
+    while changed:
+        changed = False
+        for p in sorted(set(_factors(period.x.numerator))):
+            if period.k % p:
+                continue
+            q = Pos(period.x / p, period.k // p)
+            if not _probably_repeats(pattern, q, period):
+                continue
+            part = pattern & _window(ZERO, q)
+            again = IntervalSet([iv for i in range(p) for iv in part.shift(q * i).intervals])
+            if again == pattern:
+                pattern, period, changed = part, q, True
+                break
+    return pattern, period
 
 
 def _last(core: IntervalSet, default) -> Pos:
@@ -119,7 +201,7 @@ class Region:
     def on(self, a, b) -> IntervalSet:
         """The part of the region in [a, b) (a, b finite), as a finite union of intervals."""
         a, b = num(a), num(b)
-        parts = [self.core & _window(a, b)]
+        parts = [_clip(self.core, a, b)]
         if b > self.hi and self.right:
             start = a if a > self.hi else self.hi
             if _constant(self.right, self.pr):  # all of [hi, inf): one interval, not one per period
@@ -127,7 +209,8 @@ class Region:
             else:
                 k = (start - self.hi) // self.pr
                 while self.hi + k * self.pr < b:
-                    parts.append(self.right.shift(self.hi + k * self.pr) & _window(a, b))
+                    base = self.hi + k * self.pr  # (the window cut out of the pattern first, then shifted)
+                    parts.append(_clip(self.right, a - base, b - base).shift(base))
                     k += 1
         if a < self.lo and self.left:
             end = b if b < self.lo else self.lo
@@ -137,7 +220,7 @@ class Region:
                 k = (self.lo - end) // self.pl
                 while self.lo - k * self.pl > a:
                     base = self.lo - (k + 1) * self.pl
-                    parts.append(self.left.shift(base) & _window(a, b))
+                    parts.append(_clip(self.left, a - base, b - base).shift(base))
                     k += 1
         if len(parts) == 1:
             return parts[0]
@@ -308,7 +391,15 @@ class Region:
 
     def _compact(self) -> Region:
         """Shrink the core where it is empty next to an empty tail, and where its ends
-        repeat the tails (keeps sizes small)."""
+        repeat the tails (keeps sizes small); each tail with the shortest period it repeats
+        with (`_shortest`)."""
+        if getattr(self, "src", None) is not None:  # (a region built by a call keeps it: ratio_plan.Built)
+            right, pr, left, pl = self.right, self.pr, self.left, self.pl
+        else:
+            right, pr = _shortest(self.right, self.pr)
+            left, pl = _shortest(self.left, self.pl)
+        if pr != self.pr or pl != self.pl:
+            return Region(self.lo, self.hi, self.core, pl, left, pr, right)._compact()
         lo, hi = self.lo, self.hi
         if not self.right:
             h = _last(self.core, self.lo)

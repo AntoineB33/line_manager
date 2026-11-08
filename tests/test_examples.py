@@ -299,16 +299,16 @@ class TwentySecondBreakTest(unittest.TestCase):
         self.assertFalse(self.on(6030, "NoScreen"))
         self.assertEqual(self.starts(6030, 5900, 8000), [6000, 7220])
 
-    def test_one_that_would_start_inside_no_screen_starts_at_its_start(self):
-        """"No screen" on [1100, 1300]: the break due at 1220 starts at 1100, the next 20
-        minutes after it (2320)."""
+    def test_no_screen_does_not_move_it(self):
+        """"No screen" on [1100, 1300]: the break due at 1220 stays at 1220, the next 20
+        minutes after it (2440): only a 20s break affects a 20s break (user rule 2026-11-07)."""
         from intervals import Interval as Iv2
         from line import Op
         sim = first_run("screen_break_20s_rules")
         sim.edit_now([Op.put("NoScreen", Region.of(Iv2(1100, 1300, True, True)))])
         req = sim.request
         sim.complete(req.id, *list(req.gen.stages(req.state, req.chip, req.known, req.previous))[-1])
-        self.assertEqual([iv.lo.x for iv in sim.state.line.presence("Break20s").on(0, 3000).intervals], [0, 1100, 2320])
+        self.assertEqual([iv.lo.x for iv in sim.state.line.presence("Break20s").on(0, 3000).intervals], [0, 1220, 2440])
 
     def test_only_mode_2_pushes_it(self):
         """Mode 1 does not push it ("mode 1 & not Break20s → no NoScreen": in a 20s break the

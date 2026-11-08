@@ -12,8 +12,9 @@ The requirements, and the rule or constraint that says each:
       AsEarlyAsPossible("Break20s", length=20)
 - after the end of a 20s break, no 20s break in the next 20 minutes (only a 20s break
   does: "no screen", however long, bars none):
-      MinimumGap("Break20s", 20 minutes, pull="NoScreen")
-- a break that would start inside a "no screen" period starts at its start: its `pull`
+      MinimumGap("Break20s", 20 minutes)
+- only a 20s break affects a 20s break: "no screen", however long (a night, a 15min break),
+  neither bars it nor moves it (user rule 2026-11-07)
 - the now line must be in mode 1 or 3 before entering a 20s break, so one it reaches in
   mode 2 is dragged, (now line, now line + 20s]:
       "mode 2 → NoScreen & NoComputerUnlocked & NoPhoneUnlocked & no Break20s"
@@ -68,9 +69,8 @@ LINE = []  # the line starts empty
 CONSTRAINTS = [
     # breaks of 20 seconds, each as early as allowed
     AsEarlyAsPossible("Break20s", length=20),
-    # no 20s break within 20 minutes after one; one that would start inside a "no screen"
-    # period starts at its start
-    MinimumGap("Break20s", 20 * MINUTE, pull="NoScreen"),
+    # no 20s break within 20 minutes after one (only a 20s break affects it)
+    MinimumGap("Break20s", 20 * MINUTE),
     # never more than 20 minutes without one
     MaximumGap("Break20s", 20 * MINUTE, length=20),
 ]

@@ -1073,13 +1073,92 @@ def _percent_lost(o, K, vals, pres) -> Region:
     return out
 
 
+CELLS_MAX = 512  # cells of a local "or" solved point by point, before the sweep takes over
+_BY_POINT = threading.local()  # .on: solving one point of a cell (not again by cells), per thread
+
+
+def _cells(prob: Problem) -> list | None:
+    """The cells where every claim of `prob` is the same (each inside or outside each claim),
+    the empty ones left out; None past CELLS_MAX."""
+    inputs = [r for d in prob.pos.values() for r in d.values()] + list(prob.neg.values())
+    cells = [Region.universe()]
+    for r in inputs:
+        if r.is_empty():
+            continue
+        nxt = []
+        for c in cells:
+            for part in (c & r, c - r):
+                if not part.is_empty():
+                    nxt.append(part)
+        cells = nxt
+        if len(cells) > CELLS_MAX:
+            return None
+    return cells
+
+
+def _a_point(r: Region):
+    """A position of a non-empty region."""
+    for ivs, base in ((r.core, None), (r.right, r.hi), (r.left, None)):
+        if ivs:
+            iv = ivs.intervals[0]
+            if base is not None:
+                return iv.lo + base if iv.lo != -INF else iv.hi + base
+            if ivs is r.left:
+                return iv.lo + r.lo - r.pl if iv.lo != -INF else iv.hi + r.lo - r.pl
+            return iv.lo if iv.lo != -INF else iv.hi
+    raise ValueError("an empty region")
+
+
+def _solve_by_cells(rs: RuleSet, prob: Problem) -> Line | None:
+    """A local rule set's line with an "or" (RuleSet.local: each position acts on itself only,
+    its left sides reading presence): the choices at a position depend only on the claims
+    there, so the line is solved at one point of each cell where the claims are the same,
+    and each cell gets that point's values. Exact, and as costly as the number of different
+    cells, not as the period two repeating patterns share (20s breaks every 1220 with a night
+    every 86400: 61 days, the sweep's cost). None when there are too many cells."""
+    cells = _cells(prob)
+    if cells is None:
+        return None
+    out: dict[str, dict[Fraction, Region]] = {}
+    _BY_POINT.on = True
+    try:
+        for cell in cells:
+            x = _a_point(cell)
+            pt = Region.point(x)
+            pos = {k: {v: pt for v, r in d.items() if r.contains(x)} for k, d in prob.pos.items()}
+            pos = {k: d for k, d in pos.items() if d}
+            neg = {k: pt for k, r in prob.neg.items() if r.contains(x)}
+            line = solve(rs, Problem(pos, neg))
+            for k, d in line.vals.items():
+                for v, r in d.items():
+                    if r.contains(x):
+                        dk = out.setdefault(k, {})
+                        dk[v] = dk[v] | cell if v in dk else cell
+    finally:
+        _BY_POINT.on = False
+    return Line(out)
+
+
 def solve(rs: RuleSet, prob: Problem) -> Line:
     """The line of these claims; raises Conflict if the rules cannot be satisfied,
     Undetermined if they do not decide the choices."""
     has_or = bool(rs.or_items)
     kinds_in = set(rs.choice_dependent) if has_or else set()
     vals, fixed, forbid = region_stage(rs, prob, kinds_in)
-    line = Line(vals) if not has_or else _solve_or(rs, prob, kinds_in, vals, fixed, forbid)
+    cells = None
+    if has_or and rs.local and not getattr(_BY_POINT, "on", False):
+        cells = _solve_by_cells(rs, prob)
+    if cells is not None:
+        # (as the sweep: only the kinds the choices decide; the others as the region stage made
+        # them, a region built by a call kept with its call, ratio_plan.Built)
+        for k in kinds_in:
+            if cells.vals.get(k):
+                vals[k] = cells.vals[k]
+            else:
+                vals.pop(k, None)
+        line = Line(vals)
+    else:
+        line = Line(vals) if not has_or else _solve_or(rs, prob, kinds_in, vals, fixed, forbid)
     why = percent_conflict(rs, line.vals)
     if why:
         raise Conflict(why)

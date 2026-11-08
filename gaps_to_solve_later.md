@@ -67,8 +67,21 @@ no place is not checked that way.
 33 of 40 hold; the 7 that do not (20, 26, 27, 33, 35, 42, 56) all have two kinds.
 - A kind placed later can change what an earlier one reads: B placed at (0, 30], then A
   right after it at (30, 50] ("B → no A" allows it), and B's "no screen" now ends at 50,
-  so B's next piece falls in its gap (seed 33). Placing the kinds in rounds until they
-  stop changing fixes that seed and breaks seed 5: not kept.
+  so B's next piece falls in its gap (seeds 33, 42, 56). The same on account 3's shape: a
+  20s break lands right after a 15min one every 5.7 days (494100s), and OmniApp's rule
+  ("after a ≥15-minute of no screen, no 15min break in the next 2 hours", counted from the
+  end of the stretch) wants that 15min break's next piece 20s later; the 20s breaks stay
+  (only a 20s break bars a 20s break).
+  Tried 2026-11-08, not kept: placing the kinds again in rounds while a gap does not hold,
+  each kept from where a gap took it (so it only goes later). The fuzz seeds above then
+  pass, but the rounds do not end: each round moves one occurrence far ahead and meets the
+  next (6 rounds on seed 33 at the chip, and on account 3's shape the edits of 6 rounds
+  lost the night). Placing them again until nothing changes (the first try) sent B back and
+  forth with A and broke seed 5.
+  What would hold: one sweep through time placing every kind's pieces in time order, each
+  reading only what is placed before it (the gaps read the past, the exclusions the same
+  time), the longer kind first at a tie; its pattern found as `_repeating` finds one kind's,
+  the sweep's state now all kinds' bars ahead. Each kind over all time, then the next, cannot.
 - What a pushed piece leaves behind the chip in mode 1. The push says K stays behind
   (`ChipPush.behind`), mode 1 says no "no screen" at the chip; a point of K is left where
   a run begins to push (seed 20: {100/3}), and a gap after K reads it as a piece that just

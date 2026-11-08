@@ -71,16 +71,30 @@ class Model:
             for k, r in sc.tasks[i].resilience.items():
                 if r == 0:
                     no[i] = no[i] | state.line.presence(k)
+        # where a task is forbidden starts or ends inside a segment: the segment cut there (each
+        # part's tasks read at its own middle; read at the segment's alone, a meeting starting
+        # in it was open to its task for the rest of the segment)
+        edges = set()
+        for i in self.names:
+            for iv in no[i].on(self.c, self.end).intervals:
+                for e in (iv.lo, iv.hi):
+                    e = float(e.x) if hasattr(e, "x") else float(e)
+                    if float(self.c) < e < float(self.end):
+                        edges.add(e)
+        edges = sorted(edges)
         # the stretches of u: (u start, u end, wall start, wall end, allowed, fixed task, shares)
         self.st = []
         for k, (x, ok) in enumerate(zip(segs, sched)):
             if not ok:
                 continue
-            mid = Fraction(x[0] + x[1]) / 2
             fixed = x[3]
-            allowed = frozenset([fixed]) if fixed else frozenset(
-                i for i in self.names if R["pi"][i] > 0 and mus[k][i] > 0 and not no[i].contains(mid))
-            self.st.append((u0[k], u0[k] + x[1] - x[0], x[0], x[1], allowed, fixed, targets[k]))
+            cuts = [x[0]] + [e for e in edges if x[0] < e < x[1]] + [x[1]]
+            for p0, p1 in zip(cuts, cuts[1:]):
+                mid = Fraction(p0 + p1) / 2
+                allowed = frozenset([fixed]) if fixed else frozenset(
+                    i for i in self.names if R["pi"][i] > 0 and mus[k][i] > 0 and not no[i].contains(mid))
+                du = p0 - x[0]
+                self.st.append((u0[k] + du, u0[k] + du + p1 - p0, p0, p1, allowed, fixed, targets[k]))
         self.U = u
         self.L0 = problem.lags_at(state.line, self.c, pre)
         # the panel open at the chip: its task and how long it has run (on u, back to the chip)

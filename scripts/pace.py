@@ -70,7 +70,8 @@ class Pace:
                     for iv in state.claims.owned(i, GEN).on(a, end).intervals]
                 for i in self.score.tasks}
         plan = {i: v for i, v in plan.items() if v}
-        seeds = [m.from_wall(big)] + ([m.from_wall(plan)] if plan else []) + [m.stride(off) for off in SEEDS[:2]]
+        shown = self.instant.schedule(state, a, end, start=a)  # (what the window shows there: the step is never worse)
+        seeds = [m.from_wall(big), m.from_wall(shown)] + ([m.from_wall(plan)] if plan else []) + [m.stride(off) for off in SEEDS[:2]]
         costs = [m.cost(r) for r in seeds]
         info["big picture"] = costs[0]
         # each seed improved in turn, best first, while the hours' part of the budget lasts: the

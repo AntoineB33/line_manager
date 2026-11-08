@@ -293,3 +293,23 @@ absolute best schedule, limited by the 10 minutes every 10 seconds pace."
   (`proved` False).
 - The line itself (the simulation's state) still takes the seconds of the replay to have the new
   rules; the window does not wait for it.
+
+## The two paces compared (tests/compare_paces.py, 2026-11-08)
+Random small cases (2 to 4 tasks, priorities, minimums, a maximum sometimes, a night or not, a
+past, blocks of the user's), the instant schedule against a step of 2s, both scored by the score
+with the user's blocks read as it reads them (preplaced). Found and fixed:
+- the instant fill ignored a task's maximum (A 195 min in a row, its maximum 30: J 24809 against
+  the step's 1062);
+- the step's model read a task's allowed places at the middle of segments a quarter of the
+  compensation long: a meeting starting inside one ("Meeting → no A") left A allowed in it;
+- the instant fill put a panel of a user block's own task against its left side.
+What is left: the instant schedule's J is 1.87 times the step's (geometric mean of 40 cases),
+3.9 at worst (12 of 40 over 1.5). Most of it is the fill's own lag rule: it counts the user's
+block as service of its task where the score counts it as the task's alone and raises the other
+tasks around it (the compensation, both sides). Picking per day between the fill and the score's
+own stride (`Instant._best`, then 20ms of `Model.improve`) brings it to 1.22, but it costs 60ms a
+day (the fill: 5) and the score then prefers what looks wrong: a 1 or 2 min sliver of B before
+the user's block of A, A against the block. Off (`Instant.BEST`) until it is decided whether those
+are rules of the display or terms the score is missing.
+Also open: a block of the user's inside the night (its task's resilience 0 there): the model
+scores 1% to 4% of what the score does (seeds 20 and 31).

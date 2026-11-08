@@ -136,12 +136,58 @@ class Instant:
             return got[1]
         rare = self._rare(state, lo, hi)
         day = self._fill(state, lo, hi, rare)
+        if self.BEST and not self.rare(self.score.rule_state(lo)):  # (the stride would place a rare task by its lag)
+            day = self._best(state, lo, hi, day)
         for i, v in rare.items():
             day.setdefault(i, []).extend(v)
         if len(self._days) >= self.CACHE:
             self._days.pop(next(iter(self._days)))
         self._days[(lo, hi)] = (inputs, day)
         return day
+
+    # `_best`, off: measured 2026-11-08 on tests/compare_paces.py, it brings the instant schedule
+    # from 1.87 to 1.22 times the step's J (geometric mean of 40 cases), but costs 60ms a day where
+    # the fill costs 5 (a drag stutters) and the score it follows prefers what looks wrong (a 1min
+    # sliver of B before the user's block of A, A against the block): gaps_to_solve_later.md
+    BEST = False
+    POLISH = 0.02  # seconds of Model.improve per day (`_best`)
+    STRIDES = (0.25, 0.5, 0.75)  # the score's own stride policies tried against the fill (`_best`)
+
+    def _best(self, state, lo, hi, fill: dict) -> dict:
+        """The fill, or the stride on the score's own targets (score_search.Model.stride: the
+        targets with the compensation around the user's blocks, the lags as the score has them)
+        if the score puts it lower: each is better where the other is not (the fill keeps a
+        task's runs under its maximum, the stride reads the compensation), both in milliseconds."""
+        from types import SimpleNamespace
+        from score import ScoreProblem
+        from score_search import Model
+        try:
+            m = Model(ScoreProblem(self.score, window=hi - lo), SimpleNamespace(c=lo, state=state, gen=SimpleNamespace(rules=self.rules)), state, 60)
+        except Exception:
+            return fill
+        if m.U <= 0:
+            return fill
+        import time
+        runs = m.from_wall(fill)
+        key, picked = m.cost(runs), None
+        def idle(r):  # (nobody where a task could be: never shown, whatever the score says)
+            u = 0.0
+            for who, h in r:
+                if who is None and any(st[4] and st[0] < u + h - 1e-6 and st[1] > u + 1e-6 for st in m.st):
+                    return True
+                u += h
+            return False
+        for off in self.STRIDES:
+            r = m.stride(off)
+            c = m.cost(r)
+            if c < key and not idle(r):
+                runs, key, picked = r, c, r
+        if self.POLISH > 0:  # (the step's own improvement, a few milliseconds of it)
+            m.deadline = time.perf_counter() + self.POLISH
+            r = m.improve(runs)
+            if m.cost(r) < key and not idle(r):
+                runs, picked = r, r
+        return m.to_wall(picked) if picked is not None else fill
 
     def rare(self, R) -> list:
         return [i for i in self.tasks if R["pi"][i] > 0 and R["tau"][i] > self.RARE]
@@ -224,6 +270,14 @@ class Instant:
         cuts = sorted(cuts)
         t = a
         guard = 0
+        # the run going on at t: (its task, where it began), the user's blocks and the line
+        # before `a` included: a task is not kept on past its maximum (R["X"])
+        run = (None, a)
+        for i in names:
+            back = state.line.presence(i).on(a - DAY_X, a)
+            ivs = [iv for iv in back.intervals if _hi(iv) >= a]
+            if ivs:
+                run = (i, _lo(ivs[-1]))
         while t < b and guard < 100000:
             guard += 1
             nxt = next((x for x in cuts if x > t), b)
@@ -231,12 +285,17 @@ class Instant:
             mine = next((i for i in names if _has(user[i], mid)), None)
             if mine is not None:  # the user's: served, nothing placed
                 self._serve(L, R, mine, float(nxt - t), self._shares(R, pres, no, mid, names))
+                run = run if run[0] == mine else (mine, t)
                 t = nxt
                 continue
             allowed = [i for i in names if R["pi"][i] > 0 and i not in rare_names and not _has(no[i], mid)]
             if not allowed:  # nobody may be here (a night): not on the clock
+                run = (None, nxt)
                 t = nxt
                 continue
+            Xs = {i: Fraction(R["X"][i]).limit_denominator(1000) if R["X"][i] != float("inf") else None for i in allowed}
+            longer = [i for i in allowed if not (run[0] == i and Xs[i] is not None and t - run[1] >= Xs[i])]
+            allowed = longer or allowed  # (at its maximum: another, if there is one)
             share = self._shares(R, pres, no, mid, names)
             room = {i: self._room(t, b, i, no, user, names) - t for i in allowed}
             due = sorted(allowed, key=lambda i: ((L[i] + R["M"][i] / 2) / max(share[i], 1e-12), i))
@@ -258,11 +317,15 @@ class Instant:
             h = min(room[i], Ms[i]) if fits else room[i]
             if X is not None and X != i and room[i] == e - t and 0 < e - (t + h) < least:
                 h = e - t  # (the rest before the block: this panel's)
+            began = run[1] if run[0] == i else t
+            if Xs[i] is not None and h > Xs[i] - (t - began) > 0:
+                h = Xs[i] - (t - began)  # (no further than its maximum)
             if h <= 0:
                 t = nxt
                 continue
             out[i].append((t, t + h))
             self._serve(L, R, i, float(h), share)
+            run = (i, began)
             t = t + h
         return {i: v for i, v in out.items() if v}
 
@@ -316,6 +379,9 @@ class Instant:
         served = {i: float(state.line.presence(i).measure_on(IntervalSet.of(Interval(lo, a, False, True)))) for i in names}
         total = sum(served.values())
         return {i: served[i] - R["pi"][i] * total for i in names}
+
+
+DAY_X = 86400  # how far before a day the run going on at its start is read
 
 
 def _lo(iv):

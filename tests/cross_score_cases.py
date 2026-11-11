@@ -28,17 +28,20 @@ from score import Score, ScoreProblem, Task
 MIN, HOUR, DAY = 60, 3600, 86400
 def reg(v): return Region.of(IntervalSet([Iv(F(a), F(b), False, True) for a, b in sorted(v) if b > a]))
 
+WIDE = False  # (any share: tau past 4h and rare tasks too, the 2026-11-07 document's ground)
+
+
 def case(seed, tail=False):
     r = random.Random(seed)
     names = "ABCD"[:r.choice([1, 2, 2, 3, 4])]
     feats = set(r.sample(["night", "past", "block", "idle", "short"], r.randint(0, 5)))
-    pr = {k: r.choice([1, 2, 3]) for k in names}
+    pr = {k: (r.choice([1, 2, 3]) if not WIDE else r.choice([1, 2, 3, 0.05, 0.01, 0.002])) for k in names}
     tot = sum(pr.values())
     tasks = {}
     for k in names:
         pi = pr[k] / tot
-        Mmax = int(4 * HOUR * pi / MIN)  # (tau = M / pi under 4h)
-        tasks[k] = Task(pr[k], r.choice([m for m in (5, 10, 15, 20, 30) if m <= Mmax] or [1]) * MIN,
+        Mmax = int(4 * HOUR * pi / MIN) if not WIDE else 45  # (tau = M / pi under 4h, unless WIDE)
+        tasks[k] = Task(pr[k], r.choice([m for m in (5, 10, 15, 20, 30, 45) if m <= Mmax] or [1]) * MIN,
                         resilience={"Sleep": 0} if "night" in feats else {})
     rules = parse_rules([f"{x} → " + " & ".join(f"no {y}" for y in names[i + 1:]) for i, x in enumerate(names[:-1])] if len(names) > 1 else [])
     score = Score(tasks)
@@ -89,16 +92,22 @@ def case(seed, tail=False):
     score._no_tail = not tail
     res = score.evaluate(line.line, a, end, pre)
     ms = lambda x: int(x) * 1000
+    tot = sum(t.priority for t in tasks.values())
+
+    def lam(t):  # (λ_i = λ + 3 (τ_i − λ)+: how far back each reads its past, 4 λ_i, past the 16h read whole)
+        tau = max(t.minimum, 60) / (t.priority / tot)
+        return 4 * HOUR + 3 * max(0, tau - 4 * HOUR)
     return dict(seed=seed, feats=sorted(feats),
                 tasks=[dict(id=k, priority=float(t.priority), minimumMillis=ms(t.minimum), resilience=t.resilience) for k, t in tasks.items()],
                 periods=[dict(kind="sleep", start=ms(x), end=ms(y)) for _, x, y in periods],
                 blocks=[dict(task=k, start=ms(x), end=ms(y)) for k, x, y in blocks],
                 history=[dict(task=k, start=ms(x), end=ms(y)) for k, x, y in history],
                 plan=[dict(task=k, start=ms(x), end=ms(y)) for k, x, y in plan],
-                a=ms(a), end=ms(end), lookback=ms(16 * HOUR),
+                a=ms(a), end=ms(end), lookback=ms(16 * HOUR + 4 * max(lam(t) for t in tasks.values())),
                 lm=dict(J=res.J, J1=res.J1, J2=res.J2))
 
 if __name__ == "__main__":
     n = int(sys.argv[2])
+    WIDE = len(sys.argv) > 3 and sys.argv[3] == "wide"
     json.dump([case(s) for s in range(n)], open(sys.argv[1], "w"))
     print("wrote", n, "cases")
